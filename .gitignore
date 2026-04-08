@@ -1,0 +1,25 @@
+# Build-Artefakte
+*.deb
+*.rpm
+*.tar.gz
+*.buildinfo
+*.changes
+
+# Debian-Build
+packaging/debian/linuxgsm-webcore/
+packaging/debian/debhelper-build-stamp
+packaging/debian/*.substvars
+packaging/debian/*.log
+
+# RPM-Build
+packaging/rpm/BUILD/
+packaging/rpm/RPMS/
+packaging/rpm/SRPMS/
+packaging/rpm/SOURCES/
+packaging/rpm/SPECS/
+packaging/rpm/BUILDROOT/
+
+# Editor
+*.swp
+*~
+.DS_Store
