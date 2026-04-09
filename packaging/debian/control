@@ -1,0 +1,17 @@
+Source: linuxgsm-webcore
+Section: admin
+Priority: optional
+Maintainer: Christian Möllmann <moellix@knoellix.net>
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.6.2
+Homepage: https://github.com/knoellix/LinuxGSM-WebCore
+Rules-Requires-Root: no
+
+Package: linuxgsm-webcore
+Architecture: all
+Depends: webmin, perl, bash, curl, ${misc:Depends}
+Description: LinuxGSM Game Server Manager for Webmin
+ A Webmin plugin for managing game servers using LinuxGSM.
+ Provides a web-based interface for provisioning, monitoring,
+ and managing game server instances with strict user isolation
+ and security (no-root, no-shell, SFTP-only access).
