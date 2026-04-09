@@ -1,0 +1,39 @@
+# LinuxGSM-WebCore - Shared helpers and Webmin API wrappers
+use strict;
+use warnings;
+
+our (%text, %config, %gconfig, $module_root, $current_lang, $config_directory);
+
+# Load English base texts, then override with current language
+&read_file("$module_root/lang/en", \%text);
+if ($current_lang && $current_lang ne 'en') {
+    &read_file("$module_root/lang/$current_lang", \%text);
+}
+
+# Load module config
+&read_file("$config_directory/config", \%config) if -f "$config_directory/config";
+
+# Prevent root execution of privileged actions
+sub error_if_root {
+    if ($< == 0 && !$config{'allow_root'}) {
+        &error($text{'err_root'});
+    }
+}
+
+# Strip dangerous characters from user input
+sub sanitize_input {
+    my ($input) = @_;
+    $input =~ s/[^a-zA-Z0-9_\-]//g;
+    return $input;
+}
+
+# Run a server action as the game user (never as root)
+sub run_server_action {
+    my ($user, $action) = @_;
+    $user   = &sanitize_input($user);
+    $action = &sanitize_input($action);
+    return &system_logged("su -s /bin/bash -c \"./$user start\" $user") if $action eq 'start';
+    return &system_logged("su -s /bin/bash -c \"./$user $action\" $user");
+}
+
+1;
