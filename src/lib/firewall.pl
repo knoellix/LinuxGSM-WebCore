@@ -31,7 +31,7 @@ sub firewall_close_port {
 }
 
 sub has_ufw {
-    return -x '/usr/sbin/ufw';
+    return -x '/usr/sbin/ufw' || -x '/usr/bin/ufw';
 }
 
 1;

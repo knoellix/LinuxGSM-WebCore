@@ -2,8 +2,6 @@
 use strict;
 use warnings;
 
-our $text;
-
 sub sanitize_input;
 
 # Return list of all LGSM game server instances.
