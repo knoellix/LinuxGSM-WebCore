@@ -34,4 +34,26 @@ sub has_ufw {
     return -x '/usr/sbin/ufw' || -x '/usr/bin/ufw';
 }
 
+# Internal: return ufw status output (split out for testability)
+sub _ufw_status_output {
+    return `ufw status 2>/dev/null`;
+}
+
+# Check if a port is open in the firewall.
+# Returns 1 if open, 0 if closed or unknown.
+sub firewall_status {
+    my ($port) = @_;
+    $port = int($port);
+    if (&has_ufw()) {
+        my $out = &_ufw_status_output();
+        return 1 if $out =~ /^$port\b[^\n]*ALLOW/m;
+        return 1 if $out =~ /^$port\/(?:tcp|udp)\b[^\n]*ALLOW/m;
+        return 0;
+    } else {
+        # iptables: try to check rule (requires root)
+        my $rc = system("iptables -C INPUT -p tcp --dport $port -j ACCEPT 2>/dev/null");
+        return $rc == 0 ? 1 : 0;
+    }
+}
+
 1;
