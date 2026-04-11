@@ -43,3 +43,19 @@
 ## 8. Coding Style
 - **Dynamik & Validierung:** Keine hartkodierten Pfade; strikte Sanitization aller Eingaben.
 - **Atomarität:** Rollback-Logik bei Fehlern während der Installation.
+
+## 9. Webmin CGI-Pflichten
+- **Jede CGI-Datei:** `&ReadParse(\%in); &error_if_root();` — immer global, nicht nur im POST-Block.
+- **Jeder POST-Handler:** `&check_referer(1);` als erste Anweisung vor jeder Logik.
+- **Alle Ausgaben:** `html_escape()` auf alle Instanz-Daten (user, game, port, warnings) vor HTML-Output — nicht nur auf CGI-Inputs.
+- **Action-Whitelist:** Jede eigene Action-Verarbeitung explizit gegen Whitelist prüfen, nicht nur `sanitize_input`.
+
+## 10. Tests & Build
+- **Test-Pattern (Bash):** `pass()/fail()` TAP-Helper-Funktionen — kein `test_*()` Funktionsformat.
+- **Webmin-Stubs:** `t/stubs.pl` muss `html_escape`, `check_referer`, `error`, `read_file`, `system_logged` definieren.
+- **WBM-Format:** `tar czf dist/name.wbm -C tmp/ linuxgsm-webcore/` — Modul-Dir muss an der Tar-Wurzel liegen.
+- **Tests ausführen:** `perl t/test_<name>.pl` direkt (kein `prove` — findet die Stubs sonst nicht).
+
+## 11. Projekt-Layout
+- **Wiki:** Liegt in `/mnt/Lager/github/LinuxGSM-WebCore.wiki/` (separates Git-Repo für GitHub Wiki).
+- **Artefakte:** `dist/` und `tmp/` sind gitignored — Build via `bash scripts/build.sh`.
