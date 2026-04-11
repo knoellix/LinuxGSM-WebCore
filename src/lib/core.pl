@@ -20,10 +20,13 @@ sub error_if_root {
     }
 }
 
-# Strip dangerous characters from user input
+# Strip dangerous characters from user input.
+# Dies() via Webmin &error() if nothing valid remains.
 sub sanitize_input {
     my ($input) = @_;
+    $input //= '';
     $input =~ s/[^a-zA-Z0-9_\-]//g;
+    &error($text{'err_invalid_input'}) unless length $input;
     return $input;
 }
 
