@@ -30,12 +30,16 @@ sub sanitize_input {
     return $input;
 }
 
-# Run a server action as the game user (never as root)
+# Run a server action as the game user (never as root).
+# $action must be in the whitelist — otherwise Webmin error() is called.
 sub run_server_action {
     my ($user, $action) = @_;
     $user   = &sanitize_input($user);
     $action = &sanitize_input($action);
-    return &system_logged("su -s /bin/bash -c \"./$user start\" $user") if $action eq 'start';
+
+    my %valid_actions = map { $_ => 1 } qw(start stop restart update details);
+    &error($text{'err_invalid_action'}) unless $valid_actions{$action};
+
     return &system_logged("su -s /bin/bash -c \"./$user $action\" $user");
 }
 
