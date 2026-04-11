@@ -32,6 +32,7 @@ fw_close_btn=Port schließen
 health_warn_shell=Shell auf nologin setzen: usermod -s /usr/sbin/nologin {user}
 health_warn_no_script=Kein LGSM-Script gefunden -- Installation evtl. unvollständig
 health_warn_no_config=LGSM-Config-Verzeichnis fehlt -- abweichende Struktur?
+health_warn_header=Warnungen
 detail_port=Port
 detail_firewall=Firewall
 err_invalid_action=Ungültige Aktion.

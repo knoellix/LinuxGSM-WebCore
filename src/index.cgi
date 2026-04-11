@@ -8,10 +8,10 @@ require './lib/firewall.pl';
 
 our (%text, %config, %in);
 &ReadParse(\%in);
+&error_if_root();
 
 # Firewall-Aktionen verarbeiten (vor Header, da redirect möglich)
 if ($in{'action'} && $in{'user'}) {
-    &error_if_root();
     my $action = &sanitize_input($in{'action'});
     my $user   = &sanitize_input($in{'user'});
     my $inst   = &get_instance($user) or &error($text{'err_not_found'});
@@ -23,6 +23,8 @@ if ($in{'action'} && $in{'user'}) {
     } elsif ($action eq 'fw_close') {
         &firewall_close_port($port, 'tcp');
         &firewall_close_port($port, 'udp');
+    } else {
+        &error($text{'err_invalid_action'});
     }
     &redirect("index.cgi?expand=$user");
 }
@@ -53,30 +55,31 @@ if (!@instances) {
         my $status_color = $status eq 'online'  ? 'green'
                          : $status eq 'offline' ? 'red'
                          :                        'gray';
-        my $status_text = $text{"status_$status"} // $status;
+        my $status_text = &html_escape($text{"status_$status"} // $status);
         my $health_icon = @$warnings
-            ? "&#9888; (" . scalar(@$warnings) . ")"
-            : "&#10003;";
+            ? "\x{26A0}\x{FE0F} (" . scalar(@$warnings) . ")"
+            : "\x{2705}";
+        my $safe_user   = &html_escape($user);
         my $toggle_url  = $expanding
             ? "index.cgi"
-            : "index.cgi?expand=$user";
+            : "index.cgi?expand=$safe_user";
         my $toggle_char = $expanding ? "&#9650;" : "&#9660;";
 
         print "<tr>";
-        print "<td>$user</td>";
-        print "<td>$inst->{'game'}</td>";
-        print "<td>$inst->{'port'}</td>";
+        print "<td>$safe_user</td>";
+        print "<td>" . &html_escape($inst->{'game'}) . "</td>";
+        print "<td>" . int($inst->{'port'}) . "</td>";
         print "<td style='color:$status_color'>$status_text</td>";
         print "<td>$health_icon</td>";
         print "<td><a href='$toggle_url'>$toggle_char</a></td>";
         print "</tr>\n";
 
         if ($expanding) {
-            my $port    = $inst->{'port'};
+            my $port    = int($inst->{'port'});
             my $fw_open = $inst->{'fw_open'};
             my $fw_icon = $fw_open
-                ? "&#10003; $text{fw_status_open}"
-                : "&#10007; $text{fw_status_closed}";
+                ? "\x{2705} $text{fw_status_open}"
+                : "\x{274C} $text{fw_status_closed}";
             my $fw_action = $fw_open ? 'fw_close' : 'fw_open';
             my $fw_btn    = $fw_open ? $text{fw_close_btn} : $text{fw_open_btn};
 
@@ -86,29 +89,26 @@ if (!@instances) {
             print "<tr><td><b>$text{detail_firewall}</b></td><td>$fw_icon &nbsp;";
             print "<form method='post' action='index.cgi' style='display:inline'>";
             print "<input type='hidden' name='action' value='$fw_action'>";
-            print "<input type='hidden' name='user' value='$user'>";
-            print "<input type='hidden' name='expand' value='$user'>";
-            print "<input type='submit' value=\"$fw_btn\">";
+            print "<input type='hidden' name='user' value='$safe_user'>";
+            print "<input type='hidden' name='expand' value='$safe_user'>";
+            print "<input type='submit' value=\"" . &html_escape($fw_btn) . "\">";
             print "</form></td></tr>\n";
             print "</table>\n";
 
             print "<p>";
             foreach my $action (qw(start stop restart update)) {
                 print "<form method='post' action='manage.cgi' style='display:inline;margin-right:4px'>";
-                print "<input type='hidden' name='user' value='$user'>";
+                print "<input type='hidden' name='user' value='$safe_user'>";
                 print "<input type='hidden' name='action' value='$action'>";
-                print "<input type='submit' value=\"$text{'manage_$action'}\">";
+                print "<input type='submit' value=\"" . &html_escape($text{"manage_$action"}) . "\">";
                 print "</form>";
             }
             print "</p>\n";
 
             if (@$warnings) {
-                print "<p><b>&#9888; Warnungen:</b></p><ul>\n";
+                print "<p><b>\x{26A0}\x{FE0F} $text{health_warn_header}</b></p><ul>\n";
                 for my $w (@$warnings) {
-                    my $safe_w = $w;
-                    $safe_w =~ s/&/&amp;/g;
-                    $safe_w =~ s/</&lt;/g;
-                    print "<li>$safe_w</li>\n";
+                    print "<li>" . &html_escape($w) . "</li>\n";
                 }
                 print "</ul>\n";
             }
