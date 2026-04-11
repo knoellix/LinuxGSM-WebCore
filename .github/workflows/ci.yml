@@ -1,0 +1,15 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Perl unit tests
+        run: find t/ -name "test_*.pl" | sort | xargs -I{} perl {}
