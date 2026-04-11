@@ -1,0 +1,35 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build artifacts
+        run: TAG=${{ github.ref_name }} bash scripts/build.sh
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "LinuxGSM-WebCore ${{ github.ref_name }}"
+          body: |
+            ## Installation
+
+            ```bash
+            sudo bash <(curl -sL https://github.com/knoellix/LinuxGSM-WebCore/releases/latest/download/install.sh)
+            ```
+
+            Voraussetzung: [Webmin](https://webmin.com/install/) muss installiert sein.
+          files: |
+            dist/linuxgsm-webcore-*.wbm
+            dist/install.sh
