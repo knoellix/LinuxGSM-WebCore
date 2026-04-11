@@ -50,8 +50,8 @@ sub firewall_status {
         return 1 if $out =~ /^$port\/(?:tcp|udp)\b[^\n]*ALLOW/m;
         return 0;
     } else {
-        # iptables: try to check rule (requires root)
-        my $rc = system("iptables -C INPUT -p tcp --dport $port -j ACCEPT 2>/dev/null");
+        # iptables: check rule via system_logged (Webmin handles privilege escalation)
+        my $rc = &system_logged("iptables -C INPUT -p tcp --dport $port -j ACCEPT 2>/dev/null");
         return $rc == 0 ? 1 : 0;
     }
 }

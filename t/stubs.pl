@@ -30,6 +30,20 @@ sub system_logged {
     return system($_[0]);
 }
 
+# Stub: check_referer — CSRF-Check, no-op in Tests
+sub check_referer { return 1; }
+
+# Stub: html_escape — minimal HTML escaping
+sub html_escape {
+    my ($s) = @_;
+    $s //= '';
+    $s =~ s/&/&amp;/g;
+    $s =~ s/</&lt;/g;
+    $s =~ s/>/&gt;/g;
+    $s =~ s/"/&quot;/g;
+    return $s;
+}
+
 # error() wird in Tests NICHT als Stub definiert — jedes Test-File
 # definiert es selbst (manche wollen es fangen, manche nicht).
 

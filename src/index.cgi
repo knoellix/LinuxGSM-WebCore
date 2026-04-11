@@ -12,6 +12,7 @@ our (%text, %config, %in);
 
 # Firewall-Aktionen verarbeiten (vor Header, da redirect möglich)
 if ($in{'action'} && $in{'user'}) {
+    &check_referer(1);
     my $action = &sanitize_input($in{'action'});
     my $user   = &sanitize_input($in{'user'});
     my $inst   = &get_instance($user) or &error($text{'err_not_found'});
