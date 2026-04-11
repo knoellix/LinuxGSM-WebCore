@@ -23,3 +23,7 @@ packaging/rpm/BUILDROOT/
 *.swp
 *~
 .DS_Store
+
+# Build output
+dist/
+tmp/
