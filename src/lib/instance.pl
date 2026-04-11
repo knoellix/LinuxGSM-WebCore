@@ -37,15 +37,41 @@ sub get_instance {
     };
 }
 
+# Parse LGSM config files for a game user.
+# Reads common.cfg first, then game-specific <user>.cfg (overrides common).
+# Returns a flat hash of all key=value pairs found.
+sub _parse_lgsm_config {
+    my ($home, $user) = @_;
+    my %cfg;
+    for my $path (
+        "$home/lgsm/config-lgsm/common.cfg",
+        "$home/lgsm/config-lgsm/$user/$user.cfg",
+    ) {
+        next unless -f $path;
+        open(my $fh, '<', $path) or next;
+        while (<$fh>) {
+            chomp;
+            next if /^\s*#/;                          # Kommentare überspringen
+            next unless /=/;
+            if (/^\s*(\w+)\s*=\s*["']?([^"'\n]+?)["']?\s*$/) {
+                $cfg{$1} = $2;
+            }
+        }
+        close($fh);
+    }
+    return %cfg;
+}
+
 sub _detect_game {
     my ($home, $user) = @_;
-    # LGSM stores game ID in serverfiles/common.cfg or similar
-    return 'unknown';  # TODO: parse LGSM config
+    my %cfg = _parse_lgsm_config($home, $user);
+    return $cfg{gamename} || 'unknown';
 }
 
 sub _detect_port {
     my ($home, $user) = @_;
-    return 0;  # TODO: parse LGSM config
+    my %cfg = _parse_lgsm_config($home, $user);
+    return $cfg{port} || 0;
 }
 
 sub _detect_status {
