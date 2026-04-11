@@ -74,6 +74,30 @@ sub _detect_port {
     return $cfg{port} || 0;
 }
 
+# Check instance health — returns arrayref of warning strings (empty = ok).
+# $shell is the user's login shell from /etc/passwd.
+sub _check_instance_health {
+    my ($user, $home, $shell, $cfg_ref) = @_;
+    our %text;
+    my @warnings;
+
+    if ($shell ne '/usr/sbin/nologin') {
+        my $msg = $text{health_warn_shell};
+        $msg =~ s/\{user\}/$user/g;
+        push @warnings, $msg;
+    }
+
+    unless (-f "$home/$user") {
+        push @warnings, $text{health_warn_no_script};
+    }
+
+    unless (-d "$home/lgsm/config-lgsm") {
+        push @warnings, $text{health_warn_no_config};
+    }
+
+    return \@warnings;
+}
+
 sub _detect_status {
     my ($home, $user) = @_;
     my $rc = system("su -s /bin/bash -c \"./$user details\" $user 2>/dev/null | grep -q 'Online'");
