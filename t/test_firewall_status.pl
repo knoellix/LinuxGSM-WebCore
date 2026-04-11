@@ -3,11 +3,12 @@
 use strict;
 use warnings;
 use Test::More tests => 4;
+use lib 'src/lib';
 
 sub error { die "error: $_[0]\n"; }
 sub system_logged { return system($_[0]); }
 
-require 'src/lib/firewall.pl';
+require 'firewall.pl';
 
 # Mock has_ufw und _ufw_status_output für Tests
 my $mock_ufw = 0;

@@ -21,19 +21,29 @@ sub list_instances {
     return @instances;
 }
 
-# Return instance details for a specific user, or undef if not found.
+# Return instance details for a specific user, or undef if not a valid LGSM instance.
 sub get_instance {
     my ($user) = @_;
     $user = &sanitize_input($user);
     my @pw = getpwnam($user) or return undef;
-    my $home = $pw[7];
+    my $home  = $pw[7];
+    my $shell = $pw[8];
     return undef unless -f "$home/$user";
+
+    my %cfg     = _parse_lgsm_config($home, $user);
+    my $status  = _detect_status($home, $user);
+    my $port    = $cfg{port} // 0;
+    my $fw_open = &firewall_status($port);
+    my $warns   = _check_instance_health($user, $home, $shell, \%cfg);
+
     return {
-        user   => $user,
-        home   => $home,
-        game   => _detect_game($home, $user),
-        port   => _detect_port($home, $user),
-        status => _detect_status($home, $user),
+        user     => $user,
+        home     => $home,
+        game     => $cfg{gamename} // 'unknown',
+        port     => $port,
+        status   => $status,
+        fw_open  => $fw_open,
+        warnings => $warns,
     };
 }
 
@@ -62,17 +72,6 @@ sub _parse_lgsm_config {
     return %cfg;
 }
 
-sub _detect_game {
-    my ($home, $user) = @_;
-    my %cfg = _parse_lgsm_config($home, $user);
-    return $cfg{gamename} || 'unknown';
-}
-
-sub _detect_port {
-    my ($home, $user) = @_;
-    my %cfg = _parse_lgsm_config($home, $user);
-    return $cfg{port} || 0;
-}
 
 # Check instance health — returns arrayref of warning strings (empty = ok).
 # $shell is the user's login shell from /etc/passwd.
@@ -98,10 +97,14 @@ sub _check_instance_health {
     return \@warnings;
 }
 
+# Detect whether a game server instance is running.
+# Calls the LGSM 'details' command as the game user.
+# Returns 'online', 'offline', or 'unknown' (on error).
 sub _detect_status {
     my ($home, $user) = @_;
-    my $rc = system("su -s /bin/bash -c \"./$user details\" $user 2>/dev/null | grep -q 'Online'");
-    return $rc == 0 ? 'online' : 'offline';
+    my $out = `su -s /bin/bash -c "./$user details" $user 2>/dev/null`;
+    return 'unknown' unless defined $out && length $out;
+    return $out =~ /Online/ ? 'online' : 'offline';
 }
 
 1;
