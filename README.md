@@ -19,17 +19,16 @@ A Webmin plugin for managing game servers via [LinuxGSM](https://linuxgsm.com/).
 
 ## Installation
 
-### Debian/Ubuntu
-
 ```bash
-dpkg -i linuxgsm-webcore_0.1.0-1_all.deb
+sudo bash <(curl -sL https://github.com/knoellix/LinuxGSM-WebCore/releases/latest/download/install.sh)
 ```
 
-### AlmaLinux/Rocky/Fedora
+Voraussetzung: [Webmin](https://webmin.com/install/) muss installiert sein.
 
-```bash
-rpm -i linuxgsm-webcore-0.1.0-1.noarch.rpm
-```
+### Manuelle Installation (.wbm)
+
+Das `.wbm`-Archiv kann auch direkt in Webmin installiert werden:
+**Webmin → Webmin-Konfiguration → Webmin-Module → Von lokaler Datei installieren**
 
 ## Development
 
