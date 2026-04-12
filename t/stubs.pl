@@ -44,7 +44,61 @@ sub html_escape {
     return $s;
 }
 
+# Stub: init_config — no-op in tests (Webmin initializes this in production)
+sub init_config { return 1; }
+
+# Stub: write_file — schreibt key=value Paare in eine Datei
+sub write_file {
+    my ($file, $hash_ref) = @_;
+    open(my $fh, '>', $file) or return;
+    for my $k (sort keys %$hash_ref) {
+        print $fh "$k=$hash_ref->{$k}\n";
+    }
+    close($fh);
+}
+
+# Stub: make_dir — erstellt Verzeichnis mit gegebenen Rechten
+sub make_dir {
+    my ($dir, $perms) = @_;
+    mkdir $dir, ($perms // 0755) unless -d $dir;
+}
+
+# Stub: foreign_require — no-op (ACL-Modul nicht verfügbar in Tests)
+sub foreign_require { return 1; }
+
 # error() wird in Tests NICHT als Stub definiert — jedes Test-File
 # definiert es selbst (manche wollen es fangen, manche nicht).
+
+# Stub: ACL-Verzeichnis für Tests (von Tests auf tempdir gesetzt)
+our $stub_acl_dir = '/tmp/webmin-stub-acl';
+
+# Stub: get_module_acl — liest key=value aus $stub_acl_dir/$module/$user
+sub get_module_acl {
+    my ($user, $module) = @_;
+    my %acl;
+    my $file = "$stub_acl_dir/$module/$user";
+    return %acl unless defined $file && -f $file;
+    open(my $fh, '<', $file) or return %acl;
+    while (<$fh>) {
+        chomp;
+        next if /^\s*#/ || !/=/;
+        my ($k, $v) = split(/=/, $_, 2);
+        $acl{$k} = $v if defined $k && defined $v;
+    }
+    close($fh);
+    return %acl;
+}
+
+# Stub: save_module_acl — schreibt key=value nach $stub_acl_dir/$module/$user
+sub save_module_acl {
+    my ($acl_ref, $user, $module) = @_;
+    my $dir = "$stub_acl_dir/$module";
+    mkdir $dir unless -d $dir;
+    open(my $fh, '>', "$dir/$user") or return;
+    for my $k (sort keys %$acl_ref) {
+        print $fh "$k=$acl_ref->{$k}\n";
+    }
+    close($fh);
+}
 
 1;
