@@ -2,13 +2,17 @@
 use strict;
 use warnings;
 
+do '../web-lib.pl';
+do '../ui-lib.pl';
+&init_config();
+
 require './lib/core.pl';
 require './lib/instance.pl';
 require './lib/firewall.pl';
+require './lib/acl.pl';
 
-our (%text, %config, %in);
+our (%text, %config, %in, %access);
 &ReadParse(\%in);
-&error_if_root();
 
 # Firewall-Aktionen verarbeiten (vor Header, da redirect möglich)
 if ($in{'action'} && $in{'user'}) {
@@ -33,19 +37,34 @@ if ($in{'action'} && $in{'user'}) {
 &header($text{'index_title'}, '');
 print "<p>$text{'index_desc'}</p>\n";
 
-my @instances = &list_instances();
+if ($access{'can_create'} || $access{'can_scan'}) {
+    if ($access{'can_create'}) {
+        print &ui_form_start('wizard.cgi', 'get');
+        print &ui_submit($text{'index_btn_new_server'});
+        print &ui_form_end();
+    }
+    if ($access{'can_scan'}) {
+        print &ui_form_start('scan.cgi', 'get');
+        print &ui_submit($text{'index_btn_scan'});
+        print &ui_form_end();
+    }
+}
+
+my @instances = &list_managed_instances();
 
 if (!@instances) {
     print "<p>$text{'index_no_instances'}</p>\n";
 } else {
     my $expand = $in{'expand'} ? &sanitize_input($in{'expand'}) : '';
 
-    print "<table class='ui_table'>\n";
-    print "<tr>";
-    for my $col (qw(index_col_user index_col_game index_col_port index_col_status index_col_health index_col_details)) {
-        print "<th>$text{$col}</th>";
-    }
-    print "</tr>\n";
+    print &ui_columns_header([
+        $text{index_col_user},
+        $text{index_col_game},
+        $text{index_col_port},
+        $text{index_col_status},
+        $text{index_col_health},
+        $text{index_col_details},
+    ]);
 
     foreach my $inst (@instances) {
         my $user      = $inst->{'user'};
@@ -53,27 +72,22 @@ if (!@instances) {
         my $warnings  = $inst->{'warnings'};
         my $expanding = ($expand eq $user);
 
-        my $status_color = $status eq 'online'  ? 'green'
-                         : $status eq 'offline' ? 'red'
-                         :                        'gray';
         my $status_text = &html_escape($text{"status_$status"} // $status);
         my $health_icon = @$warnings
             ? "\x{26A0}\x{FE0F} (" . scalar(@$warnings) . ")"
             : "\x{2705}";
         my $safe_user   = &html_escape($user);
-        my $toggle_url  = $expanding
-            ? "index.cgi"
-            : "index.cgi?expand=$safe_user";
+        my $toggle_url  = $expanding ? "index.cgi" : "index.cgi?expand=$safe_user";
         my $toggle_char = $expanding ? "&#9650;" : "&#9660;";
 
-        print "<tr>";
-        print "<td>$safe_user</td>";
-        print "<td>" . &html_escape($inst->{'game'}) . "</td>";
-        print "<td>" . int($inst->{'port'}) . "</td>";
-        print "<td style='color:$status_color'>$status_text</td>";
-        print "<td>$health_icon</td>";
-        print "<td><a href='$toggle_url'>$toggle_char</a></td>";
-        print "</tr>\n";
+        print &ui_columns_row([
+            $safe_user,
+            &html_escape($inst->{'game'}),
+            int($inst->{'port'}),
+            $status_text,
+            $health_icon,
+            "<a href='$toggle_url'>$toggle_char</a>",
+        ]);
 
         if ($expanding) {
             my $port    = int($inst->{'port'});
@@ -84,40 +98,42 @@ if (!@instances) {
             my $fw_action = $fw_open ? 'fw_close' : 'fw_open';
             my $fw_btn    = $fw_open ? $text{fw_close_btn} : $text{fw_open_btn};
 
-            print "<tr><td colspan='6' style='padding:8px;background:#f9f9f9'>\n";
-            print "<table>\n";
-            print "<tr><td><b>$text{detail_port}</b></td><td>$port</td></tr>\n";
-            print "<tr><td><b>$text{detail_firewall}</b></td><td>$fw_icon &nbsp;";
-            print "<form method='post' action='index.cgi' style='display:inline'>";
-            print "<input type='hidden' name='action' value='$fw_action'>";
-            print "<input type='hidden' name='user' value='$safe_user'>";
-            print "<input type='hidden' name='expand' value='$safe_user'>";
-            print "<input type='submit' value=\"" . &html_escape($fw_btn) . "\">";
-            print "</form></td></tr>\n";
-            print "</table>\n";
+            my $detail = "";
 
-            print "<p>";
+            # Firewall-Status + Button
+            $detail .= "<p><b>$text{detail_firewall}:</b> $fw_icon &nbsp;";
+            $detail .= "<form method='post' action='index.cgi' style='display:inline'>";
+            $detail .= "<input type='hidden' name='action' value='$fw_action'>";
+            $detail .= "<input type='hidden' name='user' value='$safe_user'>";
+            $detail .= "<input type='hidden' name='expand' value='$safe_user'>";
+            $detail .= "<input type='submit' value=\"" . &html_escape($fw_btn) . "\">";
+            $detail .= "</form></p>\n";
+
+            # Steuerungs-Buttons
+            $detail .= "<p>";
             foreach my $action (qw(start stop restart update)) {
-                print "<form method='post' action='manage.cgi' style='display:inline;margin-right:4px'>";
-                print "<input type='hidden' name='user' value='$safe_user'>";
-                print "<input type='hidden' name='action' value='$action'>";
-                print "<input type='submit' value=\"" . &html_escape($text{"manage_$action"}) . "\">";
-                print "</form>";
+                $detail .= "<form method='post' action='manage.cgi' style='display:inline;margin-right:4px'>";
+                $detail .= "<input type='hidden' name='user' value='$safe_user'>";
+                $detail .= "<input type='hidden' name='action' value='$action'>";
+                $detail .= "<input type='submit' value=\"" . &html_escape($text{"manage_$action"}) . "\">";
+                $detail .= "</form>";
             }
-            print "</p>\n";
+            $detail .= "</p>\n";
 
+            # Health-Warnungen
             if (@$warnings) {
-                print "<p><b>\x{26A0}\x{FE0F} $text{health_warn_header}</b></p><ul>\n";
+                $detail .= "<p><b>\x{26A0}\x{FE0F} $text{health_warn_header}</b></p><ul>\n";
                 for my $w (@$warnings) {
-                    print "<li>" . &html_escape($w) . "</li>\n";
+                    $detail .= "<li>" . &html_escape($w) . "</li>\n";
                 }
-                print "</ul>\n";
+                $detail .= "</ul>\n";
             }
 
-            print "</td></tr>\n";
+            print "<tr><td colspan='6'>$detail</td></tr>\n";
         }
     }
-    print "</table>\n";
+
+    print &ui_columns_end();
 }
 
 &footer('', '');
