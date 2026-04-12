@@ -68,6 +68,7 @@ sub get_server_owners {
             push @owners, $u->{'name'} if grep { $_ eq $game_user || $_ eq '*' } @s;
         }
     };
+    warn "get_server_owners failed: $@" if $@;
     return sort @owners;
 }
 
@@ -78,6 +79,7 @@ sub list_webmin_users {
         foreign_require('acl', 'acl-lib.pl');
         @names = map { $_->{'name'} } acl::list_users();
     };
+    warn "list_webmin_users failed: $@" if $@;
     return sort @names;
 }
 

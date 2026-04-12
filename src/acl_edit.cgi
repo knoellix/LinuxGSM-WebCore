@@ -13,14 +13,18 @@ require './lib/instance.pl';
 our (%text, %in, %access, $module_name);
 &ReadParse(\%in);
 
-# Nur User mit can_create dürfen ACLs anderer User bearbeiten
-&can_create() or &error($text{'err_access_denied'});
+# Nur echter Admin (servers=*) darf ACLs anderer User bearbeiten
+my @_srv = &allowed_servers();
+(&can_create() && grep { $_ eq '*' } @_srv) or &error($text{'err_access_denied'});
 
 my $edit_user = &sanitize_input($in{'user'} // '');
 $edit_user or &error($text{'err_invalid_input'});
+my %valid_wbm = map { $_ => 1 } &list_webmin_users();
+$valid_wbm{$edit_user} or &error($text{'err_invalid_input'});
 
 if ($ENV{REQUEST_METHOD} eq 'POST') {
     &check_referer(1);
+    $valid_wbm{$edit_user} or &error($text{'err_invalid_input'});
 
     my %acl;
     $acl{'can_create'} = $in{'can_create'} ? 1 : 0;
@@ -34,7 +38,7 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
                 : defined($in{'servers'})         ? ($in{'servers'})
                 :                                   ();
         # Nur gültige Unix-Usernamen durchlassen
-        @sel = grep { /^\w[\w-]*$/ } @sel;
+        @sel = grep { /^[a-z_][a-z0-9_-]{0,30}$/ } @sel;
         $acl{'servers'} = join(' ', @sel);
     }
 

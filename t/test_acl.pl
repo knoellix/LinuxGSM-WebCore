@@ -29,7 +29,7 @@ sub list_instances {
 
 require 'src/lib/acl.pl';
 
-print "1..11\n";
+print "1..12\n";
 
 # 1. can_create: false by default
 {
@@ -124,4 +124,13 @@ print "1..11\n";
     $count == 1
         ? pass('grant_server_access writes once, no duplicate')
         : fail("grant_server_access writes once, no duplicate (count=$count)");
+}
+
+# 12. list_managed_instances: wildcard gibt alle zurück
+{
+    %access = (servers => '*');
+    my @inst = &list_managed_instances();
+    scalar(@inst) == 2
+        ? pass('list_managed_instances returns all with wildcard')
+        : fail("list_managed_instances returns all with wildcard (got " . scalar(@inst) . ")");
 }
