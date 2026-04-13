@@ -6,14 +6,13 @@ do '../web-lib.pl';
 do '../ui-lib.pl';
 &init_config();
 
-$gconfig{'charset'} = 'utf-8';
-
 require './lib/core.pl';
 require './lib/instance.pl';
 require './lib/firewall.pl';
 require './lib/acl.pl';
 
-our (%text, %config, %in, %access);
+our (%text, %config, %in, %access, %gconfig);
+$gconfig{'charset'} = 'utf-8';
 &ReadParse(\%in);
 
 # Firewall-Aktionen verarbeiten (vor Header, da redirect möglich)

@@ -6,14 +6,13 @@ do '../web-lib.pl';
 do '../ui-lib.pl';
 &init_config();
 
-$gconfig{'charset'} = 'utf-8';
-
 require './lib/core.pl';
 require './lib/instance.pl';
 require './lib/firewall.pl';
 require './lib/acl.pl';
 
-our (%text, %config, %in);
+our (%text, %config, %in, %gconfig);
+$gconfig{'charset'} = 'utf-8';
 &ReadParse(\%in);
 
 my $instance_id = &sanitize_input($in{'instance_id'} || $in{'user'} || '');
