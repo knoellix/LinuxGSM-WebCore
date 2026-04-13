@@ -141,7 +141,7 @@ sub get_instance {
     my $script_dir  = $script_path;
     $script_dir =~ s|/[^/]+$||;
     my %cfg     = _parse_lgsm_config($script_dir, $script_name);
-    my $status  = _detect_status($home, $user, $script_name);
+    my $status  = _detect_status($script_dir, $user, $script_name);
     my $port    = $cfg{port} // 0;
     my $fw_open = &firewall_status($port);
     my $warns   = _check_instance_health($user, $script_dir, $shell, $script_path, \%cfg);

@@ -12,7 +12,7 @@ require './lib/firewall.pl';
 require './lib/acl.pl';
 
 our (%text, %config, %in, %access, %gconfig);
-$gconfig{'charset'} = 'utf-8';
+$main::gconfig{'charset'} = 'utf-8';
 &ReadParse(\%in);
 
 # Firewall-Aktionen verarbeiten (vor Header, da redirect möglich)

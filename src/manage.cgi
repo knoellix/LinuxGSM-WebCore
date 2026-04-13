@@ -12,7 +12,7 @@ require './lib/firewall.pl';
 require './lib/acl.pl';
 
 our (%text, %config, %in, %gconfig);
-$gconfig{'charset'} = 'utf-8';
+$main::gconfig{'charset'} = 'utf-8';
 &ReadParse(\%in);
 
 my $instance_id = &sanitize_input($in{'instance_id'} || $in{'user'} || '');
