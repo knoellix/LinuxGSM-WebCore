@@ -5,7 +5,7 @@ use warnings;
 do '../web-lib.pl';
 do '../ui-lib.pl';
 &init_config();
-our %gconfig;
+
 $gconfig{'charset'} = 'utf-8';
 
 require './lib/core.pl';
