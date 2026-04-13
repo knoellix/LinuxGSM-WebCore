@@ -35,7 +35,7 @@ sub system_logged {
     @logged_commands = ();
     run_server_action('gamesrv', 'start', 'gamesrv', '/srv/game dir');
     like($logged_commands[0], qr/su -s \/bin\/bash -c/, 'run_server_action uses su boundary');
-    like($logged_commands[0], qr/cd \\/srv\\/game\\ dir/, 'run_server_action quotes script dir for shell safety');
+    like($logged_commands[0], qr{cd \\/srv\\/game\\ dir}, 'run_server_action quotes script dir for shell safety');
 
     $last_error = '';
     my $ok = eval { run_server_action('gamesrv', 'shutdown'); 1 };
