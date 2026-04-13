@@ -61,7 +61,7 @@ close $fh;
 my %cfg2 = _parse_lgsm_config($dir2, 'cs');
 is($cfg2{port}, '27015', 'works without common.cfg');
 
-# Test 6: kein config dir — leerer Hash zurück
+# Test 6: kein config dir — nur _has_user_config=0, keine game keys
 my $dir3 = tempdir(CLEANUP => 1);
 my %cfg3 = _parse_lgsm_config($dir3, 'unknown');
-is(scalar keys %cfg3, 0, 'missing config dir returns empty hash');
+is($cfg3{_has_user_config}, 0, 'missing config dir -> _has_user_config is 0');
