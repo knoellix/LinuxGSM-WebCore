@@ -25,14 +25,14 @@ if ($in{'action'}) {
 
     if ($action eq 'fw_open') {
         my $port = int($inst->{'port'});
-        firewall_open_port($port, 'tcp');
-        firewall_open_port($port, 'udp');
+        &firewall_open_port($port, 'tcp');
+        &firewall_open_port($port, 'udp');
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id));
     }
     elsif ($action eq 'fw_close') {
         my $port = int($inst->{'port'});
-        firewall_close_port($port, 'tcp');
-        firewall_close_port($port, 'udp');
+        &firewall_close_port($port, 'tcp');
+        &firewall_close_port($port, 'udp');
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id));
     }
     elsif ($action eq 'fix_config') {
