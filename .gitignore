@@ -27,3 +27,10 @@ packaging/rpm/BUILDROOT/
 # Build output
 dist/
 tmp/
+
+# Agent planning artifact
+IMPLEMENTATION_PLAN.md
+
+# Local verify artifacts
+verify.log
+*.verify.log
