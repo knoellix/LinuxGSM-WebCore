@@ -19,7 +19,7 @@
     3. `&init_config();`
 - **Security-Boilerplate:**
     - `our (%text, %config, %in, %gconfig);` NACH den `require`-Zeilen — NICHT vorher, sonst schlägt `use strict` fehl.
-    - `$gconfig{'charset'} = 'utf-8';` direkt nach der `our`-Deklaration für korrekte Umlaut-Darstellung.
+    - `$main::gconfig{'charset'} = 'utf-8';` — `main::` Präfix ist Pflicht! Webmin's `header()` läuft in `package main`, nicht im Modul-Package.
     - `&ReadParse(\%in);` (Global verfügbar machen).
     - KEIN `check_referer()` — existiert in dieser Webmin-Version nicht (500-Fehler). CSRF-Schutz läuft über `ReadParse`.
     - `html_escape()` auf **alle** dynamischen Daten vor dem HTML-Output.
