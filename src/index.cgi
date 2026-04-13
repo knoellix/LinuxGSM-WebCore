@@ -73,8 +73,8 @@ if (!@instances) {
 
         my $status_text = &html_escape($text{"status_$status"} // $status);
         my $health_icon = @$warnings
-            ? "\x{26A0}\x{FE0F} (" . scalar(@$warnings) . ")"
-            : "\x{2705}";
+            ? "&#x26A0; (" . scalar(@$warnings) . ")"
+            : "&#x2705;";
         my $safe_id   = &html_escape($id);
         my $safe_user = &html_escape($user);
         my $toggle_url  = $expanding ? "index.cgi" : "index.cgi?expand=$safe_id";
@@ -93,8 +93,8 @@ if (!@instances) {
             my $port    = int($inst->{'port'});
             my $fw_open = $inst->{'fw_open'};
             my $fw_icon = $fw_open
-                ? "\x{2705} $text{fw_status_open}"
-                : "\x{274C} $text{fw_status_closed}";
+                ? "&#x2705; $text{fw_status_open}"
+                : "&#x274C; $text{fw_status_closed}";
             my $fw_action = $fw_open ? 'fw_close' : 'fw_open';
             my $fw_btn    = $fw_open ? $text{fw_close_btn} : $text{fw_open_btn};
 
@@ -122,7 +122,7 @@ if (!@instances) {
 
             # Health-Warnungen
             if (@$warnings) {
-                $detail .= "<p><b>\x{26A0}\x{FE0F} $text{health_warn_header}</b></p><ul>\n";
+                $detail .= "<p><b>&#x26A0; $text{health_warn_header}</b></p><ul>\n";
                 for my $w (@$warnings) {
                     $detail .= "<li>" . &html_escape($w) . "</li>\n";
                 }

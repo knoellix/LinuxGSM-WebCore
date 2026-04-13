@@ -38,10 +38,15 @@ if ($in{'action'}) {
         my $script_dir = $inst->{'script'};
         $script_dir =~ s|/[^/]+$||;
         my $config_file = "$script_dir/lgsm/config-lgsm/common.cfg";
-        &error("Invalid config path") unless $config_file =~ m|^/[a-zA-Z0-9_./-]+/lgsm/config-lgsm/common\.cfg$|;
-        my $safe_port   = int($inst->{'port'});
-        my $safe_game   = $inst->{'game'};
+        &error("Invalid config path") unless $config_file =~ m|^/[a-zA-Z0-9_./()\-]+/lgsm/config-lgsm/common\.cfg$|;
+
+        # Use form-provided values; fall back to detected values only if present
+        my $safe_port = int($in{'port'} || $inst->{'port'} || 0);
+        my $safe_game = $in{'gamename'} // $inst->{'game'} // '';
         $safe_game =~ s/[^a-zA-Z0-9 _-]//g;
+
+        $safe_port > 0  or &error($text{'err_invalid_input'});
+        length($safe_game) or &error($text{'err_invalid_input'});
 
         # Ensure lgsm/config-lgsm/ exists
         &system_logged("su -s /bin/bash -c \"mkdir -p \Q$script_dir\E/lgsm/config-lgsm\" $unix_user");
@@ -87,11 +92,11 @@ my $port = int($inst->{'port'});
 my $fw_open = &firewall_status($port);
 my ($fw_status_icon, $fw_btn_action, $fw_btn_label);
 if ($fw_open) {
-    $fw_status_icon = "\x{2705} offen";
+    $fw_status_icon = "&#x2705; offen";
     $fw_btn_action  = 'fw_close';
     $fw_btn_label   = $text{'fw_close_btn'};
 } else {
-    $fw_status_icon = "\x{274C} geschlossen";
+    $fw_status_icon = "&#x274C; geschlossen";
     $fw_btn_action  = 'fw_open';
     $fw_btn_label   = $text{'fw_open_btn'};
 }
@@ -123,7 +128,7 @@ if (!$cfg{_has_user_config}) {
 }
 
 if (@warnings) {
-    print "<h3>\x{26A0}\x{FE0F} $text{'health_warn_header'}</h3>\n";
+    print "<h3>&#x26A0; $text{'health_warn_header'}</h3>\n";
     print "<ul>\n";
     for my $w (@warnings) {
         print "<li>" . &html_escape($w) . "</li>\n";
@@ -131,11 +136,17 @@ if (@warnings) {
     print "</ul>\n";
 }
 
-# Quick-Fix button (only if no user config)
+# Quick-Fix form (only if no user config)
 if (!$cfg{_has_user_config}) {
+    my $cur_port = int($inst->{'port'}) || '';
+    my $cur_game = ($inst->{'game'} // 'unknown') eq 'unknown' ? '' : &html_escape($inst->{'game'});
     print &ui_form_start("manage.cgi", "post");
     print &ui_hidden("instance_id", $safe_id);
     print &ui_hidden("action", "fix_config");
+    print &ui_table_start($text{'manage_fix_config_btn'}, undef, 2);
+    print &ui_table_row($text{'manage_port'}, &ui_textbox('port',     $cur_port, 10));
+    print &ui_table_row($text{'manage_game'}, &ui_textbox('gamename', $cur_game, 30));
+    print &ui_table_end();
     print &ui_submit($text{'manage_fix_config_btn'});
     print &ui_form_end();
 }
