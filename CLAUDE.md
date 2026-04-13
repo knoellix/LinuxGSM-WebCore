@@ -1,61 +1,65 @@
-# Projekt: LinuxGSM-WebCore
-**Ziel:** Ein modulares Webmin-Plugin zur Verwaltung von Game-Servern via LinuxGSM (LGSM).
+# Projekt: LinuxGSM-WebCore (Technical Manifest)
 
-## 1. System-Architektur & Sicherheit (Golden Rules)
-- **Native-First:** Es werden primär vorhandene Webmin-Funktionen und APIs genutzt (z.B. `useradmin`, `status`). Eigene Funktionen werden nur geschrieben, wenn Webmin keine Lösung bietet.
-- **Isolation-First:** Jede Server-Instanz erhält einen eigenen System-User (z.B. `mc-survival`).
-- **No-Shell Policy für Game-User:** Diese User erhalten `/usr/sbin/nologin` als Shell. Ein SSH-Login ist verboten.
-- **Root-Sperre:** Das Plugin führt Game-Binaries niemals als `root` aus (Nutzung von `su -s /bin/bash -c ...`).
-- **Modulare Struktur:** Webmin fungiert als GUI; die Logik liegt bei LinuxGSM.
+## 0. Advisor & Agent Workflow
+- **Architect Mode (Advisor):** Vor jeder Code-Änderung erstellt der Agent einen `IMPLEMENTATION_PLAN.md`. Er prüft Abhängigkeiten und System-Ressourcen (Ports/User) via Superpowers.
+- **Executor Mode (Skills):** Der Agent nutzt `system_logged` für Shell-Aktionen und validiert Perl-Code (`perl -c`) vor dem Speichern.
+- **Verification:** Nach jeder Änderung wird ein Test-Stub in `t/` ausgeführt oder die Syntax-Integrität bestätigt.
 
-## 2. Verhaltens-Codex & Integrität
-- **Keine Halluzinationen:** Der Agent darf niemals Befehle oder Fakten erfinden.
-- **Recherche-Pflicht:** Bei Unsicherheit MUSS das Web genutzt werden.
-- **Ehrlichkeit:** Absolute Transparenz gegenüber dem Benutzer.
+## 1. System-Architektur & Sicherheit
+- **Isolation:** Jede Instanz erhält einen eigenen System-User (Shell: `/usr/sbin/nologin`).
+- **Privilege Separation:** Game-Binaries laufen via `su -s /bin/bash -c ...`. Niemals als `root`.
+- **SFTP-Chroot:** Integration von `internal-sftp` in `/etc/ssh/sshd_config`. Separates SFTP-Passwort (kein Shell-Zugriff).
+- **Firewall:** Automatische Freigabe via Webmin-Firewall-API (UFW/Iptables).
 
-## 3. Tech-Stack & Lokalisierung
-- **Sprachen:** Backend: Perl (WebminCore); Interaktion: Bash.
-- **UI:** Deutsch; **Code/Kommentare:** Englisch.
-- **Pfade:** Plugin unter `/usr/share/webmin/linuxgsm-webcore/`; Games unter `/home/[user]/`.
+## 2. Webmin CGI-Standards & "Lessons Learned" (CRITICAL)
+- **Namespace-Isolation:** Webmin führt CGIs in `package $modulename` aus. Funktionen sind NICHT automatisch verfügbar!
+- **Header-Pflicht (Fix):** Jede Datei MUSS diese Reihenfolge einhalten, sonst crasht das Authentic Theme (ui_help fehlt):
+    1. `do '../web-lib.pl';`
+    2. `do '../ui-lib.pl';`
+    3. `&init_config();`
+- **Security-Boilerplate:**
+    - `our (%text, %config, %in, %gconfig);` NACH den `require`-Zeilen — NICHT vorher, sonst schlägt `use strict` fehl.
+    - `$gconfig{'charset'} = 'utf-8';` direkt nach der `our`-Deklaration für korrekte Umlaut-Darstellung.
+    - `&ReadParse(\%in);` (Global verfügbar machen).
+    - KEIN `check_referer()` — existiert in dieser Webmin-Version nicht (500-Fehler). CSRF-Schutz läuft über `ReadParse`.
+    - `html_escape()` auf **alle** dynamischen Daten vor dem HTML-Output.
+- **UI-Framework:** Ausschließlich `ui_*-Funktionen` nutzen. Keine hardcodierten Styles/Farben.
 
-## 4. Kern-Logik (Backend)
-- **Instanz-Erkennung:** Identifikation via `/etc/passwd`.
-- **Provisionierung:** User-Anlage mit Suffix-Support, Port-Kollisionsprüfung und LGSM-Installation.
-- **Engine-Switch:** Funktion zum Tausch von Server-Executables (z.B. Vanilla -> Paper).
-- **Firewall:** Automatische Portfreigabe via `ufw` oder `iptables` (Webmin-API nutzen).
+## 3. Kern-Logik (Backend & UI)
+- **Instanz-Erkennung:** Identifikation via `/etc/passwd` und Suche nach `linuxgsm.sh` in `/home/`.
+- **Provisionierung:** User-Anlage (Suffix-Support) -> Port-Check -> LGSM-Install -> Firewall-Entry.
+- **Live-Konsole:** Echtzeit-Log-Streaming via `tail`-Simulation im Webmin-Interface.
+- **Monitoring:** Integration in das Webmin-Status-Modul. 3-Stufen-Eskalation (Restart -> Mail).
 
-## 5. Datei-Zugriff & SFTP-Management
-- **SFTP-Only User:** Jeder Game-User erhält ein separates Passwort NUR für SFTP.
-- **Sicherheits-Konfiguration:** Integration von `internal-sftp` in die SSH-Config (Chroot auf Home-Verzeichnis).
-- **GUI-Anzeige:** Host, Port, User und das separate SFTP-Passwort werden im Dashboard angezeigt.
+## 4. Coding Style & Lokalisierung
+- **Sprachen:** UI: **Deutsch**; Code/Kommentare: **Englisch**.
+- **Dynamik:** Keine hartkodierten Pfade. Strikte Sanitisierung aller Inputs.
+- **Atomarität:** Rollback-Logik bei Fehlern während der Installation oder User-Anlage.
+- **Commit-Stil:** 
+  1. Verwende meine lokale Git-Config als Haupt-Autor.
+  2. Füge am Ende jeder Commit-Message folgende Zeile mit zwei Leerzeilen Abstand hinzu:
+     
+     Co-authored-by: Claude <claude-code@anthropic.com>
 
-## 6. UI & Dashboard (Frontend)
-- **Smart-Connect:** DNS-Validierung für Wunsch-Domains (z.B. `play.knoellix.net`) mit Fallback auf die Server-IP.
-- **Steuerungs-Zentrale:** Buttons für `start`, `stop`, `restart`, `monitor`, `update`.
-- **Live-Konsole:** Log-Anzeige via `tail` im Webmin-Fenster.
+## 5. Test & Build System
+- **Stubs:** `t/stubs.pl` definiert notwendige Webmin-Funktionen für Standalone-Tests.
+- **Testing:** Bash-Tests nutzen `pass()`/`fail()` (TAP). Ausführung via `perl t/test_<name>.pl`.
+- **Build:** `bash scripts/build.sh` erstellt `.wbm` Datei (Modul-Ordner an Tar-Wurzel).
+- **Distro-Support:** `module.info` ohne `os_support=linux`, da dies die Installation auf Debian blockiert.
 
-## 7. Automatisierung & Selbstheilung (Monitoring)
-- **Webmin-Monitor Integration:** Per Knopfdruck wird ein Eintrag im Webmin-Status-Modul erstellt.
-- **Restart-Logik:** Automatischer Restart-Befehl (`su - [user] -c "./gameserver start"`) bei Downtime.
-- **Eskalation:** Erst nach dem 3. fehlgeschlagenen Restart-Versuch erfolgt eine Benachrichtigung per E-Mail.
-- **Cron-Jobs:** Verwaltung von Updates und LGSM-Checks via User-Crontabs.
+## 6. Projekt-Layout & Speicherorte
+- **Wiki:** `/mnt/Lager/github/LinuxGSM-WebCore.wiki/` (Separates Repo).
+- **Build-Artefakte:** `dist/` und `tmp/` sind gitignored.
 
-## 8. Coding Style
-- **Dynamik & Validierung:** Keine hartkodierten Pfade; strikte Sanitization aller Eingaben.
-- **Atomarität:** Rollback-Logik bei Fehlern während der Installation.
+## 14. Webmin ACL-Editor (acl_security.pl)
+- **NICHT `acl_edit.cgi`:** Webmin's ACL-Editor nutzt ausschließlich `acl_security.pl` — `acl_edit.cgi` wird nie aufgerufen.
+- **Zwei Pflicht-Funktionen:** `acl_security_form(\%maccess)` (gibt `ui_table_row`-Felder aus, Tabelle schon offen) und `acl_security_save(\%maccess, \%in)` (speichert POST-Werte).
+- **Dritte Pflicht-Funktion:** `load_theme_library()` — wird von `edit_acl.cgi` vor `acl_security_form` aufgerufen, muss als leerer Stub definiert sein.
+- **Namespace-Import:** `acl_security.pl` läuft via `foreign_require` in `package linuxgsm_webcore`. `BEGIN { push(@INC, ".."); } use WebminCore;` importiert alle `ui_*`-Funktionen in das aktuelle Package. Kein `main::` Präfix nötig.
+- **Radio statt Checkbox:** ACL-Felder mit Ja/Nein nutzen `ui_radio('name', $val, [[1, $yes],[0, $no]])` — so wie andere Webmin-Module es machen.
+- **Stale ACL-Files:** Wenn ein `.acl`/`.gacl`-File existiert (z.B. aus einem schlechten früheren Save), überschreibt es `defaultacl` auch wenn Keys fehlen. ACL-Funktionen deshalb mit `!defined($access{'key'}) ? 1 : $access{'key'}` absichern.
 
-## 9. Webmin CGI-Pflichten
-- **Jede CGI-Datei:** `&ReadParse(\%in); &error_if_root();` — immer global, nicht nur im POST-Block.
-- **Jeder POST-Handler:** `&check_referer(1);` als erste Anweisung vor jeder Logik.
-- **Alle Ausgaben:** `html_escape()` auf alle Instanz-Daten (user, game, port, warnings) vor HTML-Output — nicht nur auf CGI-Inputs.
-- **Action-Whitelist:** Jede eigene Action-Verarbeitung explizit gegen Whitelist prüfen, nicht nur `sanitize_input`.
+## 15. Webmin GitHub-Recherche
+- **Bei Unsicherheit GitHub prüfen:** Wenn unklar ist wie ein Webmin-Mechanismus funktioniert, zuerst `webmin/webmin` auf GitHub durchsuchen. Echte Modul-Beispiele zeigen das korrekte Pattern.
+- Besonders hilfreich: `acl/edit_acl.cgi` und `acl/save_acl.cgi` für den ACL-Editor-Flow, `net/acl_security.pl` als Referenz-Implementierung.
 
-## 10. Tests & Build
-- **Test-Pattern (Bash):** `pass()/fail()` TAP-Helper-Funktionen — kein `test_*()` Funktionsformat.
-- **Webmin-Stubs:** `t/stubs.pl` muss `html_escape`, `check_referer`, `error`, `read_file`, `system_logged` definieren.
-- **WBM-Format:** `tar czf dist/name.wbm -C tmp/ linuxgsm-webcore/` — Modul-Dir muss an der Tar-Wurzel liegen.
-- **Tests ausführen:** `perl t/test_<name>.pl` direkt (kein `prove` — findet die Stubs sonst nicht).
-
-## 11. Projekt-Layout
-- **Wiki:** Liegt in `/mnt/Lager/github/LinuxGSM-WebCore.wiki/` (separates Git-Repo für GitHub Wiki).
-- **Artefakte:** `dist/` und `tmp/` sind gitignored — Build via `bash scripts/build.sh`.
