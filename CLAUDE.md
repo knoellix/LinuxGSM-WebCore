@@ -24,6 +24,7 @@ Dieses Dokument trennt verbindliche Projektregeln (Policy) von Webmin-spezifisch
 ## 3. Code- und UI-Standards (verbindlich)
 - **Sprache:** UI-Texte auf Deutsch, Code und Kommentare auf Englisch.
 - **UI-Framework:** Nur `ui_*`-Funktionen verwenden; keine hardcodierten Styles/Farben.
+- **Webmin-Native-First:** Bei Webmin-basierten Anforderungen immer zuerst native Webmin-Funktionen, Libraries und etablierte Core-Patterns nutzen. Eigene Workarounds oder Custom-Implementierungen nur, wenn es keine native Option gibt oder diese nachweislich nicht ausreicht.
 - **Pfade:** Keine hartkodierten projektfremden Pfade; dynamisch und robust aufloesen.
 - **Atomaritaet:** Bei Fehlern in User-Anlage/Installation verpflichtende Rollback-Logik.
 - **Commit-Stil:**
