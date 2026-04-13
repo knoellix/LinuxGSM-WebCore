@@ -39,9 +39,13 @@ if ($in{'action'}) {
         my $script_dir = $inst->{'script'};
         $script_dir =~ s|/[^/]+$||;
         my $config_file = "$script_dir/lgsm/config-lgsm/common.cfg";
+        &error("Invalid config path") unless $config_file =~ m|^/[a-zA-Z0-9_./-]+/lgsm/config-lgsm/common\.cfg$|;
         my $safe_port   = int($inst->{'port'});
         my $safe_game   = $inst->{'game'};
         $safe_game =~ s/[^a-zA-Z0-9 _-]//g;
+
+        # Ensure lgsm/config-lgsm/ exists
+        &system_logged("su -s /bin/bash -c \"mkdir -p \Q$script_dir\E/lgsm/config-lgsm\" $unix_user");
 
         open(my $fh, '>', $config_file) or &error("Cannot write config: $!");
         print $fh "port=\"$safe_port\"\n";
@@ -69,7 +73,7 @@ my $safe_id = &html_escape($instance_id);
 my $script_dir_for_cfg = $inst->{'script'};
 $script_dir_for_cfg =~ s|/[^/]+$||;
 my $script_name_for_cfg = (split('/', $inst->{'script'}))[-1];
-my %cfg = _parse_lgsm_config($script_dir_for_cfg, $script_name_for_cfg);
+my %cfg = &_parse_lgsm_config($script_dir_for_cfg, $script_name_for_cfg);
 
 # Server-Info table
 print &ui_table_start($text{'manage_title'}, "width=100%", 2);
@@ -81,7 +85,7 @@ print &ui_table_end();
 
 # Firewall section
 my $port = int($inst->{'port'});
-my $fw_open = firewall_port_is_open($port, 'tcp');
+my $fw_open = &firewall_status($port);
 my ($fw_status_icon, $fw_btn_action, $fw_btn_label);
 if ($fw_open) {
     $fw_status_icon = "\x{2705} offen";
