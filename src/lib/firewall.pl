@@ -2,8 +2,6 @@
 use strict;
 use warnings;
 
-sub system_logged;
-
 # Open a UDP+TCP port for a game server.
 sub firewall_open_port {
     my ($port, $proto) = @_;

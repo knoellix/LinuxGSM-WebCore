@@ -4,4 +4,3 @@ desc_de=LinuxGSM Game-Server-Verwaltung
 version=0.1.0
 depends=acl useradmin
 category=servers
-os_support=linux

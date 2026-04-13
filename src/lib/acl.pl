@@ -13,26 +13,44 @@ use warnings;
 our (%access, $module_name);
 
 # Returns 1 if current Webmin user may create new game servers.
-sub can_create { return $access{'can_create'} ? 1 : 0 }
+# Defaults to 1 if the key is absent (e.g. stale ACL file missing the key).
+sub can_create { return !defined($access{'can_create'}) ? 1 : ($access{'can_create'} ? 1 : 0) }
 
 # Returns 1 if current Webmin user may run the scanner.
-sub can_scan { return $access{'can_scan'} ? 1 : 0 }
+# Defaults to 1 if the key is absent.
+sub can_scan { return !defined($access{'can_scan'}) ? 1 : ($access{'can_scan'} ? 1 : 0) }
 
 # Returns list of Unix usernames the current user may manage.
-# Returns the single-element list ('*') for unrestricted access.
+# Returns ('*') for unrestricted access, including when the key is absent
+# (stale ACL file written before the servers field was introduced).
 sub allowed_servers {
-    my $s = $access{'servers'} // '';
+    return ('*') unless defined $access{'servers'};
+    my $s = $access{'servers'};
     $s =~ s/^\s+|\s+$//g;
-    return ('*') if $s eq '*';
+    return ('*') if $s eq '' || $s eq '*';
     return grep { /\S/ } split /\s+/, $s;
 }
 
-# Returns 1 if the current user may manage the given Unix game user.
-sub user_can_manage {
+# Returns 1 if the current user has unrestricted (admin-level) access.
+sub is_admin {
+    return 1 if grep { $_ eq '*' } allowed_servers();
+    return 0;
+}
+
+# Returns the SFTP unix username associated with a game server, or undef.
+# Convention: <game_user>-ftp — no extra storage needed.
+sub get_sftp_user {
     my ($game_user) = @_;
+    my $ftp_user = "${game_user}-ftp";
+    return (getpwnam($ftp_user)) ? $ftp_user : undef;
+}
+
+# Returns 1 if the current user may manage the given instance (by script ID).
+sub user_can_manage {
+    my ($script_name) = @_;
     my @allowed = allowed_servers();
     return 1 if grep { $_ eq '*' } @allowed;
-    return scalar grep { $_ eq $game_user } @allowed;
+    return scalar grep { $_ eq $script_name } @allowed;
 }
 
 # Returns all instances the current user may manage.
@@ -40,24 +58,25 @@ sub user_can_manage {
 sub list_managed_instances {
     my @all = &list_instances();
     return @all if grep { $_ eq '*' } (allowed_servers());
-    return grep { user_can_manage($_->{'user'}) } @all;
+    return grep { user_can_manage($_->{'id'}) } @all;
 }
 
-# Grants $webmin_user access to $game_user by appending to their servers list.
-# No-op if already has access (including wildcard). Called by wizard after install.
+# Grants $webmin_user access to $script_name by appending to their servers list.
+# No-op if already has access (including wildcard). Called by wizard/scan after install.
 sub grant_server_access {
-    my ($webmin_user, $game_user) = @_;
+    my ($webmin_user, $script_name) = @_;
     my %acl = get_module_acl($webmin_user, $module_name);
     my @servers = grep { /\S/ } split /\s+/, ($acl{'servers'} // '');
-    return if grep { $_ eq $game_user || $_ eq '*' } @servers;
-    push @servers, $game_user;
+    return if grep { $_ eq $script_name || $_ eq '*' } @servers;
+    push @servers, $script_name;
     $acl{'servers'} = join(' ', @servers);
     save_module_acl(\%acl, $webmin_user, $module_name);
 }
 
-# Returns sorted list of Webmin usernames that have access to $game_user.
+# Returns sorted list of Webmin usernames explicitly assigned to $script_name.
+# Users with servers=* (admins) are excluded — they have implicit access.
 sub get_server_owners {
-    my ($game_user) = @_;
+    my ($script_name) = @_;
     my @owners;
     eval {
         foreign_require('acl', 'acl-lib.pl');
@@ -65,7 +84,8 @@ sub get_server_owners {
             next unless ref($u) eq 'HASH';
             my %acl = get_module_acl($u->{'name'}, $module_name);
             my @s = grep { /\S/ } split /\s+/, ($acl{'servers'} // '');
-            push @owners, $u->{'name'} if grep { $_ eq $game_user || $_ eq '*' } @s;
+            # Only explicit assignments — wildcard users are invisible here
+            push @owners, $u->{'name'} if grep { $_ eq $script_name } @s;
         }
     };
     warn "get_server_owners failed: $@" if $@;

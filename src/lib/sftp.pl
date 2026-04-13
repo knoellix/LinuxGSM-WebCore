@@ -2,9 +2,6 @@
 use strict;
 use warnings;
 
-sub sanitize_input;
-sub system_logged;
-
 my $SSHD_CONFIG = '/etc/ssh/sshd_config';
 my $SFTP_MARKER = '# LinuxGSM-WebCore SFTP BEGIN';
 my $SFTP_END    = '# LinuxGSM-WebCore SFTP END';

@@ -4,9 +4,6 @@ use warnings;
 
 our (%text, $module_root);
 
-sub sanitize_input;
-sub system_logged;
-
 # Validate provisioning parameters. Returns error string or undef on success.
 sub validate_provision {
     my ($user, $game, $port) = @_;

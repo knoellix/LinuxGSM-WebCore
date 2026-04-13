@@ -15,34 +15,55 @@ our (%text, %in, %access);
 
 &can_scan() or &error($text{'err_access_denied'});
 
-# --- POST: assign owner ---
+# --- POST handler ---
 if ($ENV{REQUEST_METHOD} eq 'POST') {
-    &check_referer(1);
-    my $game_user   = &sanitize_input($in{'game_user'});
-    my $webmin_user = &sanitize_input($in{'webmin_user'});
+    my $action = &sanitize_input($in{'action'} || 'assign');
 
-    $game_user   or &error($text{'err_invalid_input'});
-    $webmin_user or &error($text{'err_invalid_input'});
+    if ($action eq 'assign') {
+        my $instance_id = &sanitize_input($in{'instance_id'});
+        my $webmin_user = &sanitize_input($in{'webmin_user'});
 
-    # Validate both exist
-    &get_instance($game_user) or &error($text{'err_not_found'});
-    my %valid = map { $_ => 1 } &list_webmin_users();
-    $valid{$webmin_user} or &error($text{'err_invalid_input'});
+        $instance_id or &error($text{'err_invalid_input'});
+        $webmin_user or &error($text{'err_invalid_input'});
 
-    &grant_server_access($webmin_user, $game_user);
-    &redirect('scan.cgi');
+        &get_instance($instance_id) or &error($text{'err_not_found'});
+        my %valid = map { $_ => 1 } &list_webmin_users();
+        $valid{$webmin_user} or &error($text{'err_invalid_input'});
+
+        &grant_server_access($webmin_user, $instance_id);
+        &redirect('scan.cgi');
+    }
+
+    if ($action eq 'register') {
+        my $reg_user   = &sanitize_input($in{'reg_user'});
+        my $reg_script = $in{'reg_script'} // '';
+        $reg_script =~ s|[^a-zA-Z0-9_./()\-]||g;
+        my $reg_wbuser = &sanitize_input($in{'reg_webmin_user'} // '');
+
+        $reg_user   or &error($text{'err_invalid_input'});
+        $reg_script or &error($text{'err_invalid_input'});
+
+        getpwnam($reg_user) or &error($text{'err_not_found'});
+        -f $reg_script      or &error($text{'err_script_not_found'});
+
+        my $script_id = (split('/', $reg_script))[-1];
+        &register_instance($script_id, $reg_user, $reg_script);
+        &grant_server_access($reg_wbuser, $script_id) if $reg_wbuser;
+        &redirect('scan.cgi');
+    }
 }
 
-# --- GET: show all instances with ownership info ---
+# --- GET: show all instances + registration form ---
 &header($text{'scan_title'}, '');
-print "<h3>$text{'scan_title'}</h3>\n";
 
-my @instances = &list_instances();
+my @instances    = &list_instances();
 my @webmin_users = &list_webmin_users();
-my @wbm_opts = map { [$_, $_] } @webmin_users;
+my @wbm_opts     = map { [$_, $_] } @webmin_users;
 
 print &ui_columns_header([
     $text{'index_col_user'},
+    $text{'scan_col_script'},
+    $text{'scan_col_ftp'},
     $text{'index_col_game'},
     $text{'index_col_port'},
     $text{'scan_col_owner'},
@@ -50,26 +71,33 @@ print &ui_columns_header([
 ]);
 
 foreach my $inst (@instances) {
-    my $user  = $inst->{'user'};
-    my @owners = &get_server_owners($user);
+    my $id   = $inst->{'id'};
+    my $user = $inst->{'user'};
 
+    my $script_cell = &html_escape($inst->{'script'});
+
+    my $sftp      = &get_sftp_user($user);
+    my $sftp_cell = $sftp ? &html_escape($sftp) : "<i>$text{'scan_no_ftp'}</i>";
+
+    my @owners = &get_server_owners($id);
     my $owner_cell = @owners
-        ? join(', ', map { &html_escape($_) } @owners)
+        ? '<ul style="margin:0;padding-left:1.2em">' .
+          join('', map { '<li>' . &html_escape($_) . '</li>' } @owners) .
+          '</ul>'
         : "<i>$text{'scan_unowned'}</i>";
 
-    my $assign_cell = '';
-    unless (@owners) {
-        $assign_cell .= &ui_form_start('scan.cgi', 'post');
-        $assign_cell .= &ui_hidden('game_user', &html_escape($user));
-        $assign_cell .= "$text{'scan_assign_label'} ";
-        $assign_cell .= &ui_select('webmin_user', '', \@wbm_opts);
-        $assign_cell .= ' ';
-        $assign_cell .= &ui_submit($text{'scan_assign'});
-        $assign_cell .= &ui_form_end();
-    }
+    my $assign_cell = &ui_form_start('scan.cgi', 'post');
+    $assign_cell .= &ui_hidden('action',      'assign');
+    $assign_cell .= &ui_hidden('instance_id', &html_escape($id));
+    $assign_cell .= &ui_select('webmin_user', '', \@wbm_opts);
+    $assign_cell .= ' ';
+    $assign_cell .= &ui_submit($text{'scan_assign'});
+    $assign_cell .= &ui_form_end();
 
     print &ui_columns_row([
         &html_escape($user),
+        $script_cell,
+        $sftp_cell,
         &html_escape($inst->{'game'}),
         int($inst->{'port'}),
         $owner_cell,
@@ -78,4 +106,24 @@ foreach my $inst (@instances) {
 }
 
 print &ui_columns_end();
+
+# --- Manual registration form ---
+print "<h3>$text{'scan_register_title'}</h3>\n";
+
+my @sys_users = &list_system_users();
+my @sys_opts  = map { [$_, $_] } @sys_users;
+
+print &ui_form_start('scan.cgi', 'post');
+print &ui_hidden('action', 'register');
+print &ui_table_start('', undef, 2);
+print &ui_table_row($text{'scan_reg_user'},
+    &ui_select('reg_user', '', \@sys_opts));
+print &ui_table_row($text{'scan_reg_script'},
+    &ui_textbox('reg_script', '', 50));
+print &ui_table_row($text{'scan_reg_owner'},
+    &ui_select('reg_webmin_user', '', [['', '---'], @wbm_opts]));
+print &ui_table_end();
+print &ui_submit($text{'scan_reg_submit'});
+print &ui_form_end();
+
 &footer('', '');

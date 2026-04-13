@@ -29,14 +29,14 @@ sub list_instances {
 
 require 'src/lib/acl.pl';
 
-print "1..12\n";
+print "1..17\n";
 
-# 1. can_create: false by default
+# 1. can_create: true by default when key missing (fallback for stale ACL files)
 {
     %access = ();
-    !&can_create()
-        ? pass('can_create false by default')
-        : fail('can_create false by default');
+    &can_create()
+        ? pass('can_create true by default when key missing')
+        : fail('can_create true by default when key missing');
 }
 
 # 2. can_create: true when set
@@ -47,12 +47,12 @@ print "1..12\n";
         : fail('can_create true when set');
 }
 
-# 3. can_scan: false by default
+# 3. can_scan: true by default when key missing (fallback for stale ACL files)
 {
     %access = ();
-    !&can_scan()
-        ? pass('can_scan false by default')
-        : fail('can_scan false by default');
+    &can_scan()
+        ? pass('can_scan true by default when key missing')
+        : fail('can_scan true by default when key missing');
 }
 
 # 4. can_scan: true when set
@@ -133,4 +133,46 @@ print "1..12\n";
     scalar(@inst) == 2
         ? pass('list_managed_instances returns all with wildcard')
         : fail("list_managed_instances returns all with wildcard (got " . scalar(@inst) . ")");
+}
+
+# 13. allowed_servers: Key fehlt → ('*') — stale ACL-Datei ohne servers-Feld
+{
+    %access = ();
+    my @s = &allowed_servers();
+    ($s[0] // '') eq '*'
+        ? pass('allowed_servers defaults to wildcard when key missing')
+        : fail("allowed_servers defaults to wildcard when key missing (got: @s)");
+}
+
+# 14. is_admin: true wenn servers=*
+{
+    %access = (servers => '*');
+    &is_admin()
+        ? pass('is_admin true when servers=*')
+        : fail('is_admin true when servers=*');
+}
+
+# 15. is_admin: false wenn servers auf einen Server beschränkt
+{
+    %access = (servers => 'mc-test');
+    !&is_admin()
+        ? pass('is_admin false when servers restricted')
+        : fail('is_admin false when servers restricted');
+}
+
+# 16. is_admin: true wenn servers-Key fehlt (stale ACL → voller Zugriff)
+{
+    %access = ();
+    &is_admin()
+        ? pass('is_admin true when servers key missing (stale ACL)')
+        : fail('is_admin true when servers key missing (stale ACL)');
+}
+
+# 17. get_sftp_user: undef wenn kein passendes Unix-System-Konto existiert
+{
+    # In der Test-Umgebung existiert 'mc-test-ftp' nicht → getpwnam liefert ()
+    my $result = &get_sftp_user('mc-test');
+    !defined($result)
+        ? pass('get_sftp_user returns undef when ftp user does not exist')
+        : fail("get_sftp_user returns undef when ftp user does not exist (got: $result)");
 }

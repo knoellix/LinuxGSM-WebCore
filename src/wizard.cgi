@@ -21,7 +21,6 @@ my $step = int($in{'step'} || 1);
 
 # --- POST: validate and advance step ---
 if ($ENV{REQUEST_METHOD} eq 'POST') {
-    &check_referer(1);
 
     if ($step == 1) {
         my $game     = &sanitize_input($in{'game'});
@@ -71,6 +70,11 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
         if (!$ok) {
             print &html_escape("Error: $@");
         } else {
+            # Register instance so it appears in index/manage even with bash shell
+            my @pw = getpwnam($username);
+            my $home = $pw[7] // "/home/$username";
+            &register_instance($username, $username, "$home/$username");
+
             # SFTP user setup
             if ($sftp) {
                 require './lib/sftp.pl';

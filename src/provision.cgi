@@ -2,15 +2,19 @@
 use strict;
 use warnings;
 
+do '../web-lib.pl';
+do '../ui-lib.pl';
+&init_config();
+
 require './lib/core.pl';
 require './lib/provision.pl';
 
 our (%text, %config, %in);
 &ReadParse(\%in);
-&error_if_root();
 &header($text{'provision_title'}, '');
 
 if ($in{'submit'}) {
+    &check_referer(1);
     my $user  = &sanitize_input($in{'user'});
     my $game  = &sanitize_input($in{'game'});
     my $port  = int($in{'port'});
@@ -22,14 +26,14 @@ if ($in{'submit'}) {
         &redirect('index.cgi');
     }
 } else {
-    print "<form method='post' action='provision.cgi'>\n";
-    print "<table>\n";
-    print "<tr><td>$text{'provision_game'}</td><td><input name='game' type='text'></td></tr>\n";
-    print "<tr><td>$text{'provision_user'}</td><td><input name='user' type='text'></td></tr>\n";
-    print "<tr><td>$text{'provision_port'}</td><td><input name='port' type='number' value='27015'></td></tr>\n";
-    print "</table>\n";
-    print "<input type='submit' name='submit' value=\"$text{'provision_submit'}\">\n";
-    print "</form>\n";
+    print &ui_form_start("provision.cgi", "post");
+    print &ui_table_start($text{'provision_title'}, "width=100%", 2);
+    print &ui_table_row($text{'provision_game'}, &ui_textbox("game", "", 30));
+    print &ui_table_row($text{'provision_user'}, &ui_textbox("user", "", 30));
+    print &ui_table_row($text{'provision_port'}, &ui_textbox("port", "27015", 10));
+    print &ui_table_end();
+    print &ui_submit($text{'provision_submit'}, "submit");
+    print &ui_form_end();
 }
 
 &footer('index.cgi', $text{'index_title'});
