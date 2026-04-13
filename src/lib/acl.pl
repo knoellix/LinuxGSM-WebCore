@@ -58,7 +58,10 @@ sub user_can_manage {
 sub list_managed_instances {
     my @all = &list_instances();
     return @all if grep { $_ eq '*' } (allowed_servers());
-    return grep { user_can_manage($_->{'id'}) } @all;
+    return grep {
+        my $instance_key = $_->{'id'} // $_->{'user'} // '';
+        user_can_manage($instance_key);
+    } @all;
 }
 
 # Grants $webmin_user access to $script_name by appending to their servers list.

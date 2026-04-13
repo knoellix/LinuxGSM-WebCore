@@ -1,15 +1,15 @@
 # IMPLEMENTATION PLAN
 
 ## Ziel
-`CLAUDE.md` in eine klarere, wartbare Struktur ueberfuehren, ohne bestehende Sicherheits- und Webmin-Anforderungen zu verlieren.
+Verifikationsdaten und Projektregeln weiter pflegen: Full-Verify-Skript ergaenzen, kritische ACL-Testluecke beheben und Richtlinien/Ignore-Listen aktualisieren.
 
 ## Schritte
-1. Bestehende Inhalte in Policy-orientierte Kapitel umsortieren.
-2. Kapitelnummern konsistent machen.
-3. "Lessons Learned" als klar abgegrenzten Abschnitt fuer Implementierungsdetails belassen.
-4. Verifikations- und Workflow-Regeln praeziser formulieren.
-5. Ergebnis auf Vollstaendigkeit gegen alte Anforderungen pruefen.
+1. `scripts/verify-full.sh` fuer komplette Testsuite hinzufuegen.
+2. ACL-Filterlogik robust machen, wenn Instanzen kein `id`-Feld liefern.
+3. `CLAUDE.md` um Full-Verify-Regel ergaenzen.
+4. `.gitignore` um Full-Verify-Logdateien ergaenzen.
+5. `verify.sh` und `verify-full.sh` laufen lassen.
 
 ## Verifikation
-- Inhaltlicher Abgleich: Keine bestehende Muss-Regel darf verloren gehen.
-- Formale Pruefung: Uebersichtliche Kapitelstruktur und eindeutige Prioritaeten.
+- `bash scripts/verify.sh`
+- `bash scripts/verify-full.sh`

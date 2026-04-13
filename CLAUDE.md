@@ -42,6 +42,7 @@ Dieses Dokument trennt verbindliche Projektregeln (Policy) von Webmin-spezifisch
 - **Webmin-Stubs:** `t/stubs.pl` stellt notwendige Funktionen fuer Standalone-Tests bereit.
 - **Tests:** TAP-kompatibel, Ausfuehrung z. B. via `perl t/test_<name>.pl`.
 - **Standard-Verifikation:** Vor Abschluss von Aenderungen `bash scripts/verify.sh` ausfuehren.
+- **Full-Verifikation:** Vor Releases oder groesseren Refactorings zusaetzlich `bash scripts/verify-full.sh`.
 - **Mindestumfang Verifikation:** Perl-Syntaxchecks fuer `src/` und `t/` plus kritische Security-/Provisioning-Tests.
 - **Kritische Regressionstests:** `t/test_security_guards.pl` und `t/test_provisioning_flow.pl` muessen bei sicherheitsrelevanten oder Provisioning-Aenderungen gruen sein.
 - **Build:** `bash scripts/build.sh` erzeugt die `.wbm`-Datei (Modul-Ordner an Tar-Wurzel).

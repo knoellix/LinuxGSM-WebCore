@@ -34,3 +34,5 @@ IMPLEMENTATION_PLAN.md
 # Local verify artifacts
 verify.log
 *.verify.log
+verify-full.log
+*.verify-full.log
