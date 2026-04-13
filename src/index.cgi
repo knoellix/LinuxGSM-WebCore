@@ -16,11 +16,10 @@ our (%text, %config, %in, %access);
 
 # Firewall-Aktionen verarbeiten (vor Header, da redirect möglich)
 if ($in{'action'} && $in{'user'}) {
-    &check_referer(1);
-    my $action = &sanitize_input($in{'action'});
-    my $user   = &sanitize_input($in{'user'});
-    my $inst   = &get_instance($user) or &error($text{'err_not_found'});
-    my $port   = int($inst->{'port'});
+    my $action      = &sanitize_input($in{'action'});
+    my $instance_id = &sanitize_input($in{'user'});
+    my $inst        = &get_instance($instance_id) or &error($text{'err_not_found'});
+    my $port        = int($inst->{'port'});
 
     if ($action eq 'fw_open') {
         &firewall_open_port($port, 'tcp');
@@ -31,23 +30,21 @@ if ($in{'action'} && $in{'user'}) {
     } else {
         &error($text{'err_invalid_action'});
     }
-    &redirect("index.cgi?expand=$user");
+    &redirect("index.cgi?expand=" . &html_escape($instance_id));
 }
 
 &header($text{'index_title'}, '');
 print "<p>$text{'index_desc'}</p>\n";
 
-if ($access{'can_create'} || $access{'can_scan'}) {
-    if ($access{'can_create'}) {
-        print &ui_form_start('wizard.cgi', 'get');
-        print &ui_submit($text{'index_btn_new_server'});
-        print &ui_form_end();
-    }
-    if ($access{'can_scan'}) {
-        print &ui_form_start('scan.cgi', 'get');
-        print &ui_submit($text{'index_btn_scan'});
-        print &ui_form_end();
-    }
+if (&can_create()) {
+    print &ui_form_start('wizard.cgi', 'get');
+    print &ui_submit($text{'index_btn_new_server'});
+    print &ui_form_end();
+}
+if (&can_scan()) {
+    print &ui_form_start('scan.cgi', 'get');
+    print &ui_submit($text{'index_btn_scan'});
+    print &ui_form_end();
 }
 
 my @instances = &list_managed_instances();
@@ -67,17 +64,19 @@ if (!@instances) {
     ]);
 
     foreach my $inst (@instances) {
+        my $id        = $inst->{'id'};
         my $user      = $inst->{'user'};
         my $status    = $inst->{'status'};
         my $warnings  = $inst->{'warnings'};
-        my $expanding = ($expand eq $user);
+        my $expanding = ($expand eq $id);
 
         my $status_text = &html_escape($text{"status_$status"} // $status);
         my $health_icon = @$warnings
             ? "\x{26A0}\x{FE0F} (" . scalar(@$warnings) . ")"
             : "\x{2705}";
-        my $safe_user   = &html_escape($user);
-        my $toggle_url  = $expanding ? "index.cgi" : "index.cgi?expand=$safe_user";
+        my $safe_id   = &html_escape($id);
+        my $safe_user = &html_escape($user);
+        my $toggle_url  = $expanding ? "index.cgi" : "index.cgi?expand=$safe_id";
         my $toggle_char = $expanding ? "&#9650;" : "&#9660;";
 
         print &ui_columns_row([
@@ -104,8 +103,8 @@ if (!@instances) {
             $detail .= "<p><b>$text{detail_firewall}:</b> $fw_icon &nbsp;";
             $detail .= "<form method='post' action='index.cgi' style='display:inline'>";
             $detail .= "<input type='hidden' name='action' value='$fw_action'>";
-            $detail .= "<input type='hidden' name='user' value='$safe_user'>";
-            $detail .= "<input type='hidden' name='expand' value='$safe_user'>";
+            $detail .= "<input type='hidden' name='user' value='$safe_id'>";
+            $detail .= "<input type='hidden' name='expand' value='$safe_id'>";
             $detail .= "<input type='submit' value=\"" . &html_escape($fw_btn) . "\">";
             $detail .= "</form></p>\n";
 
@@ -113,7 +112,7 @@ if (!@instances) {
             $detail .= "<p>";
             foreach my $action (qw(start stop restart update)) {
                 $detail .= "<form method='post' action='manage.cgi' style='display:inline;margin-right:4px'>";
-                $detail .= "<input type='hidden' name='user' value='$safe_user'>";
+                $detail .= "<input type='hidden' name='instance_id' value='$safe_id'>";
                 $detail .= "<input type='hidden' name='action' value='$action'>";
                 $detail .= "<input type='submit' value=\"" . &html_escape($text{"manage_$action"}) . "\">";
                 $detail .= "</form>";

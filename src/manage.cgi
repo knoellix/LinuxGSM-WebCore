@@ -2,33 +2,46 @@
 use strict;
 use warnings;
 
+do '../web-lib.pl';
+do '../ui-lib.pl';
+&init_config();
+
 require './lib/core.pl';
 require './lib/instance.pl';
 
 our (%text, %config, %in);
 &ReadParse(\%in);
-&error_if_root();
 
-my $user = &sanitize_input($in{'user'});
-my $inst = &get_instance($user) or &error($text{'err_not_found'});
+my $instance_id = &sanitize_input($in{'instance_id'} || $in{'user'} || '');
+my $inst = &get_instance($instance_id) or &error($text{'err_not_found'});
+my $unix_user = $inst->{'user'};
 
 if ($in{'action'}) {
-    &check_referer(1);
     my $action = &sanitize_input($in{'action'});
-    &run_server_action($user, $action);
-    &redirect("manage.cgi?user=$user");
+    &run_server_action($unix_user, $action);
+    &redirect("manage.cgi?instance_id=" . &html_escape($instance_id));
 }
 
-my $safe_user = &html_escape($user);
-&header("$text{'manage_title'}: $safe_user", '');
+my $safe_id = &html_escape($instance_id);
+&header("$text{'manage_title'}: $safe_id", '');
 
-print "<p>Game: " . &html_escape($inst->{'game'}) . " | Port: " . int($inst->{'port'}) . " | Status: " . &html_escape($inst->{'status'}) . "</p>\n";
+# Server-Info
+print &ui_table_start($text{'manage_title'}, "width=100%", 2);
+print &ui_table_row($text{'manage_game'},   &html_escape($inst->{'game'}));
+print &ui_table_row($text{'manage_port'},   int($inst->{'port'}));
+print &ui_table_row($text{'manage_status'}, &html_escape($inst->{'status'}));
+print &ui_table_end();
+
+# Steuerungs-Buttons
+print "<p>\n";
 foreach my $action (qw(start stop restart update)) {
-    print "<form method='post' action='manage.cgi' style='display:inline'>\n";
-    print "<input type='hidden' name='user' value='$safe_user'>\n";
-    print "<input type='hidden' name='action' value='$action'>\n";
-    print "<input type='submit' value=\"" . &html_escape($text{"manage_$action"}) . "\">\n";
-    print "</form>\n";
+    print &ui_form_start("manage.cgi", "post");
+    print &ui_hidden("instance_id", $safe_id);
+    print &ui_hidden("action",      $action);
+    print &ui_submit($text{"manage_$action"});
+    print &ui_form_end();
+    print " ";
 }
+print "</p>\n";
 
 &footer('index.cgi', $text{'index_title'});
