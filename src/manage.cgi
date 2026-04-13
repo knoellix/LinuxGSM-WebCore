@@ -20,7 +20,10 @@ my $unix_user = $inst->{'user'};
 
 if ($in{'action'}) {
     my $action = &sanitize_input($in{'action'});
-    &run_server_action($unix_user, $action);
+    my $script_name = (split('/', $inst->{'script'}))[-1];
+    my $script_dir  = $inst->{'script'};
+    $script_dir =~ s|/[^/]+$||;
+    &run_server_action($unix_user, $action, $script_name, $script_dir);
     &redirect("manage.cgi?instance_id=" . &html_escape($instance_id));
 }
 

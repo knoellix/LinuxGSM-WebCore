@@ -4,15 +4,6 @@ use warnings;
 
 our (%text, %config, %gconfig, $module_root, $current_lang, $config_directory);
 
-# Load English base texts, then override with current language
-&read_file("$module_root/lang/en", \%text);
-if ($current_lang && $current_lang ne 'en') {
-    &read_file("$module_root/lang/$current_lang", \%text);
-}
-
-# Load module config
-&read_file("$config_directory/config", \%config) if -f "$config_directory/config";
-
 # Prevent root execution of privileged actions
 sub error_if_root {
     if ($< == 0 && !$config{'allow_root'}) {
@@ -32,15 +23,24 @@ sub sanitize_input {
 
 # Run a server action as the game user (never as root).
 # $action must be in the whitelist — otherwise Webmin error() is called.
+# $script_name is the basename of the script (defaults to $user for standard LGSM setup).
+# $script_dir is the directory containing the script (cd'd to before execution).
 sub run_server_action {
-    my ($user, $action) = @_;
-    $user   = &sanitize_input($user);
-    $action = &sanitize_input($action);
+    my ($user, $action, $script_name, $script_dir) = @_;
+    $user        = &sanitize_input($user);
+    $action      = &sanitize_input($action);
+    $script_name = defined $script_name ? &sanitize_input($script_name) : $user;
 
     my %valid_actions = map { $_ => 1 } qw(start stop restart update details);
     &error($text{'err_invalid_action'}) unless $valid_actions{$action};
 
-    return &system_logged("su -s /bin/bash -c \"./$user $action\" $user");
+    my @pw = getpwnam($user) or &error($text{'err_not_found'});
+    my $home = $pw[7];
+    $script_dir //= $home;  # fallback to home for standard setups
+
+    return &system_logged(
+        "su -s /bin/bash -c \"cd \Q$script_dir\E && ./$script_name $action\" $user"
+    );
 }
 
 1;
