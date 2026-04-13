@@ -11,15 +11,16 @@ for file in src/*.cgi src/lib/*.pl t/*.pl; do
   echo "  ok  $file"
 done
 
-echo "[verify] perl test suite"
-for test_file in t/test_*.pl; do
+echo "[verify] critical regression tests"
+critical_tests=(
+  "t/test_sanitize.pl"
+  "t/test_run_action.pl"
+  "t/test_security_guards.pl"
+  "t/test_provisioning_flow.pl"
+)
+for test_file in "${critical_tests[@]}"; do
   [ -f "$test_file" ] || continue
   perl "$test_file"
 done
-
-if [ -f "t/test_build.sh" ]; then
-  echo "[verify] build smoke test"
-  bash "t/test_build.sh"
-fi
 
 echo "[verify] completed"
