@@ -128,6 +128,7 @@ Dieser Abschnitt dokumentiert zwingende Webmin-spezifische Details, die aus real
 ### 8.8 ProFTPD / FTP-Checks
 - ProFTPD-Hauptconfig zuerst robust finden (`proftpd_main_config` override > systemd ExecStart `-c` > Standardpfade), sonst nur Basiswarnung statt Folgefehlern.
 - `Include`/`IncludeOptional` relativ zur einbindenden Datei aufloesen (z. B. `conf.d/*.conf`), nicht relativ zum CWD.
+- Debian-Standard: `Include /etc/proftpd/conf.d/` (Verzeichnis, kein Glob) — trailing Slash strippen, dann `-d`-Check, dann `bsd_glob("$dir/*.conf")`.
 - ProFTPD-Audit im UI um `main_config` + geladene Config-Dateien anzeigen, damit Warnungen nachvollziehbar sind.
 
 ### 8.9 Virtuelle FTP-User (ProFTPD)
@@ -137,4 +138,10 @@ Dieser Abschnitt dokumentiert zwingende Webmin-spezifische Details, die aus real
 ### 8.10 Scan-/Registry-Pattern
 - Scan-Listen fuer stabile Darstellung mit `ui_columns_table(...)` rendern; `ui_columns_header/row` kann Theme-Layout brechen.
 - Instanz-Registry im TSV-Format mit Metadaten (`source`, `sftp_user`) speichern; Legacy-`id=user:script` weiterhin lesbar halten.
+- `ui_submit` immer mit expliziter CSS-Klasse aufrufen (5. Argument): `btn-danger` fuer destruktive Aktionen, `btn-default` fuer neutrale — verhindert Theme-Farb-Roulette bei mehreren Buttons in einer Zelle.
+
+## 9. Deployment
+- **Build:** `bash scripts/build.sh` erzeugt `dist/linuxgsm-webcore-0.1.0.wbm`
+- **Install auf Server:** `.wbm` nach `/tmp/` kopieren, dann `/usr/share/webmin/install-module.pl /tmp/linuxgsm-webcore-0.1.0.wbm`
+- Kein Symlink/Auto-Sync — jede Aenderung erfordert expliziten Rebuild und Reinstall.
 
