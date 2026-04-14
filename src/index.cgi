@@ -27,6 +27,10 @@ if (&can_scan()) {
     print &ui_form_start('scan.cgi', 'get');
     print &ui_submit($text{'index_btn_scan'});
     print &ui_form_end();
+
+    print &ui_form_start('ftp_settings.cgi', 'get');
+    print &ui_submit($text{'index_btn_ftp'});
+    print &ui_form_end();
 }
 
 my @instances = &list_managed_instances();

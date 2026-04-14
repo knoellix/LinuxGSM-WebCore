@@ -12,6 +12,7 @@ require './lib/firewall.pl';
 require './lib/acl.pl';
 require './lib/games_meta.pl';
 require './lib/config_editor.pl';
+require './lib/ftp_proftpd.pl';
 
 our (%text, %config, %in, %gconfig);
 our $current_lang;
@@ -256,9 +257,18 @@ if ($in{'action'}) {
         # Remove panel registration entry (if tracked)
         &unregister_instance($instance_id);
 
-        # SFTP cleanup is mandatory for instance deletion
+        # FTP/SFTP cleanup is mandatory for instance deletion
         if ($sftp_user && $sftp_user ne $game_user) {
-            &system_logged("userdel -r $sftp_user");
+            my %ftp_state = &discover_ftp_state();
+            my $auth_file = $ftp_state{'auth_user_file'} || '/etc/proftpd/ftpd.passwd';
+            my $rc = &ftpasswd_delete_user(
+                file => $auth_file,
+                name => $sftp_user,
+            );
+            if ($rc != 0) {
+                # Fallback for classic system users
+                &system_logged("userdel -r $sftp_user");
+            }
         }
 
         # Remove game unix user only if this was the last instance for that user
