@@ -110,3 +110,6 @@ config_editor_game_path=Game-Server-Konfigurationsdatei:
 config_editor_game_notice=Hier bearbeitest du die echte Game-Server-Config (z. B. PalWorldSettings.ini).
 config_editor_game_missing=Game-Server-Config fehlt noch. Server kurz starten, damit die Datei erzeugt wird.
 config_editor_game_create_btn=Game-Config erzeugen (Server kurz starten)
+config_editor_game_no_fields=Keine OptionSettings-Felder erkannt (bitte Rohtext-Modus nutzen).
+config_editor_server_root=Server-Hauptverzeichnis:
+config_editor_open_fileman=Im Dateimanager öffnen

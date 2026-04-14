@@ -110,3 +110,6 @@ config_editor_game_path=Game server config file:
 config_editor_game_notice=Edit the real game server config here (for example PalWorldSettings.ini).
 config_editor_game_missing=Game server config does not exist yet. Start the server briefly to generate it.
 config_editor_game_create_btn=Create game config (start server briefly)
+config_editor_game_no_fields=No OptionSettings fields detected (use raw text mode).
+config_editor_server_root=Server root directory:
+config_editor_open_fileman=Open in file manager

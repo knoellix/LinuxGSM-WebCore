@@ -154,4 +154,88 @@ sub write_file_exact {
     return 1;
 }
 
+sub _split_csv_preserving_quotes {
+    my ($s) = @_;
+    my @parts;
+    my $cur = '';
+    my $in_quote = 0;
+    my $q = '';
+    my @chars = split //, ($s // '');
+    for my $ch (@chars) {
+        if (($ch eq '"' || $ch eq "'")) {
+            if (!$in_quote) {
+                $in_quote = 1;
+                $q = $ch;
+            } elsif ($q eq $ch) {
+                $in_quote = 0;
+            }
+            $cur .= $ch;
+            next;
+        }
+        if ($ch eq ',' && !$in_quote) {
+            push @parts, $cur;
+            $cur = '';
+            next;
+        }
+        $cur .= $ch;
+    }
+    push @parts, $cur if length($cur) || @parts;
+    return @parts;
+}
+
+# Parse Palworld-style OptionSettings=(...) line from INI.
+# Returns hashref + ordered key list.
+sub parse_option_settings_from_ini {
+    my ($raw) = @_;
+    my (%vals, @order);
+    return (\%vals, \@order) unless defined $raw;
+    return (\%vals, \@order) unless $raw =~ /OptionSettings\s*=\s*\(([^)]*)\)/s;
+    my $inside = $1 // '';
+    for my $part (_split_csv_preserving_quotes($inside)) {
+        $part =~ s/^\s+|\s+$//g;
+        next unless $part =~ /^([A-Za-z_]\w*)\s*=\s*(.*)$/;
+        my ($k, $v) = ($1, $2);
+        $v =~ s/^\s+|\s+$//g;
+        $v =~ s/^"(.*)"$/$1/;
+        $v =~ s/^'(.*)'$/$1/;
+        push @order, $k unless exists $vals{$k};
+        $vals{$k} = $v;
+    }
+    return (\%vals, \@order);
+}
+
+sub _quote_option_value {
+    my ($v) = @_;
+    $v = '' unless defined $v;
+    if ($v =~ /[,\s]/) {
+        $v =~ s/"/\\"/g;
+        return "\"$v\"";
+    }
+    return $v;
+}
+
+# Update OptionSettings line while preserving surrounding INI content.
+sub update_option_settings_in_ini {
+    my ($raw, $vals_ref, $order_ref) = @_;
+    my %vals = %{$vals_ref || {}};
+    my @order = @{$order_ref || []};
+    my @pairs;
+    for my $k (@order) {
+        next unless exists $vals{$k};
+        push @pairs, "$k=" . _quote_option_value($vals{$k});
+    }
+    my $new_line = "OptionSettings=(" . join(',', @pairs) . ")";
+
+    return $raw unless defined $raw;
+    if ($raw =~ /^([ \t]*)OptionSettings\s*=\s*\([^)]*\)([ \t]*)(\r?\n?)/m) {
+        my ($indent, $trail, $eol) = ($1 // '', $2 // '', $3 // '');
+        my $replacement = $indent . $new_line . $trail . $eol;
+        $raw =~ s/^[ \t]*OptionSettings\s*=\s*\([^)]*\)[ \t]*(\r?\n?)/$replacement/m;
+        return $raw;
+    }
+    # Fallback: append at end without forcing newline normalization
+    my $sep = ($raw =~ /\n\z/) ? '' : "\n";
+    return $raw . $sep . $new_line . "\n";
+}
+
 1;

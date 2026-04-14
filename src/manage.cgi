@@ -186,8 +186,22 @@ if ($in{'action'}) {
                 &run_server_action($unix_user, 'stop', $script_name, $script_dir);
             }
             -f $cfg_path or &error($text{'config_editor_game_missing'});
-            my $raw_game = $in{'game_config_raw'} // '';
-            eval { &write_file_exact($cfg_path, $raw_game); 1 }
+            my $new_content;
+            if (int($in{'raw_mode'} || 0)) {
+                $new_content = $in{'game_config_raw'} // '';
+            } else {
+                my $raw_base = $in{'game_config_original'} // '';
+                my ($opt_vals, $opt_order) = &parse_option_settings_from_ini($raw_base);
+                for my $param (keys %in) {
+                    next unless $param =~ /^field_(\w+)$/;
+                    my $key = $1;
+                    my $val = $in{$param} // '';
+                    $opt_vals->{$key} = $val;
+                    push @$opt_order, $key unless grep { $_ eq $key } @$opt_order;
+                }
+                $new_content = &update_option_settings_in_ini($raw_base, $opt_vals, $opt_order);
+            }
+            eval { &write_file_exact($cfg_path, $new_content); 1 }
                 or &error("Cannot write config: $!");
         } elsif (int($in{'raw_mode'} || 0)) {
             # Raw mode: filter content and write
@@ -359,6 +373,10 @@ if (!$cfg{_has_instance_config}) {
     my $common_path   = "$script_dir_for_cfg/lgsm/config-lgsm/common.cfg";
     my $instance_path = "$script_dir_for_cfg/lgsm/config-lgsm/$script_name_for_cfg/$script_name_for_cfg.cfg";
     my $game_cfg_path = &resolve_game_server_config_path($script_dir_for_cfg, $script_name_for_cfg, \%cfg);
+    my $server_root_path = $script_dir_for_cfg;
+    my $fileman_path = $server_root_path;
+    $fileman_path =~ s/([^A-Za-z0-9\-_.~\/])/sprintf("%%%02X", ord($1))/ge;
+    my $fileman_url = "/filemin/?path=$fileman_path";
     my ($common_vals, $common_order, $common_raw) = &read_config_file($common_path);
     my ($inst_vals, $inst_order, $inst_raw) = &read_config_file($instance_path);
     my $game_raw = '';
@@ -389,7 +407,11 @@ if (!$cfg{_has_instance_config}) {
     print "<b>" . &html_escape($text{'config_editor_instance_path'}) . "</b> <code>" .
           &html_escape($instance_path) . "</code><br>\n";
     print "<b>" . &html_escape($text{'config_editor_game_path'}) . "</b> <code>" .
-          &html_escape($game_cfg_path) . "</code></p>\n";
+          &html_escape($game_cfg_path) . "</code><br>\n";
+    print "<b>" . &html_escape($text{'config_editor_server_root'}) . "</b> <code>" .
+          &html_escape($server_root_path) . "</code> &nbsp;" .
+          "<a href='" . &html_escape($fileman_url) . "'>" .
+          &html_escape($text{'config_editor_open_fileman'}) . "</a></p>\n";
 
     print <<'JS';
 <script>
@@ -509,13 +531,34 @@ JS
         print &ui_submit($text{'config_editor_game_create_btn'});
         print &ui_form_end();
     } else {
+        my ($game_vals, $game_order) = &parse_option_settings_from_ini($game_raw);
         print &ui_form_start("manage.cgi", "post");
         print &ui_hidden("instance_id", $safe_id);
         print &ui_hidden("action",      "save_config");
         print &ui_hidden("config_file", "game");
         print &ui_hidden("config_view", "game");
+        print &ui_hidden("game_config_original", $game_raw);
         print "<p>" . &html_escape($text{'config_editor_game_notice'}) . "</p>\n";
+        print "<p><label>";
+        print "<input type='checkbox' id='raw_mode_cb_game' name='raw_mode' value='1' ";
+        print "onchange=\"lgsmToggleRaw('game', this)\"> ";
+        print "$text{'config_editor_raw_mode'}</label></p>\n";
+        print "<div id='cfg_form_div_game'>\n";
+        print &ui_table_start($text{'config_editor_game_btn'}, "width=100%", 2);
+        if (@$game_order) {
+            for my $key (@$game_order) {
+                my $val = $game_vals->{$key} // '';
+                print &ui_table_row(&html_escape($key),
+                                    &ui_textbox("field_$key", &html_escape($val), 40));
+            }
+        } else {
+            print &ui_table_row(&html_escape($text{'config_editor_game_no_fields'}), '-');
+        }
+        print &ui_table_end();
+        print "</div>\n";
+        print "<div id='cfg_raw_div_game' style='display:none'>\n";
         print &ui_textarea("game_config_raw", $game_raw, 22, 90);
+        print "</div>\n";
         print &ui_submit($text{'config_editor_save'});
         print &ui_form_end();
     }

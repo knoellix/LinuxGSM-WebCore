@@ -2,7 +2,7 @@
 # t/test_config_editor.pl — Tests for src/lib/config_editor.pl
 use strict;
 use warnings;
-use Test::More tests => 21;
+use Test::More tests => 24;
 use File::Temp qw(tempdir tempfile);
 use FindBin qw($Bin);
 use lib "$Bin/..";
@@ -227,4 +227,23 @@ my $tmpdir = tempdir(CLEANUP => 1);
     my $got = <$fh>;
     close $fh;
     ok($got eq $content && $got !~ /\n\z/, 'write_file_exact: no newline appended');
+}
+
+# Test 22: parse_option_settings_from_ini extracts key/value pairs
+{
+    my $raw = "[/Script/Pal.PalGameWorldSettings]\nOptionSettings=(Difficulty=None,ServerName=\"My Server\",PublicPort=8211)\n";
+    my ($vals, $order) = &parse_option_settings_from_ini($raw);
+    is($vals->{'Difficulty'}, 'None', 'parse_option_settings_from_ini: unquoted value parsed');
+    is_deeply($order, ['Difficulty', 'ServerName', 'PublicPort'],
+        'parse_option_settings_from_ini: field order preserved');
+}
+
+# Test 23: update_option_settings_in_ini replaces option line and preserves sections
+{
+    my $raw = "[/Script/Pal.PalGameWorldSettings]\nOptionSettings=(Difficulty=None,PublicPort=8211)\n[/Other]\nX=1\n";
+    my %vals = (Difficulty => 'Hard', PublicPort => '9000');
+    my @order = qw(Difficulty PublicPort);
+    my $out = &update_option_settings_in_ini($raw, \%vals, \@order);
+    like($out, qr/OptionSettings=\(Difficulty=Hard,PublicPort=9000\)/,
+        'update_option_settings_in_ini: option settings updated');
 }
