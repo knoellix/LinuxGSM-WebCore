@@ -113,3 +113,6 @@ config_editor_game_create_btn=Game-Config erzeugen (Server kurz starten)
 config_editor_game_no_fields=Keine OptionSettings-Felder erkannt (bitte Rohtext-Modus nutzen).
 config_editor_server_root=Server-Hauptverzeichnis:
 config_editor_open_fileman=Im Dateimanager öffnen
+scan_reg_sftp_user=SFTP-User
+scan_remove_panel_btn=Nur aus Panel entfernen
+manage_delete_btn=Instanz löschen (inkl. SFTP-Aufräumen)

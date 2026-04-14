@@ -5,7 +5,10 @@
 # Manual registrations allow any unix user + any script path.
 #
 # Registered instances stored in: $config_directory/instances
-# Format per line: script_id=unix_user:full_script_path
+# Preferred TSV format per line:
+#   script_id<TAB>unix_user<TAB>full_script_path<TAB>source<TAB>sftp_user
+# Legacy format is still accepted:
+#   script_id=unix_user:full_script_path
 use strict;
 use warnings;
 
@@ -28,7 +31,7 @@ sub _instances_file {
 }
 
 # Load registered instances from file.
-# Returns hash: script_id => { user => $unix_user, script => $script_path }
+# Returns hash: script_id => { user, script, source, sftp_user }
 sub _load_registered {
     my %reg;
     my $file = _instances_file();
@@ -36,11 +39,25 @@ sub _load_registered {
     open(my $fh, '<', $file) or return %reg;
     while (<$fh>) {
         chomp;
-        next if /^\s*#/ || !/=/;
-        my ($id, $val) = split(/=/, $_, 2);
-        my ($user, $script) = split(/:/, $val, 2);
-        $reg{$id} = { user => $user, script => $script }
-            if defined $id && $id =~ /\S/ && defined $user && defined $script;
+        next if /^\s*#/ || !(/=/ || /\t/);
+        my ($id, $user, $script, $source, $sftp_user);
+        if (index($_, "\t") >= 0) {
+            ($id, $user, $script, $source, $sftp_user) = split(/\t/, $_, 5);
+            $source ||= 'manual';
+            $sftp_user ||= '';
+        } else {
+            my ($val);
+            ($id, $val) = split(/=/, $_, 2);
+            ($user, $script) = split(/:/, $val, 2);
+            $source = 'legacy';
+            $sftp_user = '';
+        }
+        $reg{$id} = {
+            user      => $user,
+            script    => $script,
+            source    => $source,
+            sftp_user => $sftp_user,
+        } if defined $id && $id =~ /\S/ && defined $user && defined $script;
     }
     close($fh);
     return %reg;
@@ -53,16 +70,24 @@ sub _save_registered {
     for my $id (sort keys %$reg_ref) {
         my $u = $reg_ref->{$id}{'user'};
         my $s = $reg_ref->{$id}{'script'};
-        print $fh "$id=$u:$s\n";
+        my $src = $reg_ref->{$id}{'source'} // 'manual';
+        my $ftp = $reg_ref->{$id}{'sftp_user'} // '';
+        print $fh join("\t", $id, $u, $s, $src, $ftp) . "\n";
     }
     close($fh);
 }
 
 # Register (or update) an instance.
 sub register_instance {
-    my ($id, $user, $script_path) = @_;
+    my ($id, $user, $script_path, $opts_ref) = @_;
+    my %opts = %{$opts_ref || {}};
     my %reg = _load_registered();
-    $reg{$id} = { user => $user, script => $script_path };
+    $reg{$id} = {
+        user      => $user,
+        script    => $script_path,
+        source    => $opts{'source'} || ($reg{$id}{'source'} // 'manual'),
+        sftp_user => defined $opts{'sftp_user'} ? $opts{'sftp_user'} : ($reg{$id}{'sftp_user'} // ''),
+    };
     _save_registered(\%reg);
 }
 
@@ -72,6 +97,33 @@ sub unregister_instance {
     my %reg = _load_registered();
     delete $reg{$id};
     _save_registered(\%reg);
+}
+
+sub get_registered_instance {
+    my ($id) = @_;
+    my %reg = _load_registered();
+    return $reg{$id};
+}
+
+sub resolve_instance_sftp_user {
+    my ($instance_id, $game_user) = @_;
+    my %reg = _load_registered();
+    if ($reg{$instance_id} && ($reg{$instance_id}{'sftp_user'} // '') ne '') {
+        my $stored = $reg{$instance_id}{'sftp_user'};
+        return $stored if getpwnam($stored);
+    }
+
+    my @candidates = (
+        "ftp_$instance_id",
+        "ftp_${game_user}_$instance_id",
+        "${game_user}-ftp",
+        "ftp_$game_user",
+        "${instance_id}-ftp",
+    );
+    for my $cand (@candidates) {
+        return $cand if getpwnam($cand);
+    }
+    return undef;
 }
 
 # ---------------------------------------------------------------------------
@@ -89,6 +141,9 @@ sub list_instances {
     for my $id (sort keys %reg) {
         my $inst = get_instance($id, $reg{$id}{'user'}, $reg{$id}{'script'});
         if ($inst) {
+            my $meta = $reg{$id};
+            $inst->{'registration_source'} = $meta->{'source'} // 'manual';
+            $inst->{'registered_sftp_user'} = $meta->{'sftp_user'} // '';
             push @instances, $inst;
             $seen{$id} = 1;
         }
@@ -104,6 +159,8 @@ sub list_instances {
         next if $seen{$user};  # already covered by a registered entry
         my $inst = get_instance($user, $user, "$home/$user");
         if ($inst) {
+            $inst->{'registration_source'} = 'auto';
+            $inst->{'registered_sftp_user'} = '';
             push @instances, $inst;
             $seen{$user} = 1;
         }

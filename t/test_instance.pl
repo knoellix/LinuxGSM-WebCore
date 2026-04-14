@@ -28,15 +28,18 @@ sub firewall_close_port { }
 
 require 'src/lib/instance.pl';
 
-print "1..5\n";
+print "1..7\n";
 
 # 1. register_instance: schreibt korrekt ins File
 {
-    &register_instance('mcserver', 'minecraft', '/home/minecraft/mcserver');
+    &register_instance('mcserver', 'minecraft', '/home/minecraft/mcserver', {
+        source    => 'manual',
+        sftp_user => 'ftp_mcserver',
+    });
     my $file = &_instances_file();
     my $found = 0;
     open(my $fh, '<', $file) or die "Cannot read instances file: $!";
-    while (<$fh>) { $found = 1 if /^mcserver=minecraft:\/home\/minecraft\/mcserver$/ }
+    while (<$fh>) { $found = 1 if /^mcserver\tminecraft\t\/home\/minecraft\/mcserver\tmanual\tftp_mcserver$/ }
     close($fh);
     $found
         ? pass('register_instance writes correct entry')
@@ -48,7 +51,9 @@ print "1..5\n";
     my %reg = &_load_registered();
     (exists $reg{'mcserver'} &&
      $reg{'mcserver'}{'user'}   eq 'minecraft' &&
-     $reg{'mcserver'}{'script'} eq '/home/minecraft/mcserver')
+     $reg{'mcserver'}{'script'} eq '/home/minecraft/mcserver' &&
+     $reg{'mcserver'}{'source'} eq 'manual' &&
+     $reg{'mcserver'}{'sftp_user'} eq 'ftp_mcserver')
         ? pass('_load_registered reads entry back')
         : fail('_load_registered reads entry back');
 }
@@ -79,4 +84,23 @@ print "1..5\n";
     exists $reg{'mcserver'}
         ? pass('unregister_instance leaves other entries intact')
         : fail('unregister_instance leaves other entries intact');
+}
+
+# 6. get_registered_instance returns metadata (source + sftp)
+{
+    my $meta = &get_registered_instance('mcserver');
+    ($meta && ($meta->{'source'} // '') eq 'manual' && ($meta->{'sftp_user'} // '') eq 'ftp_mcserver')
+        ? pass('get_registered_instance returns source and sftp metadata')
+        : fail('get_registered_instance returns source and sftp metadata');
+}
+
+# 7. register_instance stores source for provisioned/manual separation
+{
+    &register_instance('valheimserver', 'valheim', '/home/valheim/valheimserver', {
+        source => 'provisioned',
+    });
+    my $meta = &get_registered_instance('valheimserver');
+    ($meta && ($meta->{'source'} // '') eq 'provisioned')
+        ? pass('register_instance stores registration source')
+        : fail('register_instance stores registration source');
 }

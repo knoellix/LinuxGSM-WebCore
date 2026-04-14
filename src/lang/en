@@ -113,3 +113,6 @@ config_editor_game_create_btn=Create game config (start server briefly)
 config_editor_game_no_fields=No OptionSettings fields detected (use raw text mode).
 config_editor_server_root=Server root directory:
 config_editor_open_fileman=Open in file manager
+scan_reg_sftp_user=SFTP user
+scan_remove_panel_btn=Remove from panel only
+manage_delete_btn=Delete instance (with SFTP cleanup)

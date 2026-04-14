@@ -73,7 +73,9 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
             # Register instance so it appears in index/manage even with bash shell
             my @pw = getpwnam($username);
             my $home = $pw[7] // "/home/$username";
-            &register_instance($username, $username, "$home/$username");
+            &register_instance($username, $username, "$home/$username", {
+                source => 'provisioned',
+            });
 
             # SFTP user setup
             if ($sftp) {

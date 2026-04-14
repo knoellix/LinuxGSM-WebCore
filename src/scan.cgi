@@ -38,17 +38,33 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
         my $reg_user   = &sanitize_input($in{'reg_user'});
         my $reg_script = $in{'reg_script'} // '';
         $reg_script =~ s|[^a-zA-Z0-9_./()\-]||g;
-        my $reg_wbuser = &sanitize_input($in{'reg_webmin_user'} // '');
+        my $reg_wbuser = $in{'reg_webmin_user'} // '';
+        $reg_wbuser = &sanitize_input($reg_wbuser) if $reg_wbuser ne '';
+        my $reg_sftp_user = $in{'reg_sftp_user'} // '';
+        $reg_sftp_user =~ s/[^a-zA-Z0-9_\-]//g;
 
         $reg_user   or &error($text{'err_invalid_input'});
         $reg_script or &error($text{'err_invalid_input'});
 
         getpwnam($reg_user) or &error($text{'err_not_found'});
         -f $reg_script      or &error($text{'err_script_not_found'});
+        getpwnam($reg_sftp_user) or &error($text{'err_not_found'}) if $reg_sftp_user;
 
         my $script_id = (split('/', $reg_script))[-1];
-        &register_instance($script_id, $reg_user, $reg_script);
+        &register_instance($script_id, $reg_user, $reg_script, {
+            source    => 'manual',
+            sftp_user => $reg_sftp_user,
+        });
         &grant_server_access($reg_wbuser, $script_id) if $reg_wbuser;
+        &redirect('scan.cgi');
+    }
+
+    if ($action eq 'untrack_manual') {
+        my $instance_id = &sanitize_input($in{'instance_id'});
+        my $meta = &get_registered_instance($instance_id);
+        $meta or &error($text{'err_not_found'});
+        ($meta->{'source'} // '') eq 'manual' or &error($text{'err_invalid_action'});
+        &unregister_instance($instance_id);
         &redirect('scan.cgi');
     }
 }
@@ -59,6 +75,8 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
 my @instances    = &list_instances();
 my @webmin_users = &list_webmin_users();
 my @wbm_opts     = map { [$_, $_] } @webmin_users;
+my @sftp_users = _list_sftp_users();
+my @sftp_opts = map { [$_, $_] } @sftp_users;
 
 print &ui_columns_header([
     $text{'index_col_user'},
@@ -76,7 +94,7 @@ foreach my $inst (@instances) {
 
     my $script_cell = &html_escape($inst->{'script'});
 
-    my $sftp      = &get_sftp_user($user);
+    my $sftp      = &resolve_instance_sftp_user($id, $user);
     my $sftp_cell = $sftp ? &html_escape($sftp) : "<i>$text{'scan_no_ftp'}</i>";
 
     my @owners = &get_server_owners($id);
@@ -93,6 +111,13 @@ foreach my $inst (@instances) {
     $assign_cell .= ' ';
     $assign_cell .= &ui_submit($text{'scan_assign'});
     $assign_cell .= &ui_form_end();
+    if (($inst->{'registration_source'} // '') eq 'manual') {
+        $assign_cell .= &ui_form_start('scan.cgi', 'post');
+        $assign_cell .= &ui_hidden('action', 'untrack_manual');
+        $assign_cell .= &ui_hidden('instance_id', &html_escape($id));
+        $assign_cell .= &ui_submit($text{'scan_remove_panel_btn'});
+        $assign_cell .= &ui_form_end();
+    }
 
     print &ui_columns_row([
         &html_escape($user),
@@ -122,8 +147,22 @@ print &ui_table_row($text{'scan_reg_script'},
     &ui_textbox('reg_script', '', 50));
 print &ui_table_row($text{'scan_reg_owner'},
     &ui_select('reg_webmin_user', '', [['', '---'], @wbm_opts]));
+print &ui_table_row($text{'scan_reg_sftp_user'},
+    &ui_select('reg_sftp_user', '', [['', '---'], @sftp_opts]));
 print &ui_table_end();
 print &ui_submit($text{'scan_reg_submit'});
 print &ui_form_end();
 
 &footer('', '');
+
+sub _list_sftp_users {
+    my @out;
+    open(my $fh, '<', '/etc/passwd') or return ();
+    while (<$fh>) {
+        chomp;
+        my ($user) = split(':', $_);
+        push @out, $user if $user =~ /^ftp[_-]/;
+    }
+    close($fh);
+    return sort @out;
+}

@@ -237,6 +237,37 @@ if ($in{'action'}) {
                   "&config_file=" . &html_escape($cfg_file_key) .
                   "&config_view=" . &html_escape($cfg_view_key));
     }
+    elsif ($action eq 'delete_instance') {
+        my $script_name = (split('/', $inst->{'script'}))[-1];
+        my $script_dir  = $inst->{'script'};
+        $script_dir =~ s|/[^/]+$||;
+        my $game_user = $inst->{'user'};
+
+        my @all_before = &list_instances();
+        my @other_for_user = grep {
+            ($_->{'id'} // '') ne $instance_id && ($_->{'user'} // '') eq $game_user
+        } @all_before;
+
+        my $sftp_user = &resolve_instance_sftp_user($instance_id, $game_user);
+
+        # Always remove instance directory
+        &system_logged("rm -rf \"\Q$script_dir\E\"");
+
+        # Remove panel registration entry (if tracked)
+        &unregister_instance($instance_id);
+
+        # SFTP cleanup is mandatory for instance deletion
+        if ($sftp_user && $sftp_user ne $game_user) {
+            &system_logged("userdel -r $sftp_user");
+        }
+
+        # Remove game unix user only if this was the last instance for that user
+        if (!@other_for_user) {
+            &system_logged("userdel -r $game_user");
+        }
+
+        &redirect("index.cgi");
+    }
     elsif ($action eq 'init_game_config') {
         my $script_name = (split('/', $inst->{'script'}))[-1];
         my $script_dir  = $inst->{'script'};
@@ -311,6 +342,14 @@ foreach my $action (qw(start stop restart update)) {
     print &ui_form_end();
     print " ";
 }
+print "</p>\n";
+
+print "<p>\n";
+print &ui_form_start("manage.cgi", "post");
+print &ui_hidden("instance_id", $safe_id);
+print &ui_hidden("action", "delete_instance");
+print &ui_submit($text{'manage_delete_btn'});
+print &ui_form_end();
 print "</p>\n";
 
 # Detect if common.cfg contains misplaced instance-specific fields

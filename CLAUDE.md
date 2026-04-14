@@ -113,3 +113,15 @@ Dieser Abschnitt dokumentiert zwingende Webmin-spezifische Details, die aus real
 ### 8.4 GitHub-Referenzen
 - LGSM Config-Struktur: `GameServerManagers/LinuxGSM` (Repo)
 
+### 8.5 Game-Config Pfad-Aufloesung (LGSM)
+- Game-Server-Config nie raten: aus LGSM-Variablen aufloesen (`servercfgfullpath`, fallback `servercfgdir + servercfg`), z. B. via `_parse_lgsm_config()` + `resolve_game_server_config_path()`.
+
+### 8.6 INI-Formattreue (kritisch)
+- Bei `.ini`-Speichern byte-genau schreiben (`>:raw`, kein Auto-Formatting, kein erzwungener Zeilenumbruch); fuer Raw-Content `write_file_exact()` verwenden.
+- Palworld-Formmodus nur `OptionSettings=(...)` aktualisieren; restliche INI-Inhalte unveraendert lassen (`parse_option_settings_from_ini` / `update_option_settings_in_ini`).
+
+### 8.7 Config-Editor UX-Pattern
+- Drei In-Page-Ansichten im `manage.cgi`: `common` | `instance` | `game` ueber `config_view` halten (kein Reload nur fuer Umschalten).
+- Wenn Game-Config fehlt: zuerst Bootstrap-Flow anbieten (`init_game_config`: kurz Start/Stop), dann Bearbeitung freigeben.
+- Fuer Datei-Navigation im Webmin-UI File Manager Link auf Server-Root anzeigen (`/filemin/?path=<urlencoded-root>`).
+
