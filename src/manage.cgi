@@ -35,29 +35,65 @@ if ($in{'action'}) {
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id));
     }
     elsif ($action eq 'fix_config') {
-        my $script_dir = $inst->{'script'};
+        my $script_name = (split('/', $inst->{'script'}))[-1];
+        my $script_dir  = $inst->{'script'};
         $script_dir =~ s|/[^/]+$||;
-        my $config_file = "$script_dir/lgsm/config-lgsm/common.cfg";
-        &error("Invalid config path") unless $config_file =~ m|^/[a-zA-Z0-9_./()\-]+/lgsm/config-lgsm/common\.cfg$|;
 
-        # Use form-provided values; fall back to detected values only if present
+        my $config_file = "$script_dir/lgsm/config-lgsm/common.cfg";
+        my $default_cfg = "$script_dir/lgsm/config-default/config-lgsm/$script_name/_default.cfg";
+        my $backup_cfg  = "$default_cfg.bak";
+
+        &error("Invalid config path") unless
+            $config_file =~ m|^/[a-zA-Z0-9_./()\-]+/lgsm/config-lgsm/common\.cfg$|;
+        &error("Invalid default path") unless
+            $default_cfg =~ m|^/[a-zA-Z0-9_./()\-]+/lgsm/config-default/config-lgsm/[a-zA-Z0-9_-]+/_default\.cfg$|;
+
+        # Form values always win for port/gamename
         my $safe_port = int($in{'port'} || $inst->{'port'} || 0);
         my $safe_game = $in{'gamename'} // $inst->{'game'} // '';
         $safe_game =~ s/[^a-zA-Z0-9 _-]//g;
-
-        $safe_port > 0  or &error($text{'err_invalid_input'});
+        $safe_port > 0     or &error($text{'err_invalid_input'});
         length($safe_game) or &error($text{'err_invalid_input'});
+
+        # Read _default.cfg preserving section comments and all assignments.
+        # Form values (port, gamename) override whatever was in the file.
+        my @output_lines;
+        my %form_overrides = (port => $safe_port, gamename => $safe_game);
+        my %seen;
+        if (-f $default_cfg) {
+            open(my $src, '<', $default_cfg) or &error("Cannot read default config: $!");
+            while (<$src>) {
+                chomp;
+                next if /^\s*$/;            # blank lines
+                next if /^\[/;              # bash conditionals
+                if (/^\s*#/) {
+                    push @output_lines, $_;  # section comment
+                } elsif (/^\s*(\w+)\s*=\s*["']?([^"'\n]*)["']?\s*$/) {
+                    my ($k, $v) = ($1, $2);
+                    $v = $form_overrides{$k} if exists $form_overrides{$k};
+                    push @output_lines, "$k=\"$v\"";
+                    $seen{$k} = 1;
+                }
+            }
+            close($src);
+        }
+        # Append any form values not found in _default.cfg
+        for my $k (qw(port gamename)) {
+            push @output_lines, "$k=\"$form_overrides{$k}\"" unless $seen{$k};
+        }
 
         # Ensure lgsm/config-lgsm/ exists
         &system_logged("su -s /bin/bash -c \"mkdir -p \Q$script_dir\E/lgsm/config-lgsm\" $unix_user");
 
         open(my $fh, '>', $config_file) or &error("Cannot write config: $!");
-        print $fh "port=\"$safe_port\"\n";
-        print $fh "gamename=\"$safe_game\"\n";
+        print $fh "$_\n" for @output_lines;
         close($fh);
 
         my @pw = getpwnam($unix_user);
         chown($pw[2], $pw[3], $config_file) if @pw;
+
+        # Backup _default.cfg so LGSM regenerates it cleanly on next run
+        rename($default_cfg, $backup_cfg) if -f $default_cfg;
 
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id));
     }
