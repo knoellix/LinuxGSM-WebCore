@@ -195,9 +195,12 @@ sub _parse_lgsm_config {
     my ($script_dir, $scriptname) = @_;
     my %cfg;
 
+    # Real LGSM on-disk layout (verified against GameServerManagers/LinuxGSM):
+    #   config-default/config-lgsm/$scriptname/_default.cfg  — LGSM-managed defaults
+    #   config-lgsm/common.cfg                               — user common overrides
+    #   config-lgsm/$scriptname/$scriptname.cfg              — user per-instance overrides
     my @layers = (
-        "$script_dir/lgsm/config-default/_default.cfg",
-        "$script_dir/lgsm/config-default/$scriptname.cfg",
+        "$script_dir/lgsm/config-default/config-lgsm/$scriptname/_default.cfg",
         "$script_dir/lgsm/config-lgsm/common.cfg",
         "$script_dir/lgsm/config-lgsm/$scriptname/$scriptname.cfg",
     );
@@ -213,14 +216,15 @@ sub _parse_lgsm_config {
             chomp;
             next if /^\s*#/;
             next if /^\s*$/;
+            next if /^\[/;    # skip bash conditionals like [ -n "..." ]
             if (/^\s*(\w+)\s*=\s*["']?([^"'\n]+?)["']?\s*$/) {
                 $cfg{$1} = $2;
                 $has_content = 1;
             }
         }
         close($fh);
-        # Layers 3 and 4 (index 2 and 3) are user configs
-        $has_user_config = 1 if $i >= 2 && $has_content;
+        # Layers 2 and 3 (index 1 and 2) are user configs
+        $has_user_config = 1 if $i >= 1 && $has_content;
     }
 
     $cfg{_has_user_config} = $has_user_config;
