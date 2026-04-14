@@ -1,0 +1,86 @@
+{
+  "mcserver": {
+    "name": "Minecraft (Vanilla)",
+    "variants": ["mcserver", "mc-paper", "mc-forge", "mc-neoforge", "mc-fabric"],
+    "fields": [
+      {"key": "port",       "type": "port",   "label_de": "Port",         "label_en": "Port",          "default": "25565"},
+      {"key": "gamename",   "type": "text",   "label_de": "Spielname",    "label_en": "Game name",     "default": "Minecraft"},
+      {"key": "maxplayers", "type": "int",    "label_de": "Max. Spieler", "label_en": "Max players",   "default": "20"},
+      {"key": "slots",      "type": "int",    "label_de": "Slots",        "label_en": "Slots",         "default": "20"}
+    ]
+  },
+  "mc-paper": {
+    "name": "Minecraft (Paper)",
+    "fields": [
+      {"key": "port",       "type": "port",   "label_de": "Port",         "label_en": "Port",          "default": "25565"},
+      {"key": "gamename",   "type": "text",   "label_de": "Spielname",    "label_en": "Game name",     "default": "PaperMC"},
+      {"key": "maxplayers", "type": "int",    "label_de": "Max. Spieler", "label_en": "Max players",   "default": "20"}
+    ]
+  },
+  "mc-forge": {
+    "name": "Minecraft (Forge)",
+    "fields": [
+      {"key": "port",       "type": "port",   "label_de": "Port",         "label_en": "Port",          "default": "25565"},
+      {"key": "gamename",   "type": "text",   "label_de": "Spielname",    "label_en": "Game name",     "default": "Forge"},
+      {"key": "maxplayers", "type": "int",    "label_de": "Max. Spieler", "label_en": "Max players",   "default": "20"}
+    ]
+  },
+  "mc-neoforge": {
+    "name": "Minecraft (NeoForge)",
+    "fields": [
+      {"key": "port",       "type": "port",   "label_de": "Port",         "label_en": "Port",          "default": "25565"},
+      {"key": "gamename",   "type": "text",   "label_de": "Spielname",    "label_en": "Game name",     "default": "NeoForge"},
+      {"key": "maxplayers", "type": "int",    "label_de": "Max. Spieler", "label_en": "Max players",   "default": "20"}
+    ]
+  },
+  "mc-fabric": {
+    "name": "Minecraft (Fabric)",
+    "fields": [
+      {"key": "port",       "type": "port",   "label_de": "Port",         "label_en": "Port",          "default": "25565"},
+      {"key": "gamename",   "type": "text",   "label_de": "Spielname",    "label_en": "Game name",     "default": "Fabric"},
+      {"key": "maxplayers", "type": "int",    "label_de": "Max. Spieler", "label_en": "Max players",   "default": "20"}
+    ]
+  },
+  "vhserver": {
+    "name": "Valheim",
+    "fields": [
+      {"key": "port",       "type": "port",     "label_de": "Port",         "label_en": "Port",            "default": "2456"},
+      {"key": "gamename",   "type": "text",     "label_de": "Spielname",    "label_en": "Game name",       "default": "Valheim"},
+      {"key": "servername", "type": "text",     "label_de": "Servername",   "label_en": "Server name",     "default": "My Valheim Server"},
+      {"key": "serverpassword", "type": "password", "label_de": "Passwort", "label_en": "Password",       "default": ""}
+    ]
+  },
+  "pwserver": {
+    "name": "Palworld",
+    "fields": [
+      {"key": "port",       "type": "port",   "label_de": "Port",         "label_en": "Port",          "default": "8211"},
+      {"key": "gamename",   "type": "text",   "label_de": "Spielname",    "label_en": "Game name",     "default": "Palworld"},
+      {"key": "maxplayers", "type": "int",    "label_de": "Max. Spieler", "label_en": "Max players",   "default": "32"}
+    ]
+  },
+  "csgoserver": {
+    "name": "Counter-Strike: Global Offensive",
+    "fields": [
+      {"key": "port",       "type": "port",   "label_de": "Port",         "label_en": "Port",          "default": "27015"},
+      {"key": "gamename",   "type": "text",   "label_de": "Spielname",    "label_en": "Game name",     "default": "CS:GO"},
+      {"key": "maxplayers", "type": "int",    "label_de": "Max. Spieler", "label_en": "Max players",   "default": "16"},
+      {"key": "tickrate",   "type": "int",    "label_de": "Tickrate",     "label_en": "Tickrate",      "default": "64"}
+    ]
+  },
+  "rustserver": {
+    "name": "Rust",
+    "fields": [
+      {"key": "port",       "type": "port",   "label_de": "Port",         "label_en": "Port",          "default": "28015"},
+      {"key": "gamename",   "type": "text",   "label_de": "Spielname",    "label_en": "Game name",     "default": "Rust"},
+      {"key": "maxplayers", "type": "int",    "label_de": "Max. Spieler", "label_en": "Max players",   "default": "100"}
+    ]
+  },
+  "armaserver": {
+    "name": "Arma 3",
+    "fields": [
+      {"key": "port",       "type": "port",   "label_de": "Port",         "label_en": "Port",          "default": "2302"},
+      {"key": "gamename",   "type": "text",   "label_de": "Spielname",    "label_en": "Game name",     "default": "Arma 3"},
+      {"key": "maxplayers", "type": "int",    "label_de": "Max. Spieler", "label_en": "Max players",   "default": "64"}
+    ]
+  }
+}

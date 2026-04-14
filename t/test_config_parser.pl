@@ -2,7 +2,7 @@
 # t/test_config_parser.pl
 use strict;
 use warnings;
-use Test::More tests => 8;
+use Test::More tests => 10;
 use File::Temp qw(tempdir);
 use FindBin qw($Bin);
 use lib "$Bin/..";
@@ -82,4 +82,27 @@ require 'src/lib/instance.pl';
     my %cfg = _parse_lgsm_config($dir, 'pwserver');
     is($cfg{port},    '8211',    'Palworld port parsed correctly');
     is($cfg{gamename},'Palworld','Palworld gamename parsed correctly');
+}
+
+# Test 9-10: template-only instance cfg does not count as real instance config
+{
+    my $dir = tempdir(CLEANUP => 1);
+    mkdir "$dir/lgsm";
+    mkdir "$dir/lgsm/config-lgsm";
+    mkdir "$dir/lgsm/config-lgsm/mcserver";
+
+    open(my $fh, '>', "$dir/lgsm/config-lgsm/common.cfg") or die $!;
+    print $fh "webhook=\"https://example.invalid/hook\"\n";
+    close($fh);
+
+    open($fh, '>', "$dir/lgsm/config-lgsm/mcserver/mcserver.cfg") or die $!;
+    print $fh "##################################\n";
+    print $fh "####### Instance Settings ########\n";
+    print $fh "##################################\n";
+    print $fh "# PLACE INSTANCE SETTINGS HERE\n";
+    close($fh);
+
+    my %cfg = _parse_lgsm_config($dir, 'mcserver');
+    is($cfg{_has_user_config}, 1, 'common.cfg with assignment still counts as user config');
+    is($cfg{_has_instance_config}, 0, 'template-only instance cfg is not a real instance config');
 }

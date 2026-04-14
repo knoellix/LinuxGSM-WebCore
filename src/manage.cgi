@@ -10,8 +10,11 @@ require './lib/core.pl';
 require './lib/instance.pl';
 require './lib/firewall.pl';
 require './lib/acl.pl';
+require './lib/games_meta.pl';
+require './lib/config_editor.pl';
 
 our (%text, %config, %in, %gconfig);
+our $current_lang;
 $main::gconfig{'charset'} = 'utf-8';
 &ReadParse(\%in);
 
@@ -39,12 +42,12 @@ if ($in{'action'}) {
         my $script_dir  = $inst->{'script'};
         $script_dir =~ s|/[^/]+$||;
 
-        my $config_file = "$script_dir/lgsm/config-lgsm/common.cfg";
+        my $config_file = "$script_dir/lgsm/config-lgsm/$script_name/$script_name.cfg";
         my $default_cfg = "$script_dir/lgsm/config-default/config-lgsm/$script_name/_default.cfg";
         my $backup_cfg  = "$default_cfg.bak";
 
         &error("Invalid config path") unless
-            $config_file =~ m|^/[a-zA-Z0-9_./()\-]+/lgsm/config-lgsm/common\.cfg$|;
+            $config_file =~ m|^/[a-zA-Z0-9_./()\-]+/lgsm/config-lgsm/[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+\.cfg$|;
         &error("Invalid default path") unless
             $default_cfg =~ m|^/[a-zA-Z0-9_./()\-]+/lgsm/config-default/config-lgsm/[a-zA-Z0-9_-]+/_default\.cfg$|;
 
@@ -82,8 +85,8 @@ if ($in{'action'}) {
             push @output_lines, "$k=\"$form_overrides{$k}\"" unless $seen{$k};
         }
 
-        # Ensure lgsm/config-lgsm/ exists
-        &system_logged("su -s /bin/bash -c \"mkdir -p \Q$script_dir\E/lgsm/config-lgsm\" $unix_user");
+        # Ensure lgsm/config-lgsm/$script_name/ exists
+        &system_logged("su -s /bin/bash -c \"mkdir -p \Q$script_dir\E/lgsm/config-lgsm/$script_name\" $unix_user");
 
         open(my $fh, '>', $config_file) or &error("Cannot write config: $!");
         print $fh "$_\n" for @output_lines;
@@ -96,6 +99,145 @@ if ($in{'action'}) {
         rename($default_cfg, $backup_cfg) if -f $default_cfg;
 
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id));
+    }
+    elsif ($action eq 'migrate_config') {
+        my $script_name = (split('/', $inst->{'script'}))[-1];
+        my $script_dir  = $inst->{'script'};
+        $script_dir =~ s|/[^/]+$||;
+
+        my $common_path = "$script_dir/lgsm/config-lgsm/common.cfg";
+        my $script_path = "$script_dir/lgsm/config-lgsm/$script_name/$script_name.cfg";
+
+        &validate_config_target($common_path);
+        &validate_config_target($script_path);
+
+        my ($common_vals, $common_order, undef) = &read_config_file($common_path);
+        my ($script_vals, $script_order, undef) = &read_config_file($script_path);
+
+        # Move known game fields from common.cfg → $script.cfg
+        # Script-side value wins if the key already exists there.
+        my @gfields = &get_game_fields($script_name);
+        my %gkeys   = map { $_->{'key'} => 1 } @gfields;
+        for my $key (keys %gkeys) {
+            if (exists $common_vals->{$key} && !exists $script_vals->{$key}) {
+                $script_vals->{$key} = $common_vals->{$key};
+                push @$script_order, $key;
+            }
+            delete $common_vals->{$key};  # remove from common regardless
+        }
+
+        # Ensure $script subdir exists
+        &system_logged("su -s /bin/bash -c \"mkdir -p \Q$script_dir\E/lgsm/config-lgsm/$script_name\" $unix_user");
+
+        # Write $script.cfg
+        open(my $fh, '>', $script_path) or &error("Cannot write config: $!");
+        for my $k (@$script_order) {
+            print $fh "$k=\"$script_vals->{$k}\"\n" if exists $script_vals->{$k};
+        }
+        close($fh);
+
+        my @pw = getpwnam($unix_user);
+        chown($pw[2], $pw[3], $script_path) if @pw;
+
+        # Write back common.cfg; delete if nothing remains
+        my @remaining = grep { exists $common_vals->{$_} } @$common_order;
+        if (@remaining) {
+            open($fh, '>', $common_path) or &error("Cannot write common config: $!");
+            print $fh "$_=\"$common_vals->{$_}\"\n" for @remaining;
+            close($fh);
+            chown($pw[2], $pw[3], $common_path) if @pw;
+        } else {
+            unlink $common_path;
+        }
+
+        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id));
+    }
+    elsif ($action eq 'save_config') {
+        my $script_name = (split('/', $inst->{'script'}))[-1];
+        my $script_dir  = $inst->{'script'};
+        $script_dir =~ s|/[^/]+$||;
+
+        my $cfg_file_key = $in{'config_file'} // '';
+        $cfg_file_key = ($cfg_file_key eq 'instance' || $cfg_file_key eq 'common' || $cfg_file_key eq 'game')
+            ? $cfg_file_key : 'common';
+        my $cfg_view_key = $in{'config_view'} // '';
+        $cfg_view_key = ($cfg_view_key eq 'instance' || $cfg_view_key eq 'common' || $cfg_view_key eq 'game')
+            ? $cfg_view_key : $cfg_file_key;
+        my $cfg_path;
+        if ($cfg_file_key eq 'instance') {
+            $cfg_path = "$script_dir/lgsm/config-lgsm/$script_name/$script_name.cfg";
+        } elsif ($cfg_file_key eq 'game') {
+            my %cfg_ctx = &_parse_lgsm_config($script_dir, $script_name);
+            $cfg_path = &resolve_game_server_config_path($script_dir, $script_name, \%cfg_ctx);
+            &error("Invalid game config path") unless $cfg_path =~ m|^\Q$script_dir\E/|;
+        } else {
+            $cfg_path = "$script_dir/lgsm/config-lgsm/common.cfg";
+        }
+        &validate_config_target($cfg_path) unless $cfg_file_key eq 'game';
+
+        # Ensure the parent directory exists
+        (my $cfg_dir = $cfg_path) =~ s|/[^/]+$||;
+        &system_logged("su -s /bin/bash -c \"mkdir -p \Q$cfg_dir\E\" $unix_user");
+
+        if ($cfg_file_key eq 'game') {
+            unless (-f $cfg_path) {
+                &run_server_action($unix_user, 'start', $script_name, $script_dir);
+                sleep 2;
+                &run_server_action($unix_user, 'stop', $script_name, $script_dir);
+            }
+            -f $cfg_path or &error($text{'config_editor_game_missing'});
+            my $raw_game = $in{'game_config_raw'} // '';
+            eval { &write_file_exact($cfg_path, $raw_game); 1 }
+                or &error("Cannot write config: $!");
+        } elsif (int($in{'raw_mode'} || 0)) {
+            # Raw mode: filter content and write
+            my $raw_lines = &filter_raw_config($in{'config_raw'} // '');
+            open(my $fh, '>', $cfg_path) or &error("Cannot write config: $!");
+            print $fh "$_\n" for @$raw_lines;
+            close($fh);
+        } else {
+            # Form mode: read current file, apply field_* overrides, write back
+            my ($cur_vals, $cur_order, undef) = &read_config_file($cfg_path);
+
+            # Apply form fields (field_<key> params)
+            for my $param (keys %in) {
+                next unless $param =~ /^field_(\w+)$/;
+                my $key = $1;
+                my $val = $in{$param} // '';
+                $val =~ s/[<>"\\]//g;   # basic sanitize
+                $cur_vals->{$key} = $val;
+                push @$cur_order, $key unless grep { $_ eq $key } @$cur_order;
+            }
+
+            open(my $fh, '>', $cfg_path) or &error("Cannot write config: $!");
+            for my $key (@$cur_order) {
+                print $fh "$key=\"$cur_vals->{$key}\"\n" if exists $cur_vals->{$key};
+            }
+            close($fh);
+        }
+
+        my @pw = getpwnam($unix_user);
+        chown($pw[2], $pw[3], $cfg_path) if @pw;
+
+        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) .
+                  "&config_file=" . &html_escape($cfg_file_key) .
+                  "&config_view=" . &html_escape($cfg_view_key));
+    }
+    elsif ($action eq 'init_game_config') {
+        my $script_name = (split('/', $inst->{'script'}))[-1];
+        my $script_dir  = $inst->{'script'};
+        $script_dir =~ s|/[^/]+$||;
+        my %cfg_ctx = &_parse_lgsm_config($script_dir, $script_name);
+        my $cfg_path = &resolve_game_server_config_path($script_dir, $script_name, \%cfg_ctx);
+
+        unless (-f $cfg_path) {
+            &run_server_action($unix_user, 'start', $script_name, $script_dir);
+            sleep 2;
+            &run_server_action($unix_user, 'stop', $script_name, $script_dir);
+        }
+
+        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) .
+                  "&config_file=game&config_view=game");
     }
     else {
         my $script_name = (split('/', $inst->{'script'}))[-1];
@@ -157,10 +299,19 @@ foreach my $action (qw(start stop restart update)) {
 }
 print "</p>\n";
 
+# Detect if common.cfg contains misplaced instance-specific fields
+my $common_cfg_path = "$script_dir_for_cfg/lgsm/config-lgsm/common.cfg";
+my ($common_chk, undef, undef) = &read_config_file($common_cfg_path);
+my %gkeys_chk = map { $_->{'key'} => 1 } &get_game_fields($script_name_for_cfg);
+my $has_misplaced = scalar grep { $gkeys_chk{$_} } keys %$common_chk;
+
 # Warnings section
 my @warnings = @{$inst->{'warnings'} || []};
-if (!$cfg{_has_user_config}) {
+if (!$cfg{_has_instance_config}) {
     push @warnings, $text{'manage_fix_config_warn'};
+}
+if ($has_misplaced) {
+    push @warnings, $text{'manage_migrate_warn'};
 }
 
 if (@warnings) {
@@ -172,8 +323,17 @@ if (@warnings) {
     print "</ul>\n";
 }
 
-# Quick-Fix form (only if no user config)
-if (!$cfg{_has_user_config}) {
+# Migrate-Config form (if game fields are misplaced in common.cfg)
+if ($has_misplaced) {
+    print &ui_form_start("manage.cgi", "post");
+    print &ui_hidden("instance_id", $safe_id);
+    print &ui_hidden("action", "migrate_config");
+    print &ui_submit($text{'manage_migrate_btn'});
+    print &ui_form_end();
+}
+
+# Quick-Fix form (only if no real instance config)
+if (!$cfg{_has_instance_config}) {
     my $cur_port = int($inst->{'port'}) || '';
     my $cur_game = ($inst->{'game'} // 'unknown') eq 'unknown' ? '' : &html_escape($inst->{'game'});
     print &ui_form_start("manage.cgi", "post");
@@ -185,6 +345,185 @@ if (!$cfg{_has_user_config}) {
     print &ui_table_end();
     print &ui_submit($text{'manage_fix_config_btn'});
     print &ui_form_end();
+}
+
+# Config editor section
+{
+    my $cfg_file_key = $in{'config_file'} // '';
+    $cfg_file_key = ($cfg_file_key eq 'common' || $cfg_file_key eq 'instance' || $cfg_file_key eq 'game')
+        ? $cfg_file_key : 'common';
+    my $cfg_view_key = $in{'config_view'} // '';
+    if ($cfg_view_key ne 'common' && $cfg_view_key ne 'instance' && $cfg_view_key ne 'game') {
+        $cfg_view_key = $cfg_file_key;
+    }
+    my $common_path   = "$script_dir_for_cfg/lgsm/config-lgsm/common.cfg";
+    my $instance_path = "$script_dir_for_cfg/lgsm/config-lgsm/$script_name_for_cfg/$script_name_for_cfg.cfg";
+    my $game_cfg_path = &resolve_game_server_config_path($script_dir_for_cfg, $script_name_for_cfg, \%cfg);
+    my ($common_vals, $common_order, $common_raw) = &read_config_file($common_path);
+    my ($inst_vals, $inst_order, $inst_raw) = &read_config_file($instance_path);
+    my $game_raw = '';
+    my $game_cfg_exists = 0;
+    if ($game_cfg_path && -f $game_cfg_path) {
+        $game_cfg_exists = 1;
+        if (open(my $gfh, '<', $game_cfg_path)) {
+            local $/;
+            $game_raw = <$gfh>;
+            close($gfh);
+        }
+    }
+    my @game_fields = &get_game_fields($script_name_for_cfg);
+    my $profile_name = &get_game_display_name($script_name_for_cfg);
+
+    my $lang = $current_lang // 'en';
+    # Open the <details> block when the user navigated to the editor
+    my $open_attr = defined($in{'config_file'}) ? ' open' : '';
+
+    print "<details$open_attr>\n";
+    print "<summary><b>$text{'config_editor_title'}</b></summary>\n";
+    print "<p>" . &html_escape($text{'config_editor_profile'}) . " <b>" .
+          &html_escape($profile_name) . "</b> " .
+          &html_escape($text{'config_editor_profile_source'}) .
+          " <code>src/lib/games_meta.json</code></p>\n";
+    print "<p><b>" . &html_escape($text{'config_editor_common_path'}) . "</b> <code>" .
+          &html_escape($common_path) . "</code><br>\n";
+    print "<b>" . &html_escape($text{'config_editor_instance_path'}) . "</b> <code>" .
+          &html_escape($instance_path) . "</code><br>\n";
+    print "<b>" . &html_escape($text{'config_editor_game_path'}) . "</b> <code>" .
+          &html_escape($game_cfg_path) . "</code></p>\n";
+
+    print <<'JS';
+<script>
+function lgsmShowConfigView(view) {
+    var views = ['common', 'instance', 'game'];
+    for (var i = 0; i < views.length; i++) {
+        var id = views[i];
+        var panel = document.getElementById('cfg_panel_' + id);
+        var btn = document.getElementById('cfg_btn_' + id);
+        if (panel) panel.style.display = (id === view) ? 'block' : 'none';
+        if (btn) btn.disabled = (id === view);
+    }
+}
+function lgsmToggleRaw(view, cb) {
+    var f = document.getElementById('cfg_form_div_' + view);
+    var r = document.getElementById('cfg_raw_div_' + view);
+    if (!f || !r) return;
+    if (cb.checked) { f.style.display='none'; r.style.display='block'; }
+    else            { f.style.display='block'; r.style.display='none'; }
+}
+</script>
+JS
+
+    print "<p>";
+    print "<input type='button' class='ui_submit' id='cfg_btn_common' ".
+          "onclick=\"lgsmShowConfigView('common')\" value='" .
+          &html_escape($text{'config_editor_global_btn'}) . "'> ";
+    print "<input type='button' class='ui_submit' id='cfg_btn_instance' ".
+          "onclick=\"lgsmShowConfigView('instance')\" value='" .
+          &html_escape($text{'config_editor_instance_btn'}) . "'> ";
+    print "<input type='button' class='ui_submit' id='cfg_btn_game' ".
+          "onclick=\"lgsmShowConfigView('game')\" value='" .
+          &html_escape($text{'config_editor_game_btn'}) . "'>";
+    print "</p>\n";
+
+    # Common LGSM config panel
+    my ($common_editable, $common_unknown, undef) =
+        &split_editor_fields('common', \@game_fields, $common_vals, $common_order);
+    print "<div id='cfg_panel_common' style='display:none'>\n";
+    print "<p><b>" . &html_escape($text{'config_editor_common_notice'}) . "</b></p>\n";
+    print &ui_form_start("manage.cgi", "post");
+    print &ui_hidden("instance_id", $safe_id);
+    print &ui_hidden("action",      "save_config");
+    print &ui_hidden("config_file", "common");
+    print &ui_hidden("config_view", "common");
+    print "<p><label>";
+    print "<input type='checkbox' id='raw_mode_cb_common' name='raw_mode' value='1' ";
+    print "onchange=\"lgsmToggleRaw('common', this)\"> ";
+    print "$text{'config_editor_raw_mode'}</label></p>\n";
+    print "<div id='cfg_form_div_common'>\n";
+    print &ui_table_start($text{'config_editor_common'}, "width=100%", 2);
+    if (@$common_unknown) {
+        for my $key (@$common_unknown) {
+            my $val = $common_vals->{$key} // '';
+            print &ui_table_row(&html_escape($key),
+                                &ui_textbox("field_$key", &html_escape($val), 40));
+        }
+    } else {
+        print &ui_table_row(&html_escape($text{'config_editor_unknown_fields'}), '-');
+    }
+    print &ui_table_end();
+    print "</div>\n";
+    print "<div id='cfg_raw_div_common' style='display:none'>\n";
+    print &ui_textarea("config_raw", $common_raw, 20, 72);
+    print "</div>\n";
+    print &ui_submit($text{'config_editor_save'});
+    print &ui_form_end();
+    print "</div>\n";
+
+    # Instance LGSM config panel
+    my ($inst_editable, $inst_unknown, undef) =
+        &split_editor_fields('instance', \@game_fields, $inst_vals, $inst_order);
+    print "<div id='cfg_panel_instance' style='display:none'>\n";
+    print &ui_form_start("manage.cgi", "post");
+    print &ui_hidden("instance_id", $safe_id);
+    print &ui_hidden("action",      "save_config");
+    print &ui_hidden("config_file", "instance");
+    print &ui_hidden("config_view", "instance");
+    print "<p><label>";
+    print "<input type='checkbox' id='raw_mode_cb_instance' name='raw_mode' value='1' ";
+    print "onchange=\"lgsmToggleRaw('instance', this)\"> ";
+    print "$text{'config_editor_raw_mode'}</label></p>\n";
+    print "<div id='cfg_form_div_instance'>\n";
+    print &ui_table_start($text{'config_editor_instance'}, "width=100%", 2);
+    for my $f (@$inst_editable) {
+        my $key   = $f->{'key'};
+        my $label = (($lang eq 'de') ? $f->{'label_de'} : $f->{'label_en'}) // $key;
+        my $val   = exists $inst_vals->{$key} ? $inst_vals->{$key} : ($f->{'default'} // '');
+        my $width = ($f->{'type'} eq 'port' || $f->{'type'} eq 'int') ? 10 : 40;
+        print &ui_table_row(&html_escape($label),
+                            &ui_textbox("field_$key", &html_escape($val), $width));
+    }
+    if (@$inst_unknown) {
+        print &ui_table_row("<b>$text{'config_editor_unknown_fields'}</b>", "");
+        for my $key (@$inst_unknown) {
+            my $val = $inst_vals->{$key} // '';
+            print &ui_table_row(&html_escape($key),
+                                &ui_textbox("field_$key", &html_escape($val), 40));
+        }
+    }
+    print &ui_table_end();
+    print "</div>\n";
+    print "<div id='cfg_raw_div_instance' style='display:none'>\n";
+    print &ui_textarea("config_raw", $inst_raw, 20, 72);
+    print "</div>\n";
+    print &ui_submit($text{'config_editor_save'});
+    print &ui_form_end();
+    print "</div>\n";
+
+    # Game server config panel (game-specific fields on instance config)
+    print "<div id='cfg_panel_game' style='display:none'>\n";
+    if (!$game_cfg_exists) {
+        print "<p><b>" . &html_escape($text{'config_editor_game_missing'}) . "</b></p>\n";
+        print &ui_form_start("manage.cgi", "post");
+        print &ui_hidden("instance_id", $safe_id);
+        print &ui_hidden("action", "init_game_config");
+        print &ui_submit($text{'config_editor_game_create_btn'});
+        print &ui_form_end();
+    } else {
+        print &ui_form_start("manage.cgi", "post");
+        print &ui_hidden("instance_id", $safe_id);
+        print &ui_hidden("action",      "save_config");
+        print &ui_hidden("config_file", "game");
+        print &ui_hidden("config_view", "game");
+        print "<p>" . &html_escape($text{'config_editor_game_notice'}) . "</p>\n";
+        print &ui_textarea("game_config_raw", $game_raw, 22, 90);
+        print &ui_submit($text{'config_editor_save'});
+        print &ui_form_end();
+    }
+    print "</div>\n";
+
+    print "<script>lgsmShowConfigView('" . &html_escape($cfg_view_key) . "');</script>\n";
+
+    print "</details>\n";
 }
 
 &footer('index.cgi', $text{'index_title'});

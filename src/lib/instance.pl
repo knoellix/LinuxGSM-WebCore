@@ -189,8 +189,10 @@ sub list_system_users {
 #   4. lgsm/config-lgsm/$scriptname/$scriptname.cfg
 #
 # Returns a hash of all parsed values plus:
-#   _has_user_config => 1  if any file from layer 3 or 4 exists and is non-empty
-#   _has_user_config => 0  if data comes only from config-default
+#   _has_user_config     => 1 if any user layer (common or instance) has key=value
+#   _has_user_config     => 0 if data comes only from config-default
+#   _has_instance_config => 1 if instance layer has at least one key=value
+#   _has_instance_config => 0 for missing/empty/template-only instance cfg
 sub _parse_lgsm_config {
     my ($script_dir, $scriptname) = @_;
     my %cfg;
@@ -206,6 +208,7 @@ sub _parse_lgsm_config {
     );
 
     my $has_user_config = 0;
+    my $has_instance_config = 0;
 
     for my $i (0 .. $#layers) {
         my $path = $layers[$i];
@@ -225,9 +228,12 @@ sub _parse_lgsm_config {
         close($fh);
         # Layers 2 and 3 (index 1 and 2) are user configs
         $has_user_config = 1 if $i >= 1 && $has_content;
+        # Layer 3 (index 2) is instance-specific config
+        $has_instance_config = 1 if $i == 2 && $has_content;
     }
 
     $cfg{_has_user_config} = $has_user_config;
+    $cfg{_has_instance_config} = $has_instance_config;
     return %cfg;
 }
 

@@ -80,10 +80,36 @@ Dieser Abschnitt dokumentiert zwingende Webmin-spezifische Details, die aus real
 - Schutz gegen stale ACL-Dateien mit Default-Fallback:
   - `!defined($access{'key'}) ? 1 : $access{'key'}`
 
-### 7.3 Referenz-Recherche in Webmin
+### 7.3 CGI-Spezifika
+- `$current_lang` explizit als `our $current_lang` deklarieren wenn Sprachlogik benoetigt wird.
+- Lang-Strings kein Perl-Syntax wie `$script` enthalten — wird nicht interpoliert; Wert dynamisch im CGI bauen.
+- `<details><summary>...</summary>...</details>` fuer einklappbare Abschnitte — funktioniert nativ in Authentic Theme ohne JS.
+
+### 7.4 Referenz-Recherche in Webmin
 - Bei Unsicherheit zuerst `webmin/webmin` auf GitHub durchsuchen.
 - Startpunkte:
   - `acl/edit_acl.cgi`
   - `acl/save_acl.cgi`
   - `net/acl_security.pl`
+
+## 8. LGSM Domain-Wissen
+
+### 8.1 Config-Ebenen (Prioritaet niedrig → hoch)
+1. `lgsm/config-default/config-lgsm/$script/_default.cfg` — LGSM-generiert, **niemals** beschreiben
+2. `lgsm/config-lgsm/common.cfg` — gilt fuer ALLE Instanzen des Unix-Users; nur wirklich geteilte Settings (Discord-Webhook, Log-Pfad)
+3. `lgsm/config-lgsm/$script/$script.cfg` — instanz-spezifisch; Port, Spielname, Slots gehoeren hierher
+
+### 8.2 Bekannte Fallen
+- **`_has_user_config` Quirk:** LGSM erstellt `$script.cfg` selbst als Template mit nur Kommentaren — zaehlt NICHT als user config. Check prueft auf echte key=value-Paare, nicht nur Datei-Existenz.
+- **Config-Sicherheit:** `validate_config_target($path)` aus `src/lib/config_editor.pl` vor jedem Config-Schreiben aufrufen. Niemals `_default.cfg` beschreiben.
+- **JSON:** `JSON::PP` ist Perl-Core seit 5.14, kein externes Modul noetig.
+
+### 8.3 Game-Metadaten-DB
+- Statische DB: `src/lib/games_meta.json` — Felder, Typen und Labels pro LGSM-Script-Name
+- Lokale Ueberschreibung: `$config_directory/games_meta_local.json`
+- Bibliothek: `src/lib/games_meta.pl` — `get_game_fields($script)`, `get_game_display_name($script)`
+- In Tests: `_reset_meta_cache()` zwischen verschiedenen Fixtures aufrufen
+
+### 8.4 GitHub-Referenzen
+- LGSM Config-Struktur: `GameServerManagers/LinuxGSM` (Repo)
 
