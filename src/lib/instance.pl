@@ -109,8 +109,7 @@ sub resolve_instance_sftp_user {
     my ($instance_id, $game_user) = @_;
     my %reg = _load_registered();
     if ($reg{$instance_id} && ($reg{$instance_id}{'sftp_user'} // '') ne '') {
-        my $stored = $reg{$instance_id}{'sftp_user'};
-        return $stored if getpwnam($stored);
+        return $reg{$instance_id}{'sftp_user'};
     }
 
     my @candidates = (

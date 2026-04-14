@@ -48,7 +48,6 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
 
         getpwnam($reg_user) or &error($text{'err_not_found'});
         -f $reg_script      or &error($text{'err_script_not_found'});
-        getpwnam($reg_sftp_user) or &error($text{'err_not_found'}) if $reg_sftp_user;
 
         my $script_id = (split('/', $reg_script))[-1];
         &register_instance($script_id, $reg_user, $reg_script, {
@@ -75,18 +74,7 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
 my @instances    = &list_instances();
 my @webmin_users = &list_webmin_users();
 my @wbm_opts     = map { [$_, $_] } @webmin_users;
-my @sftp_users = _list_sftp_users();
-my @sftp_opts = map { [$_, $_] } @sftp_users;
-
-print &ui_columns_header([
-    $text{'index_col_user'},
-    $text{'scan_col_script'},
-    $text{'scan_col_ftp'},
-    $text{'index_col_game'},
-    $text{'index_col_port'},
-    $text{'scan_col_owner'},
-    $text{'scan_assign'},
-]);
+my @rows;
 
 foreach my $inst (@instances) {
     my $id   = $inst->{'id'};
@@ -119,7 +107,7 @@ foreach my $inst (@instances) {
         $assign_cell .= &ui_form_end();
     }
 
-    print &ui_columns_row([
+    push @rows, [
         &html_escape($user),
         $script_cell,
         $sftp_cell,
@@ -127,10 +115,22 @@ foreach my $inst (@instances) {
         int($inst->{'port'}),
         $owner_cell,
         $assign_cell,
-    ]);
+    ];
 }
 
-print &ui_columns_end();
+print &ui_columns_table(
+    [
+        $text{'index_col_user'},
+        $text{'scan_col_script'},
+        $text{'scan_col_ftp'},
+        $text{'index_col_game'},
+        $text{'index_col_port'},
+        $text{'scan_col_owner'},
+        $text{'scan_assign'},
+    ],
+    "100%",
+    \@rows,
+);
 
 # --- Manual registration form ---
 print "<h3>$text{'scan_register_title'}</h3>\n";
@@ -148,21 +148,9 @@ print &ui_table_row($text{'scan_reg_script'},
 print &ui_table_row($text{'scan_reg_owner'},
     &ui_select('reg_webmin_user', '', [['', '---'], @wbm_opts]));
 print &ui_table_row($text{'scan_reg_sftp_user'},
-    &ui_select('reg_sftp_user', '', [['', '---'], @sftp_opts]));
+    &ui_textbox('reg_sftp_user', '', 30));
 print &ui_table_end();
 print &ui_submit($text{'scan_reg_submit'});
 print &ui_form_end();
 
 &footer('', '');
-
-sub _list_sftp_users {
-    my @out;
-    open(my $fh, '<', '/etc/passwd') or return ();
-    while (<$fh>) {
-        chomp;
-        my ($user) = split(':', $_);
-        push @out, $user if $user =~ /^ftp[_-]/;
-    }
-    close($fh);
-    return sort @out;
-}
