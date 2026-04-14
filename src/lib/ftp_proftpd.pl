@@ -35,8 +35,15 @@ sub discover_proftpd_config_files {
                 (my $cfg_dir = $cfg) =~ s|/[^/]+$||;
                 $pattern = "$cfg_dir/$pattern";
             }
-            for my $inc (bsd_glob($pattern)) {
-                push @queue, $inc if -f $inc;
+            # Strip trailing slashes so that directory detection and glob work correctly
+            $pattern =~ s|/+$||;
+            if (-d $pattern) {
+                # Directory include: load all *.conf files inside (ProFTPD behaviour)
+                push @queue, grep { -f $_ } bsd_glob("$pattern/*.conf");
+            } else {
+                for my $inc (bsd_glob($pattern)) {
+                    push @queue, $inc if -f $inc;
+                }
             }
         }
     }
@@ -176,6 +183,31 @@ sub ftpasswd_delete_user {
               "--file " . _sq($args{'file'}) . " " .
               "--name " . _sq($args{'name'});
     return &system_logged($cmd);
+}
+
+sub save_ftp_password {
+    my ($config_dir, $instance_id, $password) = @_;
+    my $file = "$config_dir/ftp_pass_$instance_id";
+    open(my $fh, '>', $file) or return;
+    print {$fh} $password;
+    close($fh);
+    chmod(0600, $file);
+}
+
+sub read_ftp_password {
+    my ($config_dir, $instance_id) = @_;
+    my $file = "$config_dir/ftp_pass_$instance_id";
+    return undef unless -f $file;
+    open(my $fh, '<', $file) or return undef;
+    my $pass = do { local $/; <$fh> };
+    close($fh);
+    return $pass;
+}
+
+sub delete_ftp_password {
+    my ($config_dir, $instance_id) = @_;
+    my $file = "$config_dir/ftp_pass_$instance_id";
+    unlink $file if -f $file;
 }
 
 sub apply_secure_ftp_baseline {

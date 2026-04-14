@@ -278,6 +278,44 @@ if ($in{'action'}) {
 
         &redirect("index.cgi");
     }
+    elsif ($action eq 'create_instance_ftp_user') {
+        my %ftp_state  = &discover_ftp_state();
+        my $auth_file  = $ftp_state{'auth_user_file'} || '/etc/proftpd/ftpd.passwd';
+        my $ftp_user   = 'ftp_' . $unix_user;
+        my $ftp_pass   = $in{'ftp_pass'} // '';
+        length($ftp_pass) or &error($text{'err_invalid_input'});
+        my @pw = getpwnam($unix_user);
+        my $uid = @pw ? $pw[2] : 33;
+        my $gid = @pw ? $pw[3] : 33;
+        my $home = @pw ? $pw[7] : "/home/$unix_user";
+        &ftpasswd_create_user(
+            file     => $auth_file,
+            name     => $ftp_user,
+            password => $ftp_pass,
+            uid      => $uid,
+            gid      => $gid,
+            home     => $home,
+            shell    => '/bin/false',
+        ) == 0 or &error("Failed creating FTP user");
+        &register_instance($instance_id, $unix_user, $inst->{'script'}, {
+            sftp_user => $ftp_user,
+        });
+        our $config_directory;
+        &save_ftp_password($config_directory, $instance_id, $ftp_pass);
+        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id));
+    }
+    elsif ($action eq 'delete_instance_ftp_user') {
+        my $ftp_user  = &sanitize_input($in{'ftp_user'});
+        my %ftp_state = &discover_ftp_state();
+        my $auth_file = $ftp_state{'auth_user_file'} || '/etc/proftpd/ftpd.passwd';
+        &ftpasswd_delete_user(file => $auth_file, name => $ftp_user);
+        &register_instance($instance_id, $unix_user, $inst->{'script'}, {
+            sftp_user => '',
+        });
+        our $config_directory;
+        &delete_ftp_password($config_directory, $instance_id);
+        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id));
+    }
     elsif ($action eq 'init_game_config') {
         my $script_name = (split('/', $inst->{'script'}))[-1];
         my $script_dir  = $inst->{'script'};
@@ -361,6 +399,39 @@ print &ui_hidden("action", "delete_instance");
 print &ui_submit($text{'manage_delete_btn'});
 print &ui_form_end();
 print "</p>\n";
+
+# FTP section
+{
+    my $cur_ftp_user = &resolve_instance_sftp_user($instance_id, $unix_user);
+    print "<h3>FTP</h3>\n";
+    if ($cur_ftp_user && $cur_ftp_user ne $unix_user) {
+        our $config_directory;
+        my $stored_pass = &read_ftp_password($config_directory, $instance_id);
+        print &ui_table_start('', undef, 2);
+        print &ui_table_row($text{'ftp_col_user'}, &html_escape($cur_ftp_user));
+        if (defined $stored_pass && $stored_pass ne '') {
+            print &ui_table_row($text{'ftp_pass'}, '<code>' . &html_escape($stored_pass) . '</code>');
+        }
+        print &ui_table_end();
+        print &ui_form_start("manage.cgi", "post");
+        print &ui_hidden("instance_id", $safe_id);
+        print &ui_hidden("action", "delete_instance_ftp_user");
+        print &ui_hidden("ftp_user", $cur_ftp_user);
+        print &ui_submit($text{'ftp_delete_btn'}, undef, 0, undef, 'btn-danger');
+        print &ui_form_end();
+    } else {
+        my $default_name = &html_escape('ftp_' . $unix_user);
+        print &ui_form_start("manage.cgi", "post");
+        print &ui_hidden("instance_id", $safe_id);
+        print &ui_hidden("action", "create_instance_ftp_user");
+        print &ui_table_start('', undef, 2);
+        print &ui_table_row($text{'ftp_col_user'}, "<code>$default_name</code>");
+        print &ui_table_row($text{'ftp_pass'}, &ui_password('ftp_pass', '', 24));
+        print &ui_table_end();
+        print &ui_submit($text{'ftp_create_btn'});
+        print &ui_form_end();
+    }
+}
 
 # Detect if common.cfg contains misplaced instance-specific fields
 my $common_cfg_path = "$script_dir_for_cfg/lgsm/config-lgsm/common.cfg";

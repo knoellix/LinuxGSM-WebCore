@@ -17,7 +17,12 @@ our (%text, %in);
 &can_scan() or &error($text{'err_access_denied'});
 
 my %state = &discover_ftp_state();
-my $auth_file = $state{'auth_user_file'} || '/etc/proftpd/ftpd.passwd';
+# Determine the auth file: prefer value from config, fall back to common default.
+# Track whether the path came from config so the UI can indicate this clearly.
+my $auth_file_from_config = ($state{'auth_user_file'} // '') ne '';
+my $auth_file = $auth_file_from_config
+    ? $state{'auth_user_file'}
+    : '/etc/proftpd/ftpd.passwd';
 
 if ($ENV{REQUEST_METHOD} eq 'POST') {
     my $action = &sanitize_input($in{'action'} || '');
@@ -34,8 +39,9 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
         length($ftp_pass) or &error($text{'err_invalid_input'});
         my $inst = &get_instance($instance_id) or &error($text{'err_not_found'});
         my $home = $inst->{'home'};
-        my $uid = int($in{'ftp_uid'} || 33);
-        my $gid = int($in{'ftp_gid'} || 33);
+        my @pw = getpwnam($inst->{'user'});
+        my $uid = @pw ? $pw[2] : 33;
+        my $gid = @pw ? $pw[3] : 33;
 
         &ftpasswd_create_user(
             file     => $auth_file,
@@ -71,6 +77,15 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
         ) == 0 or &error("Failed deleting FTP user");
         &redirect('ftp_settings.cgi');
     }
+    elsif ($action eq 'assign_ftp_user') {
+        my $ftp_user    = &sanitize_input($in{'ftp_user'});
+        my $instance_id = &sanitize_input($in{'instance_id'});
+        my $inst = &get_instance($instance_id) or &error($text{'err_not_found'});
+        &register_instance($instance_id, $inst->{'user'}, $inst->{'script'}, {
+            sftp_user => $ftp_user,
+        });
+        &redirect('ftp_settings.cgi');
+    }
 }
 
 &header($text{'ftp_title'}, '');
@@ -104,34 +119,65 @@ print &ui_submit($text{'ftp_apply_baseline_btn'});
 print &ui_form_end();
 
 print "<h3>$text{'ftp_users_title'}</h3>\n";
+if ($auth_file_from_config) {
+    print "<p><code>" . &html_escape($auth_file) . "</code></p>\n";
+} else {
+    print "<p><i>" . &html_escape($text{'ftp_authfile_fallback'}) . "</i> <code>" . &html_escape($auth_file) . "</code></p>\n";
+}
 my @ftp_users = &parse_ftpd_passwd($auth_file);
 if (@ftp_users) {
-    print &ui_columns_header([
-        $text{'ftp_col_user'},
-        $text{'ftp_col_home'},
-        $text{'ftp_col_actions'},
-    ]);
+    # Build lookup: ftp_username -> instance_id
+    my @all_instances = &list_instances();
+    my %ftp_to_inst;
+    for my $inst (@all_instances) {
+        my $su = $inst->{'sftp_user'} // '';
+        $ftp_to_inst{$su} = $inst->{'id'} if $su ne '';
+    }
+    my @inst_opts = map { [$_->{'id'}, "$_->{'id'} ($_->{'user'})"] } @all_instances;
+
+    my @rows;
     for my $u (@ftp_users) {
-        my $actions = &ui_form_start('ftp_settings.cgi', 'post');
-        $actions .= &ui_hidden('action', 'delete_ftp_user');
-        $actions .= &ui_hidden('ftp_user', $u->{'name'});
-        $actions .= &ui_submit($text{'ftp_delete_btn'});
-        $actions .= &ui_form_end();
+        my $assigned_id = $ftp_to_inst{$u->{'name'}};
+        my $inst_cell;
+        if ($assigned_id) {
+            $inst_cell = &html_escape($assigned_id);
+        } else {
+            $inst_cell = &ui_form_start('ftp_settings.cgi', 'post')
+                       . &ui_hidden('action', 'assign_ftp_user')
+                       . &ui_hidden('ftp_user', $u->{'name'})
+                       . &ui_select('instance_id', '', \@inst_opts)
+                       . ' '
+                       . &ui_submit($text{'ftp_assign_btn'}, undef, 0, undef, 'btn-default')
+                       . &ui_form_end();
+        }
 
-        $actions .= &ui_form_start('ftp_settings.cgi', 'post');
-        $actions .= &ui_hidden('action', 'change_ftp_pass');
-        $actions .= &ui_hidden('ftp_user', $u->{'name'});
-        $actions .= &ui_password('ftp_pass', '', 18);
-        $actions .= &ui_submit($text{'ftp_change_pass_btn'});
-        $actions .= &ui_form_end();
+        my $del = &ui_form_start('ftp_settings.cgi', 'post')
+                . &ui_hidden('action', 'delete_ftp_user')
+                . &ui_hidden('ftp_user', $u->{'name'})
+                . &ui_submit($text{'ftp_delete_btn'}, undef, 0, undef, 'btn-danger')
+                . &ui_form_end();
 
-        print &ui_columns_row([
+        my $chpw = &ui_form_start('ftp_settings.cgi', 'post')
+                 . &ui_hidden('action', 'change_ftp_pass')
+                 . &ui_hidden('ftp_user', $u->{'name'})
+                 . &ui_password('ftp_pass', '', 18)
+                 . ' '
+                 . &ui_submit($text{'ftp_change_pass_btn'}, undef, 0, undef, 'btn-default')
+                 . &ui_form_end();
+
+        push @rows, [
             &html_escape($u->{'name'}),
             &html_escape($u->{'home'} // ''),
-            $actions,
-        ]);
+            $inst_cell,
+            $del . $chpw,
+        ];
     }
-    print &ui_columns_end();
+    print &ui_columns_table(
+        [$text{'ftp_col_user'}, $text{'ftp_col_home'}, $text{'ftp_col_instance'}, $text{'ftp_col_actions'}],
+        100,
+        \@rows,
+        undef, 1,
+    );
 } else {
     print "<p><i>" . &html_escape($text{'ftp_no_users'}) . "</i></p>\n";
 }
@@ -145,8 +191,6 @@ print &ui_table_start('', undef, 2);
 print &ui_table_row($text{'ftp_instance'}, &ui_select('instance_id', '', \@inst_opts));
 print &ui_table_row($text{'ftp_user'}, &ui_textbox('ftp_user', '', 24));
 print &ui_table_row($text{'ftp_pass'}, &ui_password('ftp_pass', '', 24));
-print &ui_table_row($text{'ftp_uid'}, &ui_textbox('ftp_uid', '33', 8));
-print &ui_table_row($text{'ftp_gid'}, &ui_textbox('ftp_gid', '33', 8));
 print &ui_table_end();
 print &ui_submit($text{'ftp_create_btn'});
 print &ui_form_end();

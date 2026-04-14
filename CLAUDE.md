@@ -125,3 +125,16 @@ Dieser Abschnitt dokumentiert zwingende Webmin-spezifische Details, die aus real
 - Wenn Game-Config fehlt: zuerst Bootstrap-Flow anbieten (`init_game_config`: kurz Start/Stop), dann Bearbeitung freigeben.
 - Fuer Datei-Navigation im Webmin-UI File Manager Link auf Server-Root anzeigen (`/filemin/?path=<urlencoded-root>`).
 
+### 8.8 ProFTPD / FTP-Checks
+- ProFTPD-Hauptconfig zuerst robust finden (`proftpd_main_config` override > systemd ExecStart `-c` > Standardpfade), sonst nur Basiswarnung statt Folgefehlern.
+- `Include`/`IncludeOptional` relativ zur einbindenden Datei aufloesen (z. B. `conf.d/*.conf`), nicht relativ zum CWD.
+- ProFTPD-Audit im UI um `main_config` + geladene Config-Dateien anzeigen, damit Warnungen nachvollziehbar sind.
+
+### 8.9 Virtuelle FTP-User (ProFTPD)
+- Virtuelle FTP-User nicht mit `getpwnam` validieren; Mapping kann bewusst keinen Unix-Account haben.
+- FTP-User-CRUD nur via `ftpasswd` (`--passwd`, `--change-password`, `--delete-user`), niemals direkt `AuthUserFile` schreiben.
+
+### 8.10 Scan-/Registry-Pattern
+- Scan-Listen fuer stabile Darstellung mit `ui_columns_table(...)` rendern; `ui_columns_header/row` kann Theme-Layout brechen.
+- Instanz-Registry im TSV-Format mit Metadaten (`source`, `sftp_user`) speichern; Legacy-`id=user:script` weiterhin lesbar halten.
+
