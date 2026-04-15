@@ -9,6 +9,7 @@ do '../ui-lib.pl';
 require './lib/core.pl';
 require './lib/acl.pl';
 require './lib/instance.pl';
+require './lib/ftp_proftpd.pl';
 
 our (%text, %in, %access);
 &ReadParse(\%in);
@@ -76,6 +77,27 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
         getpwnam($reg_user) or &error($text{'err_not_found'});
         -f $reg_script      or &error($text{'err_script_not_found'});
 
+        # FTP user uniqueness: one FTP user may only belong to one server
+        if ($reg_sftp_user) {
+            for my $inst (&list_instances()) {
+                my $sftp = &resolve_instance_sftp_user($inst->{'id'}, $inst->{'user'});
+                &error($text{'scan_sftp_already_assigned'}) if ($sftp // '') eq $reg_sftp_user;
+            }
+            # UID check: FTP user should write with the game user's permissions
+            my @game_pw   = getpwnam($reg_user);
+            my %ftp_check = &discover_ftp_state();
+            my $auth_file = $ftp_check{'auth_user_file'} // '';
+            if (@game_pw && $auth_file && -f $auth_file) {
+                for my $fu (&parse_ftpd_passwd($auth_file)) {
+                    if ($fu->{'name'} eq $reg_sftp_user) {
+                        int($fu->{'uid'}) == int($game_pw[2])
+                            or &error($text{'scan_sftp_uid_mismatch'});
+                        last;
+                    }
+                }
+            }
+        }
+
         my $script_id = (split('/', $reg_script))[-1];
         &register_instance($script_id, $reg_user, $reg_script, {
             source    => 'manual',
@@ -112,6 +134,28 @@ my @wbm_opts     = map { [$_, $_] } @webmin_users;
 # Split: auto-detected (not yet in registry) vs. explicitly registered
 my @auto       = grep { ($_->{'registration_source'} // '') eq 'auto'  } @instances;
 my @registered = grep { ($_->{'registration_source'} // '') ne 'auto'  } @instances;
+
+# Load virtual FTP users for the sftp_user dropdown
+my @ftp_user_names = ();
+{
+    my %ftp_state = &discover_ftp_state();
+    my $auth_file = $ftp_state{'auth_user_file'} // '';
+    if ($auth_file && -f $auth_file) {
+        push @ftp_user_names, $_->{'name'} for &parse_ftpd_passwd($auth_file);
+    }
+}
+# Collect already-assigned FTP users so they can be excluded from the dropdown
+my %assigned_ftp = ();
+for my $inst (@instances) {
+    my $sftp = &resolve_instance_sftp_user($inst->{'id'}, $inst->{'user'});
+    $assigned_ftp{$sftp} = $inst->{'id'} if $sftp;
+}
+# Build dropdown: empty option + unassigned FTP users only
+my @sftp_opts = (['', "($text{'scan_no_ftp'})"]);;
+for my $name (sort @ftp_user_names) {
+    next if $assigned_ftp{$name};
+    push @sftp_opts, [$name, $name];
+}
 
 # --- Auto-Scan section ---
 print &ui_form_start('scan.cgi', 'get');
@@ -230,11 +274,13 @@ print &ui_table_start('', undef, 2);
 print &ui_table_row($text{'scan_reg_user'},
     &ui_select('reg_user', '', \@sys_opts));
 print &ui_table_row($text{'scan_reg_script'},
-    &ui_textbox('reg_script', '', 50));
+    &ui_textbox('reg_script', '', 50) .
+    " &nbsp;<a href='/filemin/?path=/home' target='_blank'>$text{'scan_reg_script_browse'}</a>");
 print &ui_table_row($text{'scan_reg_owner'},
     &ui_select('reg_webmin_user', '', [['', '---'], @wbm_opts]));
 print &ui_table_row($text{'scan_reg_sftp_user'},
-    &ui_textbox('reg_sftp_user', '', 30));
+    &ui_select('reg_sftp_user', '', \@sftp_opts) .
+    " <small><i>$text{'scan_sftp_one_per_server'}</i></small>");
 print &ui_table_end();
 print &ui_submit($text{'scan_reg_submit'}, undef, undef, undef, 'btn-primary');
 print &ui_form_end();
