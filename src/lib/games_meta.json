@@ -2,6 +2,17 @@
   "mcserver": {
     "name": "Minecraft (Vanilla)",
     "variants": ["mcserver", "mc-paper", "mc-forge", "mc-neoforge", "mc-fabric"],
+    "game_config_format": "properties",
+    "game_config_fields": [
+      {"key": "server-port",  "type": "port", "label_de": "Port",          "label_en": "Port"},
+      {"key": "max-players",  "type": "int",  "label_de": "Max. Spieler",  "label_en": "Max players"},
+      {"key": "motd",         "type": "text", "label_de": "Servermotto",   "label_en": "MOTD"},
+      {"key": "difficulty",   "type": "text", "label_de": "Schwierigkeit", "label_en": "Difficulty"},
+      {"key": "gamemode",     "type": "text", "label_de": "Spielmodus",    "label_en": "Game mode"},
+      {"key": "level-name",   "type": "text", "label_de": "Weltname",      "label_en": "World name"},
+      {"key": "online-mode",  "type": "text", "label_de": "Online-Modus",  "label_en": "Online mode"},
+      {"key": "pvp",          "type": "text", "label_de": "PvP",           "label_en": "PvP"}
+    ],
     "fields": [
       {"key": "port",       "type": "port",   "label_de": "Port",         "label_en": "Port",          "default": "25565"},
       {"key": "gamename",   "type": "text",   "label_de": "Spielname",    "label_en": "Game name",     "default": "Minecraft"},

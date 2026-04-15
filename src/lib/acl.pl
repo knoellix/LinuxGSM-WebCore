@@ -77,29 +77,21 @@ sub grant_server_access {
 }
 
 # Returns sorted list of Webmin usernames explicitly assigned to $script_name.
-# Reads ACL files directly from the module root directory — this is where
-# save_module_acl() stores them, and avoids fragile foreign_require('acl').
+# Uses list_webmin_users() (known to work) and reads each user's ACL via
+# get_module_acl() — avoids fragile foreign_require inside an eval block.
 # Users with servers=* (admins) are excluded — they have implicit access.
 sub get_server_owners {
     my ($script_name) = @_;
     my @owners;
-    eval {
-        my $mod_dir = &module_root_directory($module_name);
-        -d $mod_dir or return;
-        opendir(my $dh, $mod_dir) or return;
-        while (my $file = readdir($dh)) {
-            # Only process files whose names look like Webmin usernames;
-            # skip source files, config, hidden files, and defaultacl.
-            next unless $file =~ /^[a-zA-Z0-9._@\-]+$/ && -f "$mod_dir/$file";
-            next if $file eq 'defaultacl';
-            my %acl = &get_module_acl($file, $module_name);
+    for my $uname (&list_webmin_users()) {
+        next unless $uname =~ /\S/;
+        eval {
+            my %acl = &get_module_acl($uname, $module_name);
             my @s = grep { /\S/ } split /\s+/, ($acl{'servers'} // '');
             # Only explicit assignments — wildcard (*) users have implicit access
-            push @owners, $file if grep { $_ eq $script_name } @s;
-        }
-        closedir($dh);
-    };
-    warn "get_server_owners failed: $@" if $@;
+            push @owners, $uname if grep { $_ eq $script_name } @s;
+        };
+    }
     return sort @owners;
 }
 

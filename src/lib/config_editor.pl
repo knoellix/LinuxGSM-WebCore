@@ -112,6 +112,62 @@ sub split_editor_fields {
     return (\@editable_game_fields, \@unknown_keys, \%known_keys);
 }
 
+# ---------------------------------------------------------------------------
+# Game config format detection and .properties support
+# ---------------------------------------------------------------------------
+
+# Detect the format of a game-server config file.
+# Returns 'ini_option_settings' (Palworld), 'properties', or 'unknown'.
+sub detect_game_config_format {
+    my ($path, $raw) = @_;
+    return 'unknown' unless defined $raw && length $raw;
+    return 'ini_option_settings' if $raw =~ /OptionSettings\s*=\s*\(/;
+    return 'properties'          if defined $path && $path =~ /\.properties$/i;
+    # Heuristic: key-with-possible-hyphen=value lines → .properties style
+    return 'properties' if $raw =~ /^[a-zA-Z][a-zA-Z0-9_\-\.]*\s*=/m;
+    return 'unknown';
+}
+
+# Parse a Java .properties file (key=value, hyphenated keys, # comments).
+# Returns ($vals_href, $order_aref).
+sub parse_properties_file {
+    my ($raw) = @_;
+    my (%vals, @order);
+    return (\%vals, \@order) unless defined $raw;
+    for my $line (split /\n/, $raw) {
+        $line =~ s/\r$//;
+        next if $line =~ /^\s*[#!]/;  # comment
+        next if $line =~ /^\s*$/;     # blank
+        if ($line =~ /^\s*([\w.\-]+)\s*=\s*(.*)$/) {
+            my ($k, $v) = ($1, $2);
+            $v =~ s/\s+$//;
+            push @order, $k unless exists $vals{$k};
+            $vals{$k} = $v;
+        }
+    }
+    return (\%vals, \@order);
+}
+
+# Update values in a .properties string, preserving comments and structure.
+# Only keys already present in $vals_ref are updated; new keys are not added.
+sub update_properties_file {
+    my ($raw, $vals_ref) = @_;
+    my %vals = %{$vals_ref || {}};
+    return $raw // '' unless %vals;
+    my @out;
+    for my $line (split /\n/, ($raw // '')) {
+        (my $check = $line) =~ s/\r$//;
+        if ($check =~ /^\s*([\w.\-]+)\s*=/ && exists $vals{$1}) {
+            push @out, "$1=$vals{$1}";
+        } else {
+            push @out, $line;
+        }
+    }
+    my $result = join("\n", @out);
+    $result .= "\n" unless $result =~ /\n$/;
+    return $result;
+}
+
 sub _expand_lgsm_vars {
     my ($value, $vars_ref) = @_;
     my $out = defined $value ? $value : '';

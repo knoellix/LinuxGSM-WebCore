@@ -192,15 +192,26 @@ if ($in{'action'}) {
                 $new_content = $in{'game_config_raw'} // '';
             } else {
                 my $raw_base = $in{'game_config_original'} // '';
-                my ($opt_vals, $opt_order) = &parse_option_settings_from_ini($raw_base);
-                for my $param (keys %in) {
-                    next unless $param =~ /^field_(\w+)$/;
-                    my $key = $1;
-                    my $val = $in{$param} // '';
-                    $opt_vals->{$key} = $val;
-                    push @$opt_order, $key unless grep { $_ eq $key } @$opt_order;
+                my $fmt = &detect_game_config_format($cfg_path, $raw_base);
+                if ($fmt eq 'properties') {
+                    my ($prop_vals, $prop_order) = &parse_properties_file($raw_base);
+                    for my $key (@$prop_order) {
+                        $prop_vals->{$key} = $in{"field_$key"}
+                            if exists $in{"field_$key"};
+                    }
+                    $new_content = &update_properties_file($raw_base, $prop_vals);
+                } else {
+                    # Default: Palworld-style OptionSettings INI
+                    my ($opt_vals, $opt_order) = &parse_option_settings_from_ini($raw_base);
+                    for my $param (keys %in) {
+                        next unless $param =~ /^field_(\w+)$/;
+                        my $key = $1;
+                        my $val = $in{$param} // '';
+                        $opt_vals->{$key} = $val;
+                        push @$opt_order, $key unless grep { $_ eq $key } @$opt_order;
+                    }
+                    $new_content = &update_option_settings_in_ini($raw_base, $opt_vals, $opt_order);
                 }
-                $new_content = &update_option_settings_in_ini($raw_base, $opt_vals, $opt_order);
             }
             eval { &write_file_exact($cfg_path, $new_content); 1 }
                 or &error("Cannot write config: $!");
@@ -651,7 +662,23 @@ JS
         print &ui_submit($text{'config_editor_game_create_btn'});
         print &ui_form_end();
     } else {
-        my ($game_vals, $game_order) = &parse_option_settings_from_ini($game_raw);
+        # Choose parser based on file format
+        my $game_fmt = &detect_game_config_format($game_cfg_path, $game_raw)
+                    || &get_game_config_format($script_name_for_cfg);
+        my ($game_vals, $game_order);
+        if ($game_fmt eq 'properties') {
+            ($game_vals, $game_order) = &parse_properties_file($game_raw);
+        } else {
+            ($game_vals, $game_order) = &parse_option_settings_from_ini($game_raw);
+        }
+        # Known fields from games_meta (game config section) for labelled display
+        my @gcf = &get_game_config_fields($script_name_for_cfg);
+        my %gcf_map = map { $_->{'key'} => $_ } @gcf;
+        my @known_shown = @gcf ? @gcf : ();
+        my %known_keys  = map { $_->{'key'} => 1 } @gcf;
+        # Unknown keys: present in file but not in game_config_fields
+        my @extra_keys  = @gcf ? (grep { !$known_keys{$_} } @$game_order) : @$game_order;
+
         print &ui_form_start("manage.cgi", "post");
         print &ui_hidden("instance_id", $safe_id);
         print &ui_hidden("action",      "save_config");
@@ -665,11 +692,25 @@ JS
         print "$text{'config_editor_raw_mode'}</label></p>\n";
         print "<div id='cfg_form_div_game'>\n";
         print &ui_table_start($text{'config_editor_game_btn'}, "width=100%", 2);
-        if (@$game_order) {
-            for my $key (@$game_order) {
-                my $val = $game_vals->{$key} // '';
-                print &ui_table_row(&html_escape($key),
-                                    &ui_textbox("field_$key", &html_escape($val), 40));
+        if (@known_shown || @extra_keys) {
+            # Labelled known fields first
+            for my $f (@known_shown) {
+                my $key   = $f->{'key'};
+                my $label = (($lang eq 'de') ? $f->{'label_de'} : $f->{'label_en'}) // $key;
+                my $val   = exists $game_vals->{$key} ? $game_vals->{$key} : '';
+                my $width = ($f->{'type'} eq 'port' || $f->{'type'} eq 'int') ? 10 : 40;
+                print &ui_table_row(&html_escape($label),
+                                    &ui_textbox("field_$key", &html_escape($val), $width));
+            }
+            # Remaining / unlabelled keys
+            if (@extra_keys) {
+                print &ui_table_row("<b>$text{'config_editor_unknown_fields'}</b>", "")
+                    if @known_shown;
+                for my $key (@extra_keys) {
+                    my $val = $game_vals->{$key} // '';
+                    print &ui_table_row(&html_escape($key),
+                                        &ui_textbox("field_$key", &html_escape($val), 40));
+                }
             }
         } else {
             print &ui_table_row(&html_escape($text{'config_editor_game_no_fields'}), '-');

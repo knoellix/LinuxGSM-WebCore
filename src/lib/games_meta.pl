@@ -36,22 +36,61 @@ sub load_games_meta {
     return %_meta_cache;
 }
 
+# Resolve a script name to its canonical metadata key.
+# Handles direct matches first, then checks the 'variants' arrays.
+# Returns the canonical key if found, or the original name as fallback.
+sub _resolve_meta_key {
+    my ($script_name) = @_;
+    my %meta = load_games_meta();
+    return $script_name if exists $meta{$script_name};
+    for my $key (keys %meta) {
+        my $entry = $meta{$key};
+        next unless ref($entry) eq 'HASH';
+        my @variants = @{ $entry->{'variants'} // [] };
+        return $key if grep { $_ eq $script_name } @variants;
+    }
+    return $script_name;
+}
+
 # Return array of field-definition hashes for the given script name.
 # Each hash: { key, type, label_de, label_en, default }
 # Returns empty list for unknown scripts.
+# Resolves variant names to their canonical entry automatically.
 sub get_game_fields {
     my ($script_name) = @_;
     my %meta = load_games_meta();
-    my $entry = $meta{$script_name} or return ();
+    my $key   = _resolve_meta_key($script_name);
+    my $entry = $meta{$key} or return ();
     return @{ $entry->{'fields'} // [] };
+}
+
+# Return game config field definitions (for the actual game server config file,
+# e.g. server.properties for Minecraft). Falls back to empty list.
+sub get_game_config_fields {
+    my ($script_name) = @_;
+    my %meta = load_games_meta();
+    my $key   = _resolve_meta_key($script_name);
+    my $entry = $meta{$key} or return ();
+    return @{ $entry->{'game_config_fields'} // [] };
+}
+
+# Return game config format string ('properties', 'ini_option_settings', or '').
+sub get_game_config_format {
+    my ($script_name) = @_;
+    my %meta = load_games_meta();
+    my $key   = _resolve_meta_key($script_name);
+    my $entry = $meta{$key} or return '';
+    return $entry->{'game_config_format'} // '';
 }
 
 # Return human-readable display name for the given script name.
 # Falls back to the script name itself if not found in metadata.
+# Resolves variant names to their canonical entry automatically.
 sub get_game_display_name {
     my ($script_name) = @_;
     my %meta = load_games_meta();
-    return $meta{$script_name}{'name'} // $script_name;
+    my $key   = _resolve_meta_key($script_name);
+    return $meta{$key}{'name'} // $script_name;
 }
 
 # ---------------------------------------------------------------------------
