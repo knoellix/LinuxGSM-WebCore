@@ -25,16 +25,43 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
 
         $instance_id or &error($text{'err_invalid_input'});
         $webmin_user or &error($text{'err_invalid_input'});
+        # Basic format validation (independent of dynamic user list)
+        $webmin_user =~ /^[a-zA-Z0-9_.\@\-]+$/ or &error($text{'err_invalid_input'});
 
         &get_instance($instance_id) or &error($text{'err_not_found'});
-        my %valid = map { $_ => 1 } &list_webmin_users();
-        $valid{$webmin_user} or &error($text{'err_invalid_input'});
+
+        # Validate against known users only when the list is actually available
+        my @valid_users = &list_webmin_users();
+        if (@valid_users) {
+            my %valid = map { $_ => 1 } @valid_users;
+            $valid{$webmin_user} or &error($text{'err_invalid_input'});
+        }
 
         &grant_server_access($webmin_user, $instance_id);
-        &redirect('scan.cgi');
+        &redirect('scan.cgi?msg=assigned');
     }
+    elsif ($action eq 'quickregister') {
+        my $instance_id = &sanitize_input($in{'instance_id'});
+        my $reg_wbuser  = $in{'webmin_user'} // '';
+        $reg_wbuser = &sanitize_input($reg_wbuser) if $reg_wbuser ne '';
 
-    if ($action eq 'register') {
+        $instance_id or &error($text{'err_invalid_input'});
+
+        # Find the auto-detected (not yet registered) instance
+        my @all = &list_instances();
+        my ($inst) = grep {
+            $_->{'id'} eq $instance_id &&
+            ($_->{'registration_source'} // '') eq 'auto'
+        } @all;
+        $inst or &error($text{'err_not_found'});
+
+        &register_instance($instance_id, $inst->{'user'}, $inst->{'script'}, {
+            source => 'manual',
+        });
+        &grant_server_access($reg_wbuser, $instance_id) if $reg_wbuser;
+        &redirect('scan.cgi?msg=registered&show_scan=1');
+    }
+    elsif ($action eq 'register') {
         my $reg_user   = &sanitize_input($in{'reg_user'});
         my $reg_script = $in{'reg_script'} // '';
         $reg_script =~ s|[^a-zA-Z0-9_./()\-]||g;
@@ -55,10 +82,9 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
             sftp_user => $reg_sftp_user,
         });
         &grant_server_access($reg_wbuser, $script_id) if $reg_wbuser;
-        &redirect('scan.cgi');
+        &redirect('scan.cgi?msg=registered');
     }
-
-    if ($action eq 'untrack_manual') {
+    elsif ($action eq 'untrack_manual') {
         my $instance_id = &sanitize_input($in{'instance_id'});
         my $meta = &get_registered_instance($instance_id);
         $meta or &error($text{'err_not_found'});
@@ -68,69 +94,128 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
     }
 }
 
-# --- GET: show all instances + registration form ---
+# --- GET: show page ---
 &header($text{'scan_title'}, '');
+
+my $msg = &sanitize_input($in{'msg'} // '');
+if ($msg eq 'assigned') {
+    print "<div class='alert alert-success'><b>" . &html_escape($text{'scan_assigned_ok'}) . "</b></div>\n";
+} elsif ($msg eq 'registered') {
+    print "<div class='alert alert-success'><b>" . &html_escape($text{'scan_registered_ok'}) . "</b></div>\n";
+}
 
 my @instances    = &list_instances();
 my @webmin_users = &list_webmin_users();
 my @wbm_opts     = map { [$_, $_] } @webmin_users;
-my @rows;
 
-foreach my $inst (@instances) {
-    my $id   = $inst->{'id'};
-    my $user = $inst->{'user'};
+# Split: auto-detected (not yet in registry) vs. explicitly registered
+my @auto       = grep { ($_->{'registration_source'} // '') eq 'auto'  } @instances;
+my @registered = grep { ($_->{'registration_source'} // '') ne 'auto'  } @instances;
 
-    my $script_cell = &html_escape($inst->{'script'});
+# --- Auto-Scan section ---
+print &ui_form_start('scan.cgi', 'get');
+print &ui_hidden('show_scan', '1');
+print &ui_submit($text{'scan_btn_autoscan'}, undef, undef, undef, 'btn-default');
+print &ui_form_end();
 
-    my $sftp      = &resolve_instance_sftp_user($id, $user);
-    my $sftp_cell = $sftp ? &html_escape($sftp) : "<i>$text{'scan_no_ftp'}</i>";
-
-    my @owners = &get_server_owners($id);
-    my $owner_cell = @owners
-        ? '<ul style="margin:0;padding-left:1.2em">' .
-          join('', map { '<li>' . &html_escape($_) . '</li>' } @owners) .
-          '</ul>'
-        : "<i>$text{'scan_unowned'}</i>";
-
-    my $assign_cell = &ui_form_start('scan.cgi', 'post');
-    $assign_cell .= &ui_hidden('action',      'assign');
-    $assign_cell .= &ui_hidden('instance_id', &html_escape($id));
-    $assign_cell .= &ui_select('webmin_user', '', \@wbm_opts);
-    $assign_cell .= ' ';
-    $assign_cell .= &ui_submit($text{'scan_assign'});
-    $assign_cell .= &ui_form_end();
-    if (($inst->{'registration_source'} // '') eq 'manual') {
-        $assign_cell .= &ui_form_start('scan.cgi', 'post');
-        $assign_cell .= &ui_hidden('action', 'untrack_manual');
-        $assign_cell .= &ui_hidden('instance_id', &html_escape($id));
-        $assign_cell .= &ui_submit($text{'scan_remove_panel_btn'});
-        $assign_cell .= &ui_form_end();
+if ($in{'show_scan'}) {
+    print "<h3>$text{'scan_autoscan_title'}</h3>\n";
+    if (@auto) {
+        my @auto_rows;
+        for my $inst (@auto) {
+            my $id = $inst->{'id'};
+            my $quick_form = &ui_form_start('scan.cgi', 'post');
+            $quick_form .= &ui_hidden('action',      'quickregister');
+            $quick_form .= &ui_hidden('instance_id', &html_escape($id));
+            $quick_form .= &ui_select('webmin_user', '', [['', '---'], @wbm_opts]);
+            $quick_form .= ' ';
+            $quick_form .= &ui_submit($text{'scan_register_quick_btn'}, undef, undef, undef, 'btn-primary');
+            $quick_form .= &ui_form_end();
+            push @auto_rows, [
+                &html_escape($inst->{'user'}),
+                &html_escape($inst->{'script'}),
+                &html_escape($inst->{'game'}),
+                int($inst->{'port'}),
+                $quick_form,
+            ];
+        }
+        print &ui_columns_table(
+            [
+                $text{'index_col_user'},
+                $text{'scan_col_script'},
+                $text{'index_col_game'},
+                $text{'index_col_port'},
+                $text{'index_col_manage'},
+            ],
+            "100%",
+            \@auto_rows,
+        );
+    } else {
+        print "<p><i>$text{'scan_autoscan_none'}</i></p>\n";
     }
-
-    push @rows, [
-        &html_escape($user),
-        $script_cell,
-        $sftp_cell,
-        &html_escape($inst->{'game'}),
-        int($inst->{'port'}),
-        $owner_cell,
-        $assign_cell,
-    ];
 }
 
-print &ui_columns_table(
-    [
-        $text{'index_col_user'},
-        $text{'scan_col_script'},
-        $text{'scan_col_ftp'},
-        $text{'index_col_game'},
-        $text{'index_col_port'},
-        $text{'scan_col_owner'},
-        $text{'scan_assign'},
-    ],
-    "100%",
-    \@rows,
-);
+# --- Registered instances section ---
+print "<h3>$text{'scan_registered_title'}</h3>\n";
+
+if (@registered) {
+    my @rows;
+    foreach my $inst (@registered) {
+        my $id   = $inst->{'id'};
+        my $user = $inst->{'user'};
+
+        my $sftp      = &resolve_instance_sftp_user($id, $user);
+        my $sftp_cell = $sftp ? &html_escape($sftp) : "<i>$text{'scan_no_ftp'}</i>";
+
+        my @owners = &get_server_owners($id);
+        my $owner_cell = @owners
+            ? '<ul style="margin:0;padding-left:1.2em">' .
+              join('', map { '<li>' . &html_escape($_) . '</li>' } @owners) .
+              '</ul>'
+            : "<i>$text{'scan_unowned'}</i>";
+
+        my $actions_cell = &ui_form_start('scan.cgi', 'post');
+        $actions_cell .= &ui_hidden('action',      'assign');
+        $actions_cell .= &ui_hidden('instance_id', &html_escape($id));
+        $actions_cell .= &ui_select('webmin_user', '', \@wbm_opts);
+        $actions_cell .= ' ';
+        $actions_cell .= &ui_submit($text{'scan_assign'}, undef, undef, undef, 'btn-default');
+        $actions_cell .= &ui_form_end();
+        if (($inst->{'registration_source'} // '') eq 'manual') {
+            $actions_cell .= &ui_form_start('scan.cgi', 'post');
+            $actions_cell .= &ui_hidden('action',      'untrack_manual');
+            $actions_cell .= &ui_hidden('instance_id', &html_escape($id));
+            $actions_cell .= &ui_submit($text{'scan_remove_panel_btn'}, undef, undef, undef, 'btn-danger');
+            $actions_cell .= &ui_form_end();
+        }
+
+        push @rows, [
+            &html_escape($user),
+            &html_escape($inst->{'script'}),
+            $sftp_cell,
+            &html_escape($inst->{'game'}),
+            int($inst->{'port'}),
+            $owner_cell,
+            $actions_cell,
+        ];
+    }
+
+    print &ui_columns_table(
+        [
+            $text{'index_col_user'},
+            $text{'scan_col_script'},
+            $text{'scan_col_ftp'},
+            $text{'index_col_game'},
+            $text{'index_col_port'},
+            $text{'scan_col_owner'},
+            $text{'scan_col_actions'},
+        ],
+        "100%",
+        \@rows,
+    );
+} else {
+    print "<p><i>$text{'scan_no_registered'}</i></p>\n";
+}
 
 # --- Manual registration form ---
 print "<h3>$text{'scan_register_title'}</h3>\n";
@@ -150,7 +235,7 @@ print &ui_table_row($text{'scan_reg_owner'},
 print &ui_table_row($text{'scan_reg_sftp_user'},
     &ui_textbox('reg_sftp_user', '', 30));
 print &ui_table_end();
-print &ui_submit($text{'scan_reg_submit'});
+print &ui_submit($text{'scan_reg_submit'}, undef, undef, undef, 'btn-primary');
 print &ui_form_end();
 
 &footer('', '');
