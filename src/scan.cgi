@@ -274,8 +274,7 @@ print &ui_table_start('', undef, 2);
 print &ui_table_row($text{'scan_reg_user'},
     &ui_select('reg_user', '', \@sys_opts));
 print &ui_table_row($text{'scan_reg_script'},
-    &ui_textbox('reg_script', '', 50) .
-    " &nbsp;<a href='/filemin/?path=/home' target='_blank'>$text{'scan_reg_script_browse'}</a>");
+    &ui_filebox('reg_script', '', 50));
 print &ui_table_row($text{'scan_reg_owner'},
     &ui_select('reg_webmin_user', '', [['', '---'], @wbm_opts]));
 print &ui_table_row($text{'scan_reg_sftp_user'},
