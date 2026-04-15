@@ -97,7 +97,8 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
 # --- GET: show page ---
 &header($text{'scan_title'}, '');
 
-my $msg = &sanitize_input($in{'msg'} // '');
+my $msg = $in{'msg'} // '';
+$msg =~ s/[^a-zA-Z0-9_\-]//g;
 if ($msg eq 'assigned') {
     print "<div class='alert alert-success'><b>" . &html_escape($text{'scan_assigned_ok'}) . "</b></div>\n";
 } elsif ($msg eq 'registered') {
