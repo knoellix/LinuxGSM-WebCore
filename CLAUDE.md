@@ -49,6 +49,11 @@ Dieses Dokument trennt verbindliche Projektregeln (Policy) von Webmin-spezifisch
 - **Build:** `bash scripts/build.sh` erzeugt die `.wbm`-Datei (Modul-Ordner an Tar-Wurzel).
 - **Webmin-Only-Target:** Fokus auf Webmin-Modul (`.wbm`); keine distro-spezifischen Paketziele (deb/rpm) pflegen.
 
+### 5.1 Test-Gotchas (Perl)
+- **`CORE::GLOBAL`-Mocks** muessen im `BEGIN`-Block stehen, nicht per `local *` nach `require`: `BEGIN { my $x = 0; *CORE::GLOBAL::getpwnam = sub { $x ? ('y') : () } }`
+- **`\Q...\E` nur fuer echte Untrusted-Input** — escaped `/` in Pfadstrings, bricht Shell-Ausfuehrung und Test-Regex; bei bereits whitelist-sanitizierten Variablen weglassen.
+- **`%text` in Test-Stubs vollstaendig halten** — fehlt ein Fehlerschluessel, gibt `validate_*` `undef` statt Fehlerstring zurueck; Test besteht dann faelschlicherweise.
+
 ## 6. Projektlayout
 - **Wiki-Repo:** `/mnt/Lager/github/LinuxGSM-WebCore.wiki/`
 - **Build-Artefakte:** `dist/` und `tmp/` bleiben gitignored.
@@ -138,7 +143,10 @@ Dieser Abschnitt dokumentiert zwingende Webmin-spezifische Details, die aus real
 - Virtuelle FTP-User nicht mit `getpwnam` validieren; Mapping kann bewusst keinen Unix-Account haben.
 - FTP-User-CRUD nur via `ftpasswd` (`--passwd`, `--change-password`, `--delete-user`), niemals direkt `AuthUserFile` schreiben.
 
-### 8.10 Scan-/Registry-Pattern
+### 8.10 SFTP-User-Lookup
+- **Immer `resolve_instance_sftp_user($id, $user)` aus `src/lib/instance.pl`** verwenden — liest aus Registry-TSV. Die alte `get_sftp_user()` (Convention `<user>-ftp`) war toter Code und wurde entfernt.
+
+### 8.11 Scan-/Registry-Pattern
 - Scan-Listen fuer stabile Darstellung mit `ui_columns_table(...)` rendern; `ui_columns_header/row` kann Theme-Layout brechen.
 - Instanz-Registry: TSV mit `source`/`sftp_user`; Legacy-Format `id=user:script` weiter einlesen.
 - `ui_submit` immer mit expliziter CSS-Klasse aufrufen (5. Argument): `btn-danger` fuer destruktive Aktionen, `btn-default` fuer neutrale — verhindert Theme-Farb-Roulette bei mehreren Buttons in einer Zelle.
