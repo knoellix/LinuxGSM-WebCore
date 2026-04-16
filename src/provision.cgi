@@ -14,7 +14,6 @@ our (%text, %config, %in);
 &header($text{'provision_title'}, '');
 
 if ($in{'submit'}) {
-    &check_referer(1);
     my $user  = &sanitize_input($in{'user'});
     my $game  = &sanitize_input($in{'game'});
     my $port  = int($in{'port'});

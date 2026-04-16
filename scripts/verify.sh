@@ -4,6 +4,13 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+echo "[verify] shell syntax checks"
+for file in src/scripts/*.sh; do
+  [ -f "$file" ] || continue
+  bash -n "$file"
+  echo "  ok  $file"
+done
+
 echo "[verify] perl syntax checks"
 for file in src/*.cgi src/lib/*.pl t/*.pl; do
   [ -f "$file" ] || continue

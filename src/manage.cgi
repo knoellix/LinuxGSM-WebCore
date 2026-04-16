@@ -407,7 +407,7 @@ print "<p>\n";
 print &ui_form_start("manage.cgi", "post");
 print &ui_hidden("instance_id", $safe_id);
 print &ui_hidden("action", "delete_instance");
-print &ui_submit($text{'manage_delete_btn'});
+print &ui_submit($text{'manage_delete_btn'}, undef, 0, undef, 'btn-danger');
 print &ui_form_end();
 print "</p>\n";
 

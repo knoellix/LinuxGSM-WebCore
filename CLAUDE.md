@@ -52,6 +52,9 @@ Dieses Dokument trennt verbindliche Projektregeln (Policy) von Webmin-spezifisch
 ## 6. Projektlayout
 - **Wiki-Repo:** `/mnt/Lager/github/LinuxGSM-WebCore.wiki/`
 - **Build-Artefakte:** `dist/` und `tmp/` bleiben gitignored.
+- **Shell-Hilfsskripte:** `src/scripts/` — `install_lgsm.sh`, `server_control.sh`, `engine_switch.sh`; werden via `su` als Game-User ausgefuehrt.
+- **Sprachdateien:** `src/lang/de` und `src/lang/en` — einfaches `key=value`-Format; neue Fehlertexte in beiden Dateien pflegen.
+- **ACL-Defaults:** `src/defaultacl` — Fallback-ACL wenn noch keine Webmin-ACL fuer einen User existiert.
 
 ## 7. Webmin-CGI und ACL Lessons Learned (implementierungsnah)
 Dieser Abschnitt dokumentiert zwingende Webmin-spezifische Details, die aus realen Fehlerbildern entstanden sind.

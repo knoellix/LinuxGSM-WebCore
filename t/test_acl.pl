@@ -29,7 +29,7 @@ sub list_instances {
 
 require 'src/lib/acl.pl';
 
-print "1..17\n";
+print "1..16\n";
 
 # 1. can_create: true by default when key missing (fallback for stale ACL files)
 {
@@ -166,13 +166,4 @@ print "1..17\n";
     &is_admin()
         ? pass('is_admin true when servers key missing (stale ACL)')
         : fail('is_admin true when servers key missing (stale ACL)');
-}
-
-# 17. get_sftp_user: undef wenn kein passendes Unix-System-Konto existiert
-{
-    # In der Test-Umgebung existiert 'mc-test-ftp' nicht → getpwnam liefert ()
-    my $result = &get_sftp_user('mc-test');
-    !defined($result)
-        ? pass('get_sftp_user returns undef when ftp user does not exist')
-        : fail("get_sftp_user returns undef when ftp user does not exist (got: $result)");
 }

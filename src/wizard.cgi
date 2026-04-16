@@ -61,6 +61,9 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
         my $sftp        = int($in{'sftp'} || 0);
         my $webmin_user = &sanitize_input($in{'webmin_user'});
 
+        # Re-validate port — another process may have claimed it since step 1
+        &port_in_use($port) and &error($text{'err_port_in_use'});
+
         &header($text{'wizard_title'}, '');
         print "<h3>$text{'wizard_step3'}</h3>\n";
         print "<pre>\n";
@@ -77,11 +80,19 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
                 source => 'provisioned',
             });
 
-            # SFTP user setup
+            # SFTP user setup — roll back the game user on failure
             if ($sftp) {
                 require './lib/sftp.pl';
-                eval { &setup_sftp_user($username) };
-                print &html_escape("SFTP: $@") if $@;
+                my $sftp_ok = eval { &setup_sftp_user($username); 1 };
+                if (!$sftp_ok) {
+                    my $sftp_err = $@;
+                    &system_logged("userdel -r $username");
+                    &unregister_instance($username);
+                    print &html_escape("SFTP setup failed: $sftp_err — provisioning rolled back\n");
+                    print "</pre>\n";
+                    &footer('', '');
+                    exit;
+                }
             }
             # Assign owner
             &grant_server_access($webmin_user, $username) if $webmin_user;

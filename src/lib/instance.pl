@@ -40,23 +40,27 @@ sub _load_registered {
     while (<$fh>) {
         chomp;
         next if /^\s*#/ || !(/=/ || /\t/);
-        my ($id, $user, $script, $source, $sftp_user);
+        my ($id, $user, $script, $source, $sftp_user, $owners);
         if (index($_, "\t") >= 0) {
-            ($id, $user, $script, $source, $sftp_user) = split(/\t/, $_, 5);
-            $source ||= 'manual';
+            my @cols = split(/\t/, $_, 6);
+            ($id, $user, $script, $source, $sftp_user) = @cols;
+            $source    ||= 'manual';
             $sftp_user ||= '';
+            $owners = $cols[5] // '';
         } else {
             my ($val);
             ($id, $val) = split(/=/, $_, 2);
             ($user, $script) = split(/:/, $val, 2);
             $source = 'legacy';
             $sftp_user = '';
+            $owners = '';
         }
         $reg{$id} = {
             user      => $user,
             script    => $script,
             source    => $source,
             sftp_user => $sftp_user,
+            owners    => $owners,
         } if defined $id && $id =~ /\S/ && defined $user && defined $script;
     }
     close($fh);
@@ -72,7 +76,8 @@ sub _save_registered {
         my $s = $reg_ref->{$id}{'script'};
         my $src = $reg_ref->{$id}{'source'} // 'manual';
         my $ftp = $reg_ref->{$id}{'sftp_user'} // '';
-        print $fh join("\t", $id, $u, $s, $src, $ftp) . "\n";
+        my $own = $reg_ref->{$id}{'owners'} // '';
+        print $fh join("\t", $id, $u, $s, $src, $ftp, $own) . "\n";
     }
     close($fh);
 }
@@ -87,6 +92,7 @@ sub register_instance {
         script    => $script_path,
         source    => $opts{'source'} || ($reg{$id}{'source'} // 'manual'),
         sftp_user => defined $opts{'sftp_user'} ? $opts{'sftp_user'} : ($reg{$id}{'sftp_user'} // ''),
+        owners    => defined $opts{'owners'} ? $opts{'owners'} : ($reg{$id}{'owners'} // ''),
     };
     _save_registered(\%reg);
 }
@@ -143,6 +149,7 @@ sub list_instances {
             my $meta = $reg{$id};
             $inst->{'registration_source'} = $meta->{'source'} // 'manual';
             $inst->{'registered_sftp_user'} = $meta->{'sftp_user'} // '';
+            $inst->{'owners'} = $meta->{'owners'} // '';
             push @instances, $inst;
             $seen{$id} = 1;
         }
@@ -160,6 +167,7 @@ sub list_instances {
         if ($inst) {
             $inst->{'registration_source'} = 'auto';
             $inst->{'registered_sftp_user'} = '';
+            $inst->{'owners'} = '';
             push @instances, $inst;
             $seen{$user} = 1;
         }
@@ -199,6 +207,7 @@ sub get_instance {
     my %cfg     = _parse_lgsm_config($script_dir, $script_name);
     my $status  = _detect_status($script_dir, $user, $script_name);
     my $port    = $cfg{port} // 0;
+    $port       = _read_port_from_game_config($script_dir, \%cfg) unless $port;
     my $fw_open = &firewall_status($port);
     my $warns   = _check_instance_health($user, $script_dir, $shell, $script_path, \%cfg);
 
@@ -236,6 +245,45 @@ sub list_system_users {
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+# Read port from the game-server config file (e.g. server.properties).
+# Used as fallback when the LGSM config layers don't expose 'port'.
+sub _read_port_from_game_config {
+    my ($script_dir, $cfg_ref) = @_;
+    my %cfg = %{$cfg_ref || {}};
+
+    # Resolve LGSM variable references (simple single-pass expansion)
+    $cfg{'rootdir'}     ||= $script_dir;
+    $cfg{'serverfiles'} ||= "$script_dir/serverfiles";
+    $cfg{'lgsmdir'}     ||= "$script_dir/lgsm";
+    my $expand = sub {
+        my ($val) = @_;
+        return '' unless defined $val;
+        for (1..5) {
+            my $before = $val;
+            $val =~ s/\$\{([A-Za-z_]\w*)\}/defined $cfg{$1} ? $cfg{$1} : ''/ge;
+            last if $val eq $before;
+        }
+        return $val;
+    };
+
+    my $game_cfg_path = $expand->($cfg{'servercfgfullpath'} // '');
+    if ($game_cfg_path eq '') {
+        my $dir  = $expand->($cfg{'servercfgdir'}  // '');
+        my $file = $expand->($cfg{'servercfg'}     // '');
+        $game_cfg_path = "$dir/$file" if $dir ne '' && $file ne '';
+    }
+    $game_cfg_path =~ s|//+|/|g;
+    return 0 unless defined $game_cfg_path && length $game_cfg_path && -f $game_cfg_path;
+
+    open(my $fh, '<', $game_cfg_path) or return 0;
+    local $/;
+    my $raw = <$fh>;
+    close($fh);
+    return int($1) if $raw =~ /^server-port\s*=\s*(\d+)/m;
+    return int($1) if $raw =~ /^port\s*=\s*(\d+)/m;
+    return 0;
+}
 
 # Parse LGSM config files using a layered approach.
 # Read order (lowest -> highest priority):
@@ -318,11 +366,18 @@ sub _check_instance_health {
 
 # Detect whether a game server instance is running.
 # Calls the LGSM 'details' command as the game user via su.
-# Returns 'online', 'offline', or 'unknown' (on error).
+# Returns 'online', 'offline', or 'unknown' (on error or timeout).
 sub _detect_status {
     my ($home, $user, $script_name) = @_;
     $script_name //= $user;
-    my $out = `su -s /bin/bash -c "cd \Q$home\E && ./$script_name details" $user 2>/dev/null`;
+    my $out;
+    eval {
+        local $SIG{ALRM} = sub { die "timeout\n" };
+        alarm(10);
+        $out = `su -s /bin/bash -c "cd \Q$home\E && ./$script_name details" $user 2>/dev/null`;
+        alarm(0);
+    };
+    alarm(0);  # cancel alarm if eval died for another reason
     return 'unknown' unless defined $out && length $out;
     return $out =~ /Online/ ? 'online' : 'offline';
 }

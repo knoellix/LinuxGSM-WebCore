@@ -39,6 +39,7 @@ detail_port=Port
 detail_firewall=Firewall
 err_invalid_action=Invalid action.
 err_invalid_input=Invalid input.
+err_user_exists=Username already exists.
 err_access_denied=Access denied.
 index_btn_new_server=Create New Server
 index_btn_scan=Manage Instances

@@ -37,14 +37,6 @@ sub is_admin {
     return 0;
 }
 
-# Returns the SFTP unix username associated with a game server, or undef.
-# Convention: <game_user>-ftp — no extra storage needed.
-sub get_sftp_user {
-    my ($game_user) = @_;
-    my $ftp_user = "${game_user}-ftp";
-    return (getpwnam($ftp_user)) ? $ftp_user : undef;
-}
-
 # Returns 1 if the current user may manage the given instance (by script ID).
 sub user_can_manage {
     my ($script_name) = @_;

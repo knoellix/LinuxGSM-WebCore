@@ -29,7 +29,7 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
         # Basic format validation (independent of dynamic user list)
         $webmin_user =~ /^[a-zA-Z0-9_.\@\-]+$/ or &error($text{'err_invalid_input'});
 
-        &get_instance($instance_id) or &error($text{'err_not_found'});
+        my $inst_check = &get_instance($instance_id) or &error($text{'err_not_found'});
 
         # Validate against known users only when the list is actually available
         my @valid_users = &list_webmin_users();
@@ -37,6 +37,18 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
             my %valid = map { $_ => 1 } @valid_users;
             $valid{$webmin_user} or &error($text{'err_invalid_input'});
         }
+
+        # Persist owner in instance registry (comma-separated, deduplicated)
+        my $reg = &get_registered_instance($instance_id);
+        my $existing_owners = ($reg ? ($reg->{'owners'} // '') : '');
+        my %seen_owners = map { $_ => 1 } grep { /\S/ } split /,/, $existing_owners;
+        $seen_owners{$webmin_user} = 1;
+        my $new_owners = join(',', sort keys %seen_owners);
+        &register_instance($instance_id, $inst_check->{'user'}, $inst_check->{'script'}, {
+            source    => ($reg ? ($reg->{'source'}    // 'manual') : 'manual'),
+            sftp_user => ($reg ? ($reg->{'sftp_user'} // '')       : ''),
+            owners    => $new_owners,
+        });
 
         &grant_server_access($webmin_user, $instance_id);
         &redirect('scan.cgi?msg=assigned');
@@ -212,7 +224,7 @@ if (@registered) {
         my $sftp      = &resolve_instance_sftp_user($id, $user);
         my $sftp_cell = $sftp ? &html_escape($sftp) : "<i>$text{'scan_no_ftp'}</i>";
 
-        my @owners = &get_server_owners($id);
+        my @owners = grep { /\S/ } split /,/, ($inst->{'owners'} // '');
         my $owner_cell = @owners
             ? '<ul style="margin:0;padding-left:1.2em">' .
               join('', map { '<li>' . &html_escape($_) . '</li>' } @owners) .

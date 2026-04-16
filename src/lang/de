@@ -39,6 +39,7 @@ detail_port=Port
 detail_firewall=Firewall
 err_invalid_action=Ungültige Aktion.
 err_invalid_input=Ungültige Eingabe.
+err_user_exists=Benutzername existiert bereits.
 err_access_denied=Zugriff verweigert.
 index_btn_new_server=Neuen Server erstellen
 index_btn_scan=Instanzen verwalten
