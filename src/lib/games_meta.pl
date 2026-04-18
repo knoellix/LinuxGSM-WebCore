@@ -93,6 +93,16 @@ sub get_game_display_name {
     return $meta{$key}{'name'} // $script_name;
 }
 
+# Return 1 if the game requires a Steam login to download, 0 otherwise.
+# Unknown games return 0 (safe default).
+sub game_requires_steam {
+    my ($script_name) = @_;
+    my %meta = load_games_meta();
+    my $key  = _resolve_meta_key($script_name);
+    return 0 unless defined $key && exists $meta{$key};
+    return $meta{$key}{'steam_required'} ? 1 : 0;
+}
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------

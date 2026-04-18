@@ -1,6 +1,7 @@
 {
   "mcserver": {
     "name": "Minecraft (Vanilla)",
+    "steam_required": false,
     "variants": ["mcserver", "mc-paper", "mc-forge", "mc-neoforge", "mc-fabric"],
     "game_config_format": "properties",
     "game_config_fields": [
@@ -22,6 +23,7 @@
   },
   "mc-paper": {
     "name": "Minecraft (Paper)",
+    "steam_required": false,
     "fields": [
       {"key": "port",       "type": "port",   "label_de": "Port",         "label_en": "Port",          "default": "25565"},
       {"key": "gamename",   "type": "text",   "label_de": "Spielname",    "label_en": "Game name",     "default": "PaperMC"},
@@ -30,6 +32,7 @@
   },
   "mc-forge": {
     "name": "Minecraft (Forge)",
+    "steam_required": false,
     "fields": [
       {"key": "port",       "type": "port",   "label_de": "Port",         "label_en": "Port",          "default": "25565"},
       {"key": "gamename",   "type": "text",   "label_de": "Spielname",    "label_en": "Game name",     "default": "Forge"},
@@ -38,6 +41,7 @@
   },
   "mc-neoforge": {
     "name": "Minecraft (NeoForge)",
+    "steam_required": false,
     "fields": [
       {"key": "port",       "type": "port",   "label_de": "Port",         "label_en": "Port",          "default": "25565"},
       {"key": "gamename",   "type": "text",   "label_de": "Spielname",    "label_en": "Game name",     "default": "NeoForge"},
@@ -46,6 +50,7 @@
   },
   "mc-fabric": {
     "name": "Minecraft (Fabric)",
+    "steam_required": false,
     "fields": [
       {"key": "port",       "type": "port",   "label_de": "Port",         "label_en": "Port",          "default": "25565"},
       {"key": "gamename",   "type": "text",   "label_de": "Spielname",    "label_en": "Game name",     "default": "Fabric"},
@@ -54,6 +59,7 @@
   },
   "vhserver": {
     "name": "Valheim",
+    "steam_required": true,
     "fields": [
       {"key": "port",       "type": "port",     "label_de": "Port",         "label_en": "Port",            "default": "2456"},
       {"key": "gamename",   "type": "text",     "label_de": "Spielname",    "label_en": "Game name",       "default": "Valheim"},
@@ -63,6 +69,7 @@
   },
   "pwserver": {
     "name": "Palworld",
+    "steam_required": true,
     "fields": [
       {"key": "port",       "type": "port",   "label_de": "Port",         "label_en": "Port",          "default": "8211"},
       {"key": "gamename",   "type": "text",   "label_de": "Spielname",    "label_en": "Game name",     "default": "Palworld"},
@@ -71,6 +78,7 @@
   },
   "csgoserver": {
     "name": "Counter-Strike: Global Offensive",
+    "steam_required": true,
     "fields": [
       {"key": "port",       "type": "port",   "label_de": "Port",         "label_en": "Port",          "default": "27015"},
       {"key": "gamename",   "type": "text",   "label_de": "Spielname",    "label_en": "Game name",     "default": "CS:GO"},
@@ -80,6 +88,7 @@
   },
   "rustserver": {
     "name": "Rust",
+    "steam_required": true,
     "fields": [
       {"key": "port",       "type": "port",   "label_de": "Port",         "label_en": "Port",          "default": "28015"},
       {"key": "gamename",   "type": "text",   "label_de": "Spielname",    "label_en": "Game name",     "default": "Rust"},
@@ -88,6 +97,7 @@
   },
   "armaserver": {
     "name": "Arma 3",
+    "steam_required": true,
     "fields": [
       {"key": "port",       "type": "port",   "label_de": "Port",         "label_en": "Port",          "default": "2302"},
       {"key": "gamename",   "type": "text",   "label_de": "Spielname",    "label_en": "Game name",     "default": "Arma 3"},
