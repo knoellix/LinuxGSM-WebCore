@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 use strict;
 use warnings;
-use Test::More tests => 8;
+use Test::More tests => 18;
 use File::Temp qw(tempdir);
 use FindBin qw($Bin);
 
@@ -108,4 +108,69 @@ require "$Bin/../src/lib/steam.pl";
     @logged_cmds = ();
     install_steamcmd();
     ok(grep { /apt-get.*install.*steamcmd/ } @logged_cmds, 'install_steamcmd calls apt-get install steamcmd');
+}
+
+# --- Test 9: load_steam_accounts returns arrayref ---
+{
+    my $result = load_steam_accounts();
+    is(ref $result, 'ARRAY', 'load_steam_accounts returns arrayref');
+}
+
+# --- Test 10: load_steam_accounts returns empty list when no file ---
+{
+    my $result = load_steam_accounts();
+    is(scalar @$result, 0, 'load_steam_accounts returns empty list when no file');
+}
+
+# --- Test 11: add_steam_account writes TSV entry ---
+{
+    add_steam_account('testuser', 'Test User');
+    my $accounts = load_steam_accounts();
+    is(scalar @$accounts, 1, 'add_steam_account: one entry written');
+}
+
+# --- Test 12: add_steam_account: username correct ---
+{
+    my $accounts = load_steam_accounts();
+    is($accounts->[0]{'username'}, 'testuser', 'add_steam_account: username correct');
+}
+
+# --- Test 13: add_steam_account: display_name correct ---
+{
+    my $accounts = load_steam_accounts();
+    is($accounts->[0]{'display_name'}, 'Test User', 'add_steam_account: display_name correct');
+}
+
+# --- Test 14: add_steam_account: status is guard_pending ---
+{
+    my $accounts = load_steam_accounts();
+    is($accounts->[0]{'status'}, 'guard_pending', 'add_steam_account: status is guard_pending');
+}
+
+# --- Test 15: get_steam_account_status returns correct status ---
+{
+    my $status = get_steam_account_status('testuser');
+    is($status, 'guard_pending', 'get_steam_account_status returns guard_pending');
+}
+
+# --- Test 16: update_steam_account_status changes status ---
+{
+    update_steam_account_status('testuser', 'ok');
+    my $status = get_steam_account_status('testuser');
+    is($status, 'ok', 'update_steam_account_status: status changed to ok');
+}
+
+# --- Test 17: remove_steam_account removes entry ---
+{
+    add_steam_account('user2', 'User Two');
+    remove_steam_account('testuser');
+    my $accounts = load_steam_accounts();
+    is(scalar @$accounts, 1, 'remove_steam_account: removes correct entry');
+}
+
+# --- Test 18: remaining entry is correct ---
+{
+    my $accounts = load_steam_accounts();
+    is($accounts->[0]{'username'}, 'user2', 'remove_steam_account: remaining entry correct');
+    remove_steam_account('user2');
 }

@@ -79,4 +79,85 @@ sub install_steamcmd {
     &system_logged('apt-get install -y steamcmd 2>&1');
 }
 
+# ---------------------------------------------------------------------------
+# Account vault — $config_directory/steam_accounts.tsv
+# ---------------------------------------------------------------------------
+
+sub _accounts_file {
+    our $config_directory;
+    return "$config_directory/steam_accounts.tsv";
+}
+
+# Return arrayref of account hashrefs: { username, display_name, status }
+sub load_steam_accounts {
+    my $file = _accounts_file();
+    return [] unless -f $file;
+    open(my $fh, '<:encoding(UTF-8)', $file) or return [];
+    my @accounts;
+    while (<$fh>) {
+        chomp;
+        next if /^\s*#/ || !length;
+        my ($username, $display_name, $status) = split(/\t/, $_, 3);
+        next unless defined $username && $username =~ /\S/;
+        push @accounts, {
+            username     => $username,
+            display_name => $display_name // '',
+            status       => $status       // 'guard_pending',
+        };
+    }
+    close($fh);
+    return \@accounts;
+}
+
+sub _save_steam_accounts {
+    my ($accounts_ref) = @_;
+    my $file = _accounts_file();
+    open(my $fh, '>:encoding(UTF-8)', $file) or return;
+    for my $acc (@$accounts_ref) {
+        print $fh join("\t", $acc->{'username'}, $acc->{'display_name'} // '', $acc->{'status'} // 'guard_pending') . "\n";
+    }
+    close($fh);
+    chmod(0600, $file);
+}
+
+# Add new account with status=guard_pending. No-op if username already exists.
+sub add_steam_account {
+    my ($username, $display_name) = @_;
+    my $accounts = load_steam_accounts();
+    return if grep { $_->{'username'} eq $username } @$accounts;
+    push @$accounts, { username => $username, display_name => $display_name // '', status => 'guard_pending' };
+    _save_steam_accounts($accounts);
+}
+
+# Remove account by username.
+sub remove_steam_account {
+    my ($username) = @_;
+    my $accounts = load_steam_accounts();
+    $accounts = [grep { $_->{'username'} ne $username } @$accounts];
+    _save_steam_accounts($accounts);
+}
+
+# Return status string for given username, or undef if not found.
+sub get_steam_account_status {
+    my ($username) = @_;
+    my $accounts = load_steam_accounts();
+    for my $acc (@$accounts) {
+        return $acc->{'status'} if $acc->{'username'} eq $username;
+    }
+    return undef;
+}
+
+# Update status for a given username.
+sub update_steam_account_status {
+    my ($username, $new_status) = @_;
+    my $accounts = load_steam_accounts();
+    for my $acc (@$accounts) {
+        if ($acc->{'username'} eq $username) {
+            $acc->{'status'} = $new_status;
+            last;
+        }
+    }
+    _save_steam_accounts($accounts);
+}
+
 1;
