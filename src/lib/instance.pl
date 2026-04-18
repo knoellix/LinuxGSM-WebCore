@@ -31,7 +31,7 @@ sub _instances_file {
 }
 
 # Load registered instances from file.
-# Returns hash: script_id => { user, script, source, sftp_user }
+# Returns hash: script_id => { user, script, source, sftp_user, owners, steam_account }
 sub _load_registered {
     my %reg;
     my $file = _instances_file();
@@ -40,13 +40,14 @@ sub _load_registered {
     while (<$fh>) {
         chomp;
         next if /^\s*#/ || !(/=/ || /\t/);
-        my ($id, $user, $script, $source, $sftp_user, $owners);
+        my ($id, $user, $script, $source, $sftp_user, $owners, $steam_account);
         if (index($_, "\t") >= 0) {
-            my @cols = split(/\t/, $_, 6);
+            my @cols = split(/\t/, $_, 7);
             ($id, $user, $script, $source, $sftp_user) = @cols;
             $source    ||= 'manual';
             $sftp_user ||= '';
             $owners = $cols[5] // '';
+            $steam_account = $cols[6] // '';
         } else {
             my ($val);
             ($id, $val) = split(/=/, $_, 2);
@@ -54,13 +55,15 @@ sub _load_registered {
             $source = 'legacy';
             $sftp_user = '';
             $owners = '';
+            $steam_account = '';
         }
         $reg{$id} = {
-            user      => $user,
-            script    => $script,
-            source    => $source,
-            sftp_user => $sftp_user,
-            owners    => $owners,
+            user          => $user,
+            script        => $script,
+            source        => $source,
+            sftp_user     => $sftp_user,
+            owners        => $owners,
+            steam_account => $steam_account,
         } if defined $id && $id =~ /\S/ && defined $user && defined $script;
     }
     close($fh);
@@ -72,12 +75,13 @@ sub _save_registered {
     my $file = _instances_file();
     open(my $fh, '>', $file) or return;
     for my $id (sort keys %$reg_ref) {
-        my $u = $reg_ref->{$id}{'user'};
-        my $s = $reg_ref->{$id}{'script'};
-        my $src = $reg_ref->{$id}{'source'} // 'manual';
-        my $ftp = $reg_ref->{$id}{'sftp_user'} // '';
-        my $own = $reg_ref->{$id}{'owners'} // '';
-        print $fh join("\t", $id, $u, $s, $src, $ftp, $own) . "\n";
+        my $u     = $reg_ref->{$id}{'user'};
+        my $s     = $reg_ref->{$id}{'script'};
+        my $src   = $reg_ref->{$id}{'source'} // 'manual';
+        my $ftp   = $reg_ref->{$id}{'sftp_user'} // '';
+        my $own   = $reg_ref->{$id}{'owners'} // '';
+        my $steam = $reg_ref->{$id}{'steam_account'} // '';
+        print $fh join("\t", $id, $u, $s, $src, $ftp, $own, $steam) . "\n";
     }
     close($fh);
 }
@@ -88,11 +92,12 @@ sub register_instance {
     my %opts = %{$opts_ref || {}};
     my %reg = _load_registered();
     $reg{$id} = {
-        user      => $user,
-        script    => $script_path,
-        source    => $opts{'source'} || ($reg{$id}{'source'} // 'manual'),
-        sftp_user => defined $opts{'sftp_user'} ? $opts{'sftp_user'} : ($reg{$id}{'sftp_user'} // ''),
-        owners    => defined $opts{'owners'} ? $opts{'owners'} : ($reg{$id}{'owners'} // ''),
+        user          => $user,
+        script        => $script_path,
+        source        => $opts{'source'} || ($reg{$id}{'source'} // 'manual'),
+        sftp_user     => defined $opts{'sftp_user'} ? $opts{'sftp_user'} : ($reg{$id}{'sftp_user'} // ''),
+        owners        => defined $opts{'owners'} ? $opts{'owners'} : ($reg{$id}{'owners'} // ''),
+        steam_account => defined $opts{'steam_account'} ? $opts{'steam_account'} : ($reg{$id}{'steam_account'} // ''),
     };
     _save_registered(\%reg);
 }
@@ -150,6 +155,7 @@ sub list_instances {
             $inst->{'registration_source'} = $meta->{'source'} // 'manual';
             $inst->{'registered_sftp_user'} = $meta->{'sftp_user'} // '';
             $inst->{'owners'} = $meta->{'owners'} // '';
+            $inst->{'steam_account'} = $meta->{'steam_account'} // '';
             push @instances, $inst;
             $seen{$id} = 1;
         }
@@ -168,6 +174,7 @@ sub list_instances {
             $inst->{'registration_source'} = 'auto';
             $inst->{'registered_sftp_user'} = '';
             $inst->{'owners'} = '';
+            $inst->{'steam_account'} = '';
             push @instances, $inst;
             $seen{$user} = 1;
         }
@@ -182,8 +189,8 @@ sub list_instances {
 sub get_instance {
     my ($id, $user, $script_path) = @_;
 
+    my %reg = _load_registered();
     unless (defined $user && defined $script_path) {
-        my %reg = _load_registered();
         if ($reg{$id}) {
             $user        = $reg{$id}{'user'};
             $script_path = $reg{$id}{'script'};
@@ -194,6 +201,7 @@ sub get_instance {
             $script_path = "$pw[7]/$user";
         }
     }
+    my $steam_account = $reg{$id}{'steam_account'} // '';
 
     $user = &sanitize_input($user);
     my @pw = getpwnam($user) or return undef;
@@ -212,15 +220,16 @@ sub get_instance {
     my $warns   = _check_instance_health($user, $script_dir, $shell, $script_path, \%cfg);
 
     return {
-        id       => $id,
-        user     => $user,
-        home     => $home,
-        script   => $script_path,
-        game     => $cfg{gamename} // 'unknown',
-        port     => $port,
-        status   => $status,
-        fw_open  => $fw_open,
-        warnings => $warns,
+        id            => $id,
+        user          => $user,
+        home          => $home,
+        script        => $script_path,
+        game          => $cfg{gamename} // 'unknown',
+        port          => $port,
+        status        => $status,
+        fw_open       => $fw_open,
+        warnings      => $warns,
+        steam_account => $steam_account,
     };
 }
 
