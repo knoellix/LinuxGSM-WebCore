@@ -160,4 +160,102 @@ sub update_steam_account_status {
     _save_steam_accounts($accounts);
 }
 
+# ---------------------------------------------------------------------------
+# Login session management
+# ---------------------------------------------------------------------------
+
+sub _sessions_dir {
+    our $config_directory;
+    return "$config_directory/steam_sessions";
+}
+
+# Generate a cryptographically random 32-char hex token.
+sub _generate_session_token {
+    open(my $fh, '<', '/dev/urandom') or die "Cannot open /dev/urandom: $!";
+    my $raw;
+    read($fh, $raw, 16) or die "Cannot read /dev/urandom";
+    close($fh);
+    return unpack('H*', $raw);
+}
+
+# Create a session directory and return ($token, $session_dir).
+sub create_login_session {
+    my $base = _sessions_dir();
+    mkdir $base, 0700 unless -d $base;
+    my $token       = _generate_session_token();
+    my $session_dir = "$base/$token";
+    mkdir $session_dir, 0700 or die "Cannot create session dir: $!";
+    return ($token, $session_dir);
+}
+
+# Read status from session dir. Returns undef if session does not exist.
+sub read_session_status {
+    my ($token) = @_;
+    my $status_file = _sessions_dir() . "/$token/status";
+    return undef unless -f $status_file;
+    open(my $fh, '<', $status_file) or return undef;
+    my $status = <$fh>;
+    close($fh);
+    chomp $status if defined $status;
+    return $status;
+}
+
+# Read steamcmd output log from session dir.
+sub read_session_output {
+    my ($token) = @_;
+    my $out_file = _sessions_dir() . "/$token/steam_out";
+    return '' unless -f $out_file;
+    open(my $fh, '<', $out_file) or return '';
+    local $/;
+    my $content = <$fh>;
+    close($fh);
+    return $content // '';
+}
+
+# Write guard code to session dir. Validates: only uppercase letters and digits, max 5 chars.
+sub submit_guard_code {
+    my ($token, $code) = @_;
+    $code =~ s/[^A-Z0-9]//g;
+    $code = substr($code, 0, 5);
+    my $code_file = _sessions_dir() . "/$token/guard_code";
+    open(my $fh, '>', $code_file) or die "Cannot write guard code: $!";
+    print $fh "$code\n";
+    close($fh);
+}
+
+# Delete session directory (cleanup after ok/failed/timeout).
+sub cleanup_session {
+    my ($token) = @_;
+    my $session_dir = _sessions_dir() . "/$token";
+    return unless -d $session_dir;
+    for my $file (glob("$session_dir/*")) {
+        unlink $file;
+    }
+    rmdir $session_dir;
+}
+
+# Start login worker in background.
+# $password is written to a chmod-600 temp file; worker deletes it immediately.
+# Returns $token.
+sub start_login_session {
+    my ($username, $password) = @_;
+    our $module_root;
+
+    my ($token, $session_dir) = create_login_session();
+
+    # Write password to temp file with strict permissions
+    my $pass_file = "$session_dir/pass_tmp";
+    open(my $fh, '>', $pass_file) or die "Cannot write pass_tmp: $!";
+    print $fh $password;
+    close($fh);
+    chmod(0600, $pass_file);
+
+    my $worker = "$module_root/scripts/steam_login_worker.sh";
+    # Use quotemeta to prevent shell injection on all arguments
+    my $cmd = "nohup " . quotemeta($worker) . " " . quotemeta($session_dir) . " " . quotemeta($username) . " " . quotemeta($pass_file) . " </dev/null >/dev/null 2>&1 &";
+    system($cmd);
+
+    return $token;
+}
+
 1;
