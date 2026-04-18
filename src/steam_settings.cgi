@@ -78,7 +78,7 @@ my $get_action = $in{'action'} // '';
 $get_action =~ s/[^a-z_]//g;
 
 if ($get_action eq 'relogin_form') {
-    my $username = $in{'steam_username'} // '';
+    my $username = $in{'instance'} // '';
     $username =~ s/[^a-zA-Z0-9_\-]//g;
     &header($text{'steam_title'}, '');
     print "<h3>" . &html_escape($text{'steam_relogin_btn'}) . ": " . &html_escape($username) . "</h3>\n";
@@ -158,18 +158,24 @@ if ($steamcmd_path) {
     print &ui_table_row(&html_escape($text{'steam_cmd_missing'}), $f);
 }
 
-if ($repos->{'non_free'} && $repos->{'contrib'} && !$repos->{'cdrom_active'}) {
+if ($repos->{'non_free'} && $repos->{'contrib'}) {
     print &ui_table_row(&html_escape($text{'steam_repos_ok'}), '&#x2705;');
 } else {
-    my @issues;
-    push @issues, "<li>" . &html_escape($text{'steam_cdrom_warn'})    . "</li>" if $repos->{'cdrom_active'};
-    push @issues, "<li>" . &html_escape($text{'steam_repos_fix_btn'}) . "</li>"
-        unless $repos->{'non_free'} && $repos->{'contrib'};
     my $f = &ui_form_start('steam_settings.cgi', 'post');
     $f .= &ui_hidden('action', 'patch_repos');
     $f .= &ui_submit($text{'steam_repos_fix_btn'}, undef, undef, undef, 'btn-default');
     $f .= &ui_form_end();
-    print &ui_table_row("<ul>" . join('', @issues) . "</ul>", $f);
+    print &ui_table_row(&html_escape($text{'steam_repos_fix_btn'}), $f);
+}
+
+if (!$repos->{'cdrom_active'}) {
+    print &ui_table_row(&html_escape($text{'steam_cdrom_ok'} // 'CD-ROM: OK'), '&#x2705;');
+} else {
+    my $f = &ui_form_start('steam_settings.cgi', 'post');
+    $f .= &ui_hidden('action', 'patch_repos');
+    $f .= &ui_submit($text{'steam_repos_fix_btn'}, undef, undef, undef, 'btn-default');
+    $f .= &ui_form_end();
+    print &ui_table_row(&html_escape($text{'steam_cdrom_warn'}), $f);
 }
 print &ui_table_end();
 
@@ -183,16 +189,8 @@ if (@$accounts) {
         my $status       = $acc->{'status'} // 'guard_pending';
         my $status_label = &html_escape($text{"steam_status_$status"} // $status);
         my $actions = '';
-        if ($status ne 'ok') {
-            $actions .= &ui_form_start('steam_settings.cgi', 'post');
-            $actions .= &ui_hidden('action',         'relogin');
-            $actions .= &ui_hidden('steam_username', $uname);
-            $actions .= &ui_table_start('', undef, 2);
-            $actions .= &ui_table_row(&html_escape($text{'steam_password_hint'}),
-                &ui_password('steam_password', '', 20));
-            $actions .= &ui_table_end();
-            $actions .= &ui_submit($text{'steam_relogin_btn'}, undef, undef, undef, 'btn-default');
-            $actions .= &ui_form_end();
+        if ($status eq 'token_expired') {
+            $actions .= "<a href=\"steam_settings.cgi?action=relogin_form&instance=" . &html_escape($uname) . "\" class=\"btn btn-xs btn-warning\">" . &html_escape($text{'steam_relogin_btn'}) . "</a>";
         }
         $actions .= &ui_form_start('steam_settings.cgi', 'post');
         $actions .= &ui_hidden('action',         'remove_account');
