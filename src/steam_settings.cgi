@@ -165,11 +165,11 @@ if ($repos->{'non_free'} && $repos->{'contrib'}) {
     $f .= &ui_hidden('action', 'patch_repos');
     $f .= &ui_submit($text{'steam_repos_fix_btn'}, undef, undef, undef, 'btn-default');
     $f .= &ui_form_end();
-    print &ui_table_row(&html_escape($text{'steam_repos_fix_btn'}), $f);
+    print &ui_table_row(&html_escape($text{'steam_repos_missing'}), $f);
 }
 
 if (!$repos->{'cdrom_active'}) {
-    print &ui_table_row(&html_escape($text{'steam_cdrom_ok'} // 'CD-ROM: OK'), '&#x2705;');
+    print &ui_table_row(&html_escape($text{'steam_cdrom_ok'}), '&#x2705;');
 } else {
     my $f = &ui_form_start('steam_settings.cgi', 'post');
     $f .= &ui_hidden('action', 'patch_repos');
