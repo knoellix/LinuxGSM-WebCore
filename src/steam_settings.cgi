@@ -1,0 +1,227 @@
+#!/usr/bin/perl
+use strict;
+use warnings;
+
+do '../web-lib.pl';
+do '../ui-lib.pl';
+&init_config();
+
+require './lib/core.pl';
+require './lib/acl.pl';
+require './lib/steam.pl';
+
+our (%text, %in);
+$main::gconfig{'charset'} = 'utf-8';
+&ReadParse(\%in);
+
+&can_scan() or &error($text{'err_access_denied'});
+
+if ($ENV{REQUEST_METHOD} eq 'POST') {
+    my $action = $in{'action'} // '';
+    $action =~ s/[^a-z_]//g;
+
+    if ($action eq 'patch_repos') {
+        &patch_apt_sources('/etc/apt/sources.list');
+        &redirect('steam_settings.cgi');
+
+    } elsif ($action eq 'install_steamcmd') {
+        &install_steamcmd();
+        &redirect('steam_settings.cgi');
+
+    } elsif ($action eq 'add_account') {
+        my $username     = $in{'steam_username'}     // '';
+        my $display_name = $in{'steam_display_name'} // '';
+        my $password     = $in{'steam_password'}     // '';
+        $username =~ s/[^a-zA-Z0-9_\-]//g;
+        $username = substr($username, 0, 64);
+        $display_name =~ s/[\t\n\r]//g;
+        $display_name = substr($display_name, 0, 80);
+        $username or &error($text{'err_invalid_input'});
+        $password or &error($text{'err_invalid_input'});
+        &add_steam_account($username, $display_name);
+        my $token = &start_login_session($username, $password);
+        &redirect("steam_settings.cgi?action=poll&session=" . &html_escape($token) . "&username=" . &html_escape($username));
+
+    } elsif ($action eq 'remove_account') {
+        my $username = $in{'steam_username'} // '';
+        $username =~ s/[^a-zA-Z0-9_\-]//g;
+        $username or &error($text{'err_invalid_input'});
+        &remove_steam_account($username);
+        &redirect('steam_settings.cgi');
+
+    } elsif ($action eq 'submit_guard') {
+        my $token    = $in{'session'}    // '';
+        my $username = $in{'username'}   // '';
+        my $code     = $in{'guard_code'} // '';
+        $token    =~ s/[^a-f0-9]//g;
+        $username =~ s/[^a-zA-Z0-9_\-]//g;
+        (my $clean_code = uc($code)) =~ s/[^A-Z0-9]//g;
+        $code = substr($clean_code, 0, 5);
+        $token or &error($text{'err_invalid_input'});
+        $code  or &error($text{'err_invalid_input'});
+        &submit_guard_code($token, $code);
+        &redirect("steam_settings.cgi?action=poll&session=" . &html_escape($token) . "&username=" . &html_escape($username));
+
+    } elsif ($action eq 'relogin') {
+        my $username = $in{'steam_username'} // '';
+        my $password = $in{'steam_password'} // '';
+        $username =~ s/[^a-zA-Z0-9_\-]//g;
+        $username or &error($text{'err_invalid_input'});
+        $password or &error($text{'err_invalid_input'});
+        &update_steam_account_status($username, 'guard_pending');
+        my $token = &start_login_session($username, $password);
+        &redirect("steam_settings.cgi?action=poll&session=" . &html_escape($token) . "&username=" . &html_escape($username));
+    }
+}
+
+my $get_action = $in{'action'} // '';
+$get_action =~ s/[^a-z_]//g;
+
+if ($get_action eq 'relogin_form') {
+    my $username = $in{'steam_username'} // '';
+    $username =~ s/[^a-zA-Z0-9_\-]//g;
+    &header($text{'steam_title'}, '');
+    print "<h3>" . &html_escape($text{'steam_relogin_btn'}) . ": " . &html_escape($username) . "</h3>\n";
+    print &ui_form_start('steam_settings.cgi', 'post');
+    print &ui_hidden('action', 'relogin');
+    print &ui_hidden('steam_username', &html_escape($username));
+    print &ui_table_start('', undef, 2);
+    print &ui_table_row(&html_escape($text{'steam_password_hint'}),
+        &ui_password('steam_password', '', 30));
+    print &ui_table_end();
+    print &ui_submit($text{'steam_login_start_btn'}, undef, undef, undef, 'btn-primary');
+    print &ui_form_end();
+    &footer('steam_settings.cgi', $text{'steam_title'});
+    exit;
+}
+
+if ($get_action eq 'poll') {
+    my $token    = $in{'session'}  // '';
+    my $username = $in{'username'} // '';
+    $token    =~ s/[^a-f0-9]//g;
+    $username =~ s/[^a-zA-Z0-9_\-]//g;
+
+    &header($text{'steam_login_title'}, '');
+    my $status = &read_session_status($token) // 'connecting';
+
+    if ($status eq 'ok') {
+        &update_steam_account_status($username, 'ok');
+        &cleanup_session($token);
+        print "<div class='alert alert-success'>" . &html_escape($text{'steam_login_ok'}) . "</div>\n";
+        print "<p><a href='steam_settings.cgi'>" . &html_escape($text{'steam_title'}) . "</a></p>\n";
+    } elsif ($status eq 'failed') {
+        &update_steam_account_status($username, 'token_expired');
+        &cleanup_session($token);
+        print "<div class='alert alert-danger'>" . &html_escape($text{'steam_login_failed'}) . "</div>\n";
+        print "<p><a href='steam_settings.cgi'>" . &html_escape($text{'steam_title'}) . "</a></p>\n";
+    } elsif ($status eq 'timeout') {
+        &update_steam_account_status($username, 'token_expired');
+        &cleanup_session($token);
+        print "<div class='alert alert-warning'>" . &html_escape($text{'steam_login_timeout'}) . "</div>\n";
+        print "<p><a href='steam_settings.cgi'>" . &html_escape($text{'steam_title'}) . "</a></p>\n";
+    } elsif ($status eq 'guard_required') {
+        print "<p>" . &html_escape($text{'steam_guard_prompt'}) . "</p>\n";
+        print &ui_form_start('steam_settings.cgi', 'post');
+        print &ui_hidden('action',   'submit_guard');
+        print &ui_hidden('session',  &html_escape($token));
+        print &ui_hidden('username', &html_escape($username));
+        print &ui_table_start('', undef, 2);
+        print &ui_table_row(&html_escape($text{'steam_guard_prompt'}),
+            &ui_textbox('guard_code', '', 8));
+        print &ui_table_end();
+        print &ui_submit($text{'steam_guard_submit'}, undef, undef, undef, 'btn-primary');
+        print &ui_form_end();
+    } else {
+        print "<meta http-equiv='refresh' content='3'>\n";
+        print "<p>" . &html_escape($text{'steam_login_connecting'}) . "</p>\n";
+    }
+
+    &footer('', '');
+    exit;
+}
+
+# Main page
+&header($text{'steam_title'}, '');
+
+print "<h3>" . &html_escape($text{'steam_system_title'}) . "</h3>\n";
+my $steamcmd_path = &detect_steamcmd();
+my $repos         = &check_apt_repos('/etc/apt/sources.list');
+
+print &ui_table_start('', undef, 2);
+if ($steamcmd_path) {
+    print &ui_table_row(&html_escape($text{'steam_cmd_ok'}), &html_escape($steamcmd_path));
+} else {
+    my $f = &ui_form_start('steam_settings.cgi', 'post');
+    $f .= &ui_hidden('action', 'install_steamcmd');
+    $f .= &ui_submit($text{'steam_install_btn'}, undef, undef, undef, 'btn-primary');
+    $f .= &ui_form_end();
+    print &ui_table_row(&html_escape($text{'steam_cmd_missing'}), $f);
+}
+
+if ($repos->{'non_free'} && $repos->{'contrib'} && !$repos->{'cdrom_active'}) {
+    print &ui_table_row(&html_escape($text{'steam_repos_ok'}), '&#x2705;');
+} else {
+    my @issues;
+    push @issues, "<li>" . &html_escape($text{'steam_cdrom_warn'})    . "</li>" if $repos->{'cdrom_active'};
+    push @issues, "<li>" . &html_escape($text{'steam_repos_fix_btn'}) . "</li>"
+        unless $repos->{'non_free'} && $repos->{'contrib'};
+    my $f = &ui_form_start('steam_settings.cgi', 'post');
+    $f .= &ui_hidden('action', 'patch_repos');
+    $f .= &ui_submit($text{'steam_repos_fix_btn'}, undef, undef, undef, 'btn-default');
+    $f .= &ui_form_end();
+    print &ui_table_row("<ul>" . join('', @issues) . "</ul>", $f);
+}
+print &ui_table_end();
+
+print "<h3>" . &html_escape($text{'steam_accounts_title'}) . "</h3>\n";
+my $accounts = &load_steam_accounts();
+if (@$accounts) {
+    my @rows;
+    for my $acc (@$accounts) {
+        my $uname        = &html_escape($acc->{'username'});
+        my $dname        = &html_escape($acc->{'display_name'});
+        my $status       = $acc->{'status'} // 'guard_pending';
+        my $status_label = &html_escape($text{"steam_status_$status"} // $status);
+        my $actions = '';
+        if ($status ne 'ok') {
+            $actions .= &ui_form_start('steam_settings.cgi', 'post');
+            $actions .= &ui_hidden('action',         'relogin');
+            $actions .= &ui_hidden('steam_username', $uname);
+            $actions .= &ui_table_start('', undef, 2);
+            $actions .= &ui_table_row(&html_escape($text{'steam_password_hint'}),
+                &ui_password('steam_password', '', 20));
+            $actions .= &ui_table_end();
+            $actions .= &ui_submit($text{'steam_relogin_btn'}, undef, undef, undef, 'btn-default');
+            $actions .= &ui_form_end();
+        }
+        $actions .= &ui_form_start('steam_settings.cgi', 'post');
+        $actions .= &ui_hidden('action',         'remove_account');
+        $actions .= &ui_hidden('steam_username', $uname);
+        $actions .= &ui_submit($text{'steam_remove_btn'}, undef, undef, undef, 'btn-danger');
+        $actions .= &ui_form_end();
+        push @rows, [$uname, $dname, $status_label, $actions];
+    }
+    print &ui_columns_table(
+        [$text{'steam_col_username'}, $text{'steam_col_display'}, $text{'steam_col_status'}, $text{'steam_col_actions'}],
+        '100%',
+        \@rows,
+    );
+} else {
+    print "<p><i>" . &html_escape($text{'steam_no_accounts'}) . "</i></p>\n";
+}
+
+print "<h4>" . &html_escape($text{'steam_add_account'}) . "</h4>\n";
+print &ui_form_start('steam_settings.cgi', 'post');
+print &ui_hidden('action', 'add_account');
+print &ui_table_start('', undef, 2);
+print &ui_table_row(&html_escape($text{'steam_display_name'}),
+    &ui_textbox('steam_display_name', '', 30));
+print &ui_table_row(&html_escape($text{'steam_username'}),
+    &ui_textbox('steam_username', '', 30));
+print &ui_table_row(&html_escape($text{'steam_password_hint'}),
+    &ui_password('steam_password', '', 30));
+print &ui_table_end();
+print &ui_submit($text{'steam_login_start_btn'}, undef, undef, undef, 'btn-primary');
+print &ui_form_end();
+
+&footer('index.cgi', $text{'index_title'});
