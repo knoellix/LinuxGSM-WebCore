@@ -1,4 +1,12 @@
 #!/usr/bin/perl
+# -------------------------------------------------------------------------
+# LinuxGSM Webcore - Webmin Module
+# Copyright (C) 2026 Christian Möllmann knoelliX 128321164+knoellix@users.noreply.github.com
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published
+# by the Free Software Foundation, either version 3 of the License.
+# -------------------------------------------------------------------------
 use strict;
 use warnings;
 
@@ -13,6 +21,7 @@ require './lib/acl.pl';
 require './lib/games_meta.pl';
 require './lib/config_editor.pl';
 require './lib/ftp_proftpd.pl';
+require './lib/steam.pl';
 
 our (%text, %config, %in, %gconfig);
 our $current_lang;
@@ -442,6 +451,32 @@ print "</p>\n";
         print &ui_submit($text{'ftp_create_btn'});
         print &ui_form_end();
     }
+}
+
+# Steam account section
+if (&game_requires_steam($script_name_for_cfg)) {
+    my $sa        = $inst->{'steam_account'} // '';
+    my $sa_status = $sa ? (&get_steam_account_status($sa) // '') : '';
+
+    print "<h3>" . &html_escape($text{'steam_manage_section'}) . "</h3>\n";
+    print &ui_table_start(undef, undef, 2);
+
+    if ($sa) {
+        my $badge = $sa_status eq 'ok'            ? '&#x2705; ' . $text{'steam_status_ok'}
+                  : $sa_status eq 'token_expired' ? '&#x26A0;&#xFE0F; ' . $text{'steam_status_expired'}
+                  :                                 '&#x23F3; ' . $text{'steam_status_pending'};
+        print &ui_table_row($text{'steam_account_label'}, &html_escape($sa) . " \x{2014} " . $badge);
+    } else {
+        print &ui_table_row($text{'steam_account_label'}, $text{'steam_manage_no_account'});
+    }
+
+    print &ui_table_end();
+
+    print &ui_form_start('steam_settings.cgi', 'get');
+    print &ui_hidden('action',   'relogin_form');
+    print &ui_hidden('instance', &html_escape($instance_id));
+    print &ui_submit($text{'steam_relogin_btn'}, undef, undef, undef, 'btn-warning');
+    print &ui_form_end();
 }
 
 # Detect if common.cfg contains misplaced instance-specific fields

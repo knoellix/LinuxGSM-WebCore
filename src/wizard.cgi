@@ -11,6 +11,8 @@ require './lib/acl.pl';
 require './lib/games.pl';
 require './lib/instance.pl';
 require './lib/provision.pl';
+require './lib/games_meta.pl';
+require './lib/steam.pl';
 
 our (%text, %in, %access);
 &ReadParse(\%in);
@@ -41,15 +43,16 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
     }
 
     if ($step == 2) {
-        my $game       = &sanitize_input($in{'game'});
-        my $username   = &sanitize_input($in{'username'});
-        my $port       = int($in{'port'} || 0);
-        my $sftp       = int($in{'sftp'} || 0);
-        my $webmin_user = &sanitize_input($in{'webmin_user'});
+        my $game          = &sanitize_input($in{'game'});
+        my $username      = &sanitize_input($in{'username'});
+        my $port          = int($in{'port'} || 0);
+        my $sftp          = int($in{'sftp'} || 0);
+        my $webmin_user   = &sanitize_input($in{'webmin_user'});
+        my $steam_account = $in{'steam_account'} // '';
 
         # Advance to step 3 (confirmation)
         &header($text{'wizard_title'}, '');
-        _step3_form($game, $username, $port, $sftp, $webmin_user);
+        _step3_form($game, $username, $port, $sftp, $webmin_user, $steam_account);
         &footer('', '');
         exit;
     }
@@ -60,6 +63,7 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
         my $port        = int($in{'port'} || 0);
         my $sftp        = int($in{'sftp'} || 0);
         my $webmin_user = &sanitize_input($in{'webmin_user'});
+        my $steam_account = $in{'steam_account'} // '';
 
         # Re-validate port — another process may have claimed it since step 1
         &port_in_use($port) and &error($text{'err_port_in_use'});
@@ -76,9 +80,14 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
             # Register instance so it appears in index/manage even with bash shell
             my @pw = getpwnam($username);
             my $home = $pw[7] // "/home/$username";
-            &register_instance($username, $username, "$home/$username", {
-                source => 'provisioned',
-            });
+            my %reg_extra = (source => 'provisioned');
+            if (&game_requires_steam($game) && $steam_account =~ /\S/) {
+                my $sa = $steam_account;
+                $sa =~ s/[^a-zA-Z0-9_\-]//g;
+                $sa = substr($sa, 0, 64);
+                $reg_extra{'steam_account'} = $sa if length $sa;
+            }
+            &register_instance($username, $username, "$home/$username", \%reg_extra);
 
             # SFTP user setup — roll back the game user on failure
             if ($sftp) {
@@ -152,13 +161,33 @@ sub _step2_form {
         &ui_select('webmin_user', '', \@opts));
     print &ui_table_row('',
         "<small>$text{'wizard_owner_note'}</small>");
+
+    if (&game_requires_steam($game)) {
+        my $accounts = &load_steam_accounts();
+        my @ok_accounts = grep { $_->{'status'} eq 'ok' } @$accounts;
+        if (@ok_accounts) {
+            my @sa_opts = map { [$_->{'username'}, &html_escape($_->{'display_name'} || $_->{'username'})] } @ok_accounts;
+            print &ui_table_row(
+                $text{'steam_account_label'},
+                &ui_select('steam_account', $in{'steam_account'} // $sa_opts[0][0], \@sa_opts)
+            );
+        } else {
+            print &ui_table_row(
+                $text{'steam_account_label'},
+                $text{'steam_no_accounts'} . " " .
+                "<a href=\"steam_settings.cgi\">" . &html_escape($text{'steam_btn'}) . "</a>"
+            );
+        }
+    }
+
     print &ui_table_end();
     print &ui_submit($text{'wizard_install'});
     print &ui_form_end();
 }
 
 sub _step3_form {
-    my ($game, $username, $port, $sftp, $webmin_user) = @_;
+    my ($game, $username, $port, $sftp, $webmin_user, $steam_account) = @_;
+    $steam_account //= '';
     print "<h3>$text{'wizard_step3'}</h3>\n";
     print "<h4>$text{'wizard_summary'}</h4>\n";
 
@@ -168,15 +197,21 @@ sub _step3_form {
     print &ui_table_row($text{'wizard_port'},     $port);
     print &ui_table_row($text{'wizard_sftp'},     $sftp ? 'ja' : 'nein');
     print &ui_table_row($text{'wizard_owner'},    &html_escape($webmin_user));
+    if (&game_requires_steam($game) && $steam_account =~ /\S/) {
+        print &ui_table_row($text{'steam_account_label'}, &html_escape($steam_account));
+    }
     print &ui_table_end();
 
     print &ui_form_start('wizard.cgi', 'post');
-    print &ui_hidden('step',        '3');
-    print &ui_hidden('game',        &html_escape($game));
-    print &ui_hidden('username',    &html_escape($username));
-    print &ui_hidden('port',        $port);
-    print &ui_hidden('sftp',        $sftp);
-    print &ui_hidden('webmin_user', &html_escape($webmin_user));
+    print &ui_hidden('step',          '3');
+    print &ui_hidden('game',          &html_escape($game));
+    print &ui_hidden('username',      &html_escape($username));
+    print &ui_hidden('port',          $port);
+    print &ui_hidden('sftp',          $sftp);
+    print &ui_hidden('webmin_user',   &html_escape($webmin_user));
+    if (&game_requires_steam($game) && $steam_account =~ /\S/) {
+        print &ui_hidden('steam_account', &html_escape($steam_account));
+    }
     print &ui_submit($text{'wizard_install'});
     print &ui_form_end();
 }

@@ -31,6 +31,10 @@ if (&can_scan()) {
     print &ui_form_start('ftp_settings.cgi', 'get');
     print &ui_submit($text{'index_btn_ftp'});
     print &ui_form_end();
+
+    print &ui_form_start('steam_settings.cgi', 'get');
+    print &ui_submit($text{'steam_btn'}, undef, undef, undef, 'btn btn-default');
+    print &ui_form_end();
 }
 
 my @instances = &list_managed_instances();
