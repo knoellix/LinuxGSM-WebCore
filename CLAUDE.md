@@ -14,7 +14,7 @@ Dieses Dokument trennt verbindliche Projektregeln (Policy) von Webmin-spezifisch
 - **Verification:** Nach jeder Aenderung mindestens ein passender Test-Stub in `t/` oder ein Syntax-/Integritaetscheck.
 
 ## 2. Architektur und Sicherheit (verbindlich)
-- **Isolation:** Jede Instanz bekommt einen eigenen System-User mit `/usr/sbin/nologin`.
+- **Isolation:** Zwei Strategien moeglich: (A) geteilter Unix-User (`game_master` o.ae.) fuer mehrere Server — Admin traegt Verantwortung fuer reduzierte Isolation; (B) dedizierter Unix-User pro Server mit `/usr/sbin/nologin` — bevorzugt. Beide Strategien: LGSM laeuft immer im Unterordner `/home/{user}/{servername}/`, niemals direkt im Home-Root.
 - **Privilege Separation:** Game-Binaries nur via `su -s /bin/bash -c ...`, niemals als `root`.
 - **SFTP-Chroot:** `internal-sftp` in `/etc/ssh/sshd_config` mit separatem SFTP-Passwort ohne Shell-Zugriff.
 - **Firewall-Automation:** Freigaben ausschliesslich ueber die Webmin-Firewall-API (UFW/Iptables).
@@ -34,8 +34,9 @@ Dieses Dokument trennt verbindliche Projektregeln (Policy) von Webmin-spezifisch
      Co-authored-by: Claude <claude-code@anthropic.com>
 
 ## 4. Kernlogik und Betriebsfluss
-- **Instanz-Erkennung:** Via `/etc/passwd` und Suche nach `linuxgsm.sh` in `/home/`.
-- **Provisionierung:** User-Anlage (inkl. Suffix) -> Port-Check -> LGSM-Install -> Firewall-Entry.
+- **Instanz-Erkennung:** Primaer via Registry-TSV (`$config_directory/instances`). Auto-Erkennung via `/etc/passwd` + `linuxgsm.sh`-Suche nur als Fallback fuer Alt-Instanzen (Pre-Wizard).
+- **Provisionierung (neu, zweistufig):** Wizard macht nur schnelle Ops: Unix-User anlegen + Unterordner `/home/{user}/{servername}/` + Registry-Eintrag (Status `fresh`). Alle langen Ops (LGSM-Download, Game-Install, Update) laufen in manage.cgi als Background-Worker-Jobs (`$config_directory/jobs/{job_id}/`).
+- **Game-Server-Operationen:** Ausnahmslos via `su -s /bin/bash -c "..." {unix_user}` aus dem Serververzeichnis. `apt-get` nur als root fuer System-Abhaengigkeiten; alle Server-Dateien gehoeren dem Unix-User.
 - **Live-Konsole:** Echtzeit-Log-Streaming per `tail`-Simulation im Webmin-Interface.
 - **Monitoring:** Integration ins Webmin-Status-Modul mit 3-Stufen-Eskalation (Restart -> Mail).
 
