@@ -42,12 +42,23 @@ sub _load_registered {
         next if /^\s*#/ || !(/=/ || /\t/);
         my ($id, $user, $script, $source, $sftp_user, $owners, $steam_account);
         if (index($_, "\t") >= 0) {
-            my @cols = split(/\t/, $_, 7);
+            my @cols = split(/\t/, $_, 8);
             ($id, $user, $script, $source, $sftp_user) = @cols;
             $source    ||= 'manual';
             $sftp_user ||= '';
             $owners = $cols[5] // '';
             $steam_account = $cols[6] // '';
+            my $instance_status = do { my $v = $cols[7] // ''; chomp $v; $v || 'installed' };
+            $reg{$id} = {
+                user            => $user,
+                script          => $script,
+                source          => $source,
+                sftp_user       => $sftp_user,
+                owners          => $owners,
+                steam_account   => $steam_account,
+                instance_status => $instance_status,
+            } if defined $id && $id =~ /\S/ && defined $user && defined $script;
+            next;
         } else {
             my ($val);
             ($id, $val) = split(/=/, $_, 2);
@@ -58,12 +69,13 @@ sub _load_registered {
             $steam_account = '';
         }
         $reg{$id} = {
-            user          => $user,
-            script        => $script,
-            source        => $source,
-            sftp_user     => $sftp_user,
-            owners        => $owners,
-            steam_account => $steam_account,
+            user            => $user,
+            script          => $script,
+            source          => $source,
+            sftp_user       => $sftp_user,
+            owners          => $owners,
+            steam_account   => $steam_account,
+            instance_status => 'installed',
         } if defined $id && $id =~ /\S/ && defined $user && defined $script;
     }
     close($fh);
@@ -75,13 +87,14 @@ sub _save_registered {
     my $file = _instances_file();
     open(my $fh, '>', $file) or return;
     for my $id (sort keys %$reg_ref) {
-        my $u     = $reg_ref->{$id}{'user'};
-        my $s     = $reg_ref->{$id}{'script'};
-        my $src   = $reg_ref->{$id}{'source'} // 'manual';
-        my $ftp   = $reg_ref->{$id}{'sftp_user'} // '';
-        my $own   = $reg_ref->{$id}{'owners'} // '';
-        my $steam = $reg_ref->{$id}{'steam_account'} // '';
-        print $fh join("\t", $id, $u, $s, $src, $ftp, $own, $steam) . "\n";
+        my $u       = $reg_ref->{$id}{'user'};
+        my $s       = $reg_ref->{$id}{'script'};
+        my $src     = $reg_ref->{$id}{'source'} // 'manual';
+        my $ftp     = $reg_ref->{$id}{'sftp_user'} // '';
+        my $own     = $reg_ref->{$id}{'owners'} // '';
+        my $steam   = $reg_ref->{$id}{'steam_account'} // '';
+        my $istatus = $reg_ref->{$id}{'instance_status'} // 'installed';
+        print $fh join("\t", $id, $u, $s, $src, $ftp, $own, $steam, $istatus) . "\n";
     }
     close($fh);
 }
@@ -92,12 +105,13 @@ sub register_instance {
     my %opts = %{$opts_ref || {}};
     my %reg = _load_registered();
     $reg{$id} = {
-        user          => $user,
-        script        => $script_path,
-        source        => $opts{'source'} || ($reg{$id}{'source'} // 'manual'),
-        sftp_user     => defined $opts{'sftp_user'} ? $opts{'sftp_user'} : ($reg{$id}{'sftp_user'} // ''),
-        owners        => defined $opts{'owners'} ? $opts{'owners'} : ($reg{$id}{'owners'} // ''),
-        steam_account => defined $opts{'steam_account'} ? $opts{'steam_account'} : ($reg{$id}{'steam_account'} // ''),
+        user            => $user,
+        script          => $script_path,
+        source          => $opts{'source'} || ($reg{$id}{'source'} // 'manual'),
+        sftp_user       => defined $opts{'sftp_user'} ? $opts{'sftp_user'} : ($reg{$id}{'sftp_user'} // ''),
+        owners          => defined $opts{'owners'} ? $opts{'owners'} : ($reg{$id}{'owners'} // ''),
+        steam_account   => defined $opts{'steam_account'} ? $opts{'steam_account'} : ($reg{$id}{'steam_account'} // ''),
+        instance_status => defined $opts{'instance_status'} ? $opts{'instance_status'} : ($reg{$id}{'instance_status'} // 'installed'),
     };
     _save_registered(\%reg);
 }
@@ -156,6 +170,7 @@ sub list_instances {
             $inst->{'registered_sftp_user'} = $meta->{'sftp_user'} // '';
             $inst->{'owners'} = $meta->{'owners'} // '';
             $inst->{'steam_account'} = $meta->{'steam_account'} // '';
+            $inst->{'instance_status'} = $meta->{'instance_status'} // 'installed';
             push @instances, $inst;
             $seen{$id} = 1;
         }
@@ -175,6 +190,7 @@ sub list_instances {
             $inst->{'registered_sftp_user'} = '';
             $inst->{'owners'} = '';
             $inst->{'steam_account'} = '';
+            $inst->{'instance_status'} = 'installed';
             push @instances, $inst;
             $seen{$user} = 1;
         }
@@ -389,6 +405,36 @@ sub _detect_status {
     alarm(0);  # cancel alarm if eval died for another reason
     return 'unknown' unless defined $out && length $out;
     return $out =~ /Online/ ? 'online' : 'offline';
+}
+
+sub set_instance_status {
+    my ($id, $status) = @_;
+    my %reg = _load_registered();
+    return unless exists $reg{$id};
+    $reg{$id}{'instance_status'} = $status;
+    _save_registered(\%reg);
+}
+
+sub get_instance_flexible {
+    my ($id) = @_;
+    my $inst = get_instance($id);
+    return $inst if $inst;
+    my $reg = get_registered_instance($id) or return undef;
+    return {
+        id              => $id,
+        user            => $reg->{'user'},
+        script          => $reg->{'script'},
+        source          => $reg->{'source'} // 'manual',
+        sftp_user       => $reg->{'sftp_user'} // '',
+        owners          => $reg->{'owners'} // '',
+        steam_account   => $reg->{'steam_account'} // '',
+        instance_status => $reg->{'instance_status'} // 'installed',
+        game            => 'unknown',
+        port            => 0,
+        status          => 'unknown',
+        fw_open         => 0,
+        warnings        => [],
+    };
 }
 
 1;
