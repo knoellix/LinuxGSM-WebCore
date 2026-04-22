@@ -36,6 +36,9 @@ Dieses Dokument trennt verbindliche Projektregeln (Policy) von Webmin-spezifisch
 ## 4. Kernlogik und Betriebsfluss
 - **Instanz-Erkennung:** Primaer via Registry-TSV (`$config_directory/instances`). Auto-Erkennung via `/etc/passwd` + `linuxgsm.sh`-Suche nur als Fallback fuer Alt-Instanzen (Pre-Wizard).
 - **Provisionierung (neu, zweistufig):** Wizard macht nur schnelle Ops: Unix-User anlegen + Unterordner `/home/{user}/{servername}/` + Registry-Eintrag (Status `fresh`). Alle langen Ops (LGSM-Download, Game-Install, Update) laufen in manage.cgi als Background-Worker-Jobs (`$config_directory/jobs/{job_id}/`).
+- **register_instance-Signatur:** `register_instance($id, $user, $script_path, \%opts)` — 4. Argument ist immer ein **Hashref**, keine flache Hash-Liste. Schluessel: `source`, `sftp_user`, `owners`, `steam_account`, `instance_status`.
+- **Fresh-Instanz-Lookup:** `get_instance_flexible($id)` statt `get_instance($id)` verwenden wenn die Instanz im Status `fresh`/`lgsm_ready` sein kann (Script noch nicht auf Disk) — gibt Hash zurueck auch ohne existierende Script-Datei.
+- **poll_job/next_status-Pattern:** `poll_job` setzt `instance_status` via URL-Parameter `next_status` — bei `status=ok` ruft CGI `set_instance_status($id, $next_status)`. Worker schreiben finalen Status nur in `$JOB_DIR/status`, nie direkt in Registry.
 - **Game-Server-Operationen:** Ausnahmslos via `su -s /bin/bash -c "..." {unix_user}` aus dem Serververzeichnis. `apt-get` nur als root fuer System-Abhaengigkeiten; alle Server-Dateien gehoeren dem Unix-User.
 - **Live-Konsole:** Echtzeit-Log-Streaming per `tail`-Simulation im Webmin-Interface.
 - **Monitoring:** Integration ins Webmin-Status-Modul mit 3-Stufen-Eskalation (Restart -> Mail).
@@ -53,6 +56,7 @@ Dieses Dokument trennt verbindliche Projektregeln (Policy) von Webmin-spezifisch
 ### 5.1 Test-Gotchas (Perl)
 - **`CORE::GLOBAL`-Mocks** muessen im `BEGIN`-Block stehen, nicht per `local *` nach `require`: `BEGIN { my $x = 0; *CORE::GLOBAL::getpwnam = sub { $x ? ('y') : () } }`
 - **`\Q...\E` nur fuer echte Untrusted-Input** — escaped `/` in Pfadstrings, bricht Shell-Ausfuehrung und Test-Regex; bei bereits whitelist-sanitizierten Variablen weglassen.
+- **Single-Quote-Escape in Shell-Pfaden:** Wenn `\Q...\E` nicht verwendbar ist (bricht Pfade), Pfad mit `$p =~ s/'/'\\''/g;` absichern und dann als `'cmd "$p"'` einbetten — sicher fuer Pfade mit Leerzeichen und Sonderzeichen.
 - **`%text` in Test-Stubs vollstaendig halten** — fehlt ein Fehlerschluessel, gibt `validate_*` `undef` statt Fehlerstring zurueck; Test besteht dann faelschlicherweise.
 
 ## 6. Projektlayout
@@ -61,6 +65,7 @@ Dieses Dokument trennt verbindliche Projektregeln (Policy) von Webmin-spezifisch
 - **Shell-Hilfsskripte:** `src/scripts/` — `install_lgsm.sh`, `server_control.sh`, `engine_switch.sh`; werden via `su` als Game-User ausgefuehrt.
 - **Sprachdateien:** `src/lang/de` und `src/lang/en` — einfaches `key=value`-Format; neue Fehlertexte in beiden Dateien pflegen.
 - **ACL-Defaults:** `src/defaultacl` — Fallback-ACL wenn noch keine Webmin-ACL fuer einen User existiert.
+- **Funktions-Lokationen:** `list_webmin_users()` → `src/lib/acl.pl`; `get_game_list()` → `src/lib/games.pl` (nicht `games_meta.pl`); `get_game_fields/display_name/default_port()` → `src/lib/games_meta.pl`.
 
 ## 7. Webmin-CGI und ACL Lessons Learned (implementierungsnah)
 Dieser Abschnitt dokumentiert zwingende Webmin-spezifische Details, die aus realen Fehlerbildern entstanden sind.
