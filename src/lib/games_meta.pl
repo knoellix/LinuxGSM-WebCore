@@ -131,6 +131,18 @@ sub _parse_json_object {
     return (ref $data eq 'HASH') ? $data : {};
 }
 
+# Return the default port for the given game script name.
+# Searches the fields array for a port-type field with a default value.
+# Falls back to 27015 (Source engine default) if not found.
+sub get_game_default_port {
+    my ($script_name) = @_;
+    my @fields = get_game_fields($script_name);
+    for my $f (@fields) {
+        return int($f->{'default'}) if ($f->{'type'} // '') eq 'port' && defined $f->{'default'};
+    }
+    return 27015;
+}
+
 # Reset the module-level cache (used in tests to reload different fixtures).
 sub _reset_meta_cache {
     %_meta_cache  = ();
