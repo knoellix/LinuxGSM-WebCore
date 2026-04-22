@@ -22,6 +22,8 @@ require './lib/games_meta.pl';
 require './lib/config_editor.pl';
 require './lib/ftp_proftpd.pl';
 require './lib/steam.pl';
+require './lib/jobs.pl';
+require './lib/error_hints.pl';
 
 our (%text, %config, %in, %gconfig);
 our $current_lang;
@@ -29,8 +31,9 @@ $main::gconfig{'charset'} = 'utf-8';
 &ReadParse(\%in);
 
 my $instance_id = &sanitize_input($in{'instance_id'} || $in{'user'} || '');
-my $inst = &get_instance($instance_id) or &error($text{'err_not_found'});
+my $inst = &get_instance_flexible($instance_id) or &error($text{'err_not_found'});
 my $unix_user = $inst->{'user'};
+my $is_fresh  = ($inst->{'instance_status'} // 'installed') ne 'installed';
 
 if ($in{'action'}) {
     my $action = &sanitize_input($in{'action'});
@@ -336,6 +339,65 @@ if ($in{'action'}) {
         &delete_ftp_password($config_directory, $instance_id);
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id));
     }
+    elsif ($action eq 'setup_lgsm') {
+        my $reg = &get_registered_instance($instance_id) or &error($text{'err_not_found'});
+        my $script_path = $reg->{'script'} // '';
+        my $script_name = (split('/', $script_path))[-1] // '';
+        (my $server_dir = $script_path) =~ s|/[^/]+$||;
+        $script_name =~ s/[^a-zA-Z0-9_-]//g;
+
+        our ($config_directory, $module_root);
+        my $job_id = &create_job();
+        my $worker = "$module_root/scripts/setup_lgsm.sh";
+        &system_logged("nohup bash \Q$worker\E \Q$config_directory/jobs/$job_id\E \Q$unix_user\E \Q$server_dir\E \Q$script_name\E >/dev/null 2>&1 &");
+        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&action=poll_job&job=" . &html_escape($job_id) . "&next_status=lgsm_ready");
+    }
+    elsif ($action eq 'install_game') {
+        my $reg = &get_registered_instance($instance_id) or &error($text{'err_not_found'});
+        my $script_path = $reg->{'script'} // '';
+        my $script_name = (split('/', $script_path))[-1] // '';
+        (my $server_dir = $script_path) =~ s|/[^/]+$||;
+        $script_name =~ s/[^a-zA-Z0-9_-]//g;
+
+        our ($config_directory, $module_root);
+        my $job_id = &create_job();
+        my $worker = "$module_root/scripts/game_action.sh";
+        &system_logged("nohup bash \Q$worker\E \Q$config_directory/jobs/$job_id\E \Q$unix_user\E \Q$server_dir\E \Q$script_name\E install >/dev/null 2>&1 &");
+        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&action=poll_job&job=" . &html_escape($job_id) . "&next_status=installed");
+    }
+    elsif ($action eq 'update') {
+        my $script_name = (split('/', $inst->{'script'}))[-1];
+        (my $server_dir = $inst->{'script'}) =~ s|/[^/]+$||;
+        $script_name =~ s/[^a-zA-Z0-9_-]//g;
+
+        our ($config_directory, $module_root);
+        my $job_id = &create_job();
+        my $worker = "$module_root/scripts/game_action.sh";
+        &system_logged("nohup bash \Q$worker\E \Q$config_directory/jobs/$job_id\E \Q$unix_user\E \Q$server_dir\E \Q$script_name\E update >/dev/null 2>&1 &");
+        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&action=poll_job&job=" . &html_escape($job_id));
+    }
+    elsif ($action eq 'validate') {
+        my $script_name = (split('/', $inst->{'script'}))[-1];
+        (my $server_dir = $inst->{'script'}) =~ s|/[^/]+$||;
+        $script_name =~ s/[^a-zA-Z0-9_-]//g;
+
+        our ($config_directory, $module_root);
+        my $job_id = &create_job();
+        my $worker = "$module_root/scripts/game_action.sh";
+        &system_logged("nohup bash \Q$worker\E \Q$config_directory/jobs/$job_id\E \Q$unix_user\E \Q$server_dir\E \Q$script_name\E validate >/dev/null 2>&1 &");
+        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&action=poll_job&job=" . &html_escape($job_id));
+    }
+    elsif ($action eq 'reinstall') {
+        my $script_name = (split('/', $inst->{'script'}))[-1];
+        (my $server_dir = $inst->{'script'}) =~ s|/[^/]+$||;
+        $script_name =~ s/[^a-zA-Z0-9_-]//g;
+
+        our ($config_directory, $module_root);
+        my $job_id = &create_job();
+        my $worker = "$module_root/scripts/game_action.sh";
+        &system_logged("nohup bash \Q$worker\E \Q$config_directory/jobs/$job_id\E \Q$unix_user\E \Q$server_dir\E \Q$script_name\E reinstall >/dev/null 2>&1 &");
+        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&action=poll_job&job=" . &html_escape($job_id));
+    }
     elsif ($action eq 'init_game_config') {
         my $script_name = (split('/', $inst->{'script'}))[-1];
         my $script_dir  = $inst->{'script'};
@@ -359,6 +421,111 @@ if ($in{'action'}) {
         &run_server_action($unix_user, $action, $script_name, $script_dir);
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id));
     }
+}
+
+# GET: poll_job
+if (($in{'action'} // '') eq 'poll_job') {
+    my $job_id = $in{'job'} // '';
+    $job_id =~ s/[^0-9a-f]//g;
+    $job_id = substr($job_id, 0, 16);
+    my $next_status = $in{'next_status'} // '';
+    $next_status =~ s/[^a-z_]//g;
+
+    my $status = &get_job_status($job_id) // 'unknown';
+    my $offset = int($in{'offset'} || 0);
+    my ($new_out, $new_len) = &get_job_output($job_id, $offset);
+
+    if ($status eq 'ok' && $next_status) {
+        &set_instance_status($instance_id, $next_status);
+    }
+
+    &header($text{'job_output_title'}, '');
+    print "<h3>" . &html_escape($text{'job_output_title'}) . "</h3>\n";
+
+    if ($status eq 'running') {
+        my $poll_url = "manage.cgi?instance_id=" . &html_escape($instance_id)
+            . "&action=poll_job&job=" . &html_escape($job_id)
+            . "&next_status=" . &html_escape($next_status)
+            . "&offset=$new_len";
+        print "<meta http-equiv=\"refresh\" content=\"3;url=$poll_url\">\n";
+        print "<p>" . &html_escape($text{'job_running'}) . "</p>\n";
+    } elsif ($status eq 'ok') {
+        print "<p style='color:green'>" . &html_escape($text{'job_ok'}) . "</p>\n";
+        print "<p><a href=\"manage.cgi?instance_id=" . &html_escape($instance_id) . "\">&larr; Zur&uuml;ck</a></p>\n";
+    } else {
+        my $hint_key = &get_job_error_hint($job_id);
+        print "<p style='color:red'>" . &html_escape($text{'job_failed'}) . "</p>\n";
+        if ($hint_key) {
+            print "<p><strong>" . &html_escape($text{'job_hint_title'}) . ":</strong> "
+                . &html_escape($text{$hint_key} // $hint_key) . "</p>\n";
+        }
+        print "<p><a href=\"manage.cgi?instance_id=" . &html_escape($instance_id) . "\">&larr; Zur&uuml;ck</a></p>\n";
+    }
+
+    if ($new_out) {
+        print "<pre style='background:#111;color:#eee;padding:8px;overflow:auto'>"
+            . &html_escape($new_out) . "</pre>\n";
+    }
+    &footer('', '');
+    exit;
+}
+
+# GET: monitor
+if (($in{'action'} // '') eq 'monitor') {
+    my $script_name = (split('/', $inst->{'script'}))[-1] // '';
+    (my $script_dir = $inst->{'script'}) =~ s|/[^/]+$||;
+
+    my @log_candidates = (
+        "$script_dir/log/console/${script_name}-console.log",
+        "$script_dir/log/script/${script_name}.log",
+        "$script_dir/log/${script_name}.log",
+    );
+    my ($log_file) = grep { -f $_ } @log_candidates;
+
+    &header($text{'manage_monitor_title'}, '');
+    print "<h3>" . &html_escape($text{'manage_monitor_title'}) . "</h3>\n";
+
+    if (!$log_file) {
+        print "<p>" . &html_escape($text{'manage_monitor_no_log'}) . "</p>\n";
+    } else {
+        open(my $f, '<', $log_file) or do { print "<p>Logdatei nicht lesbar.</p>\n"; &footer('',''); exit; };
+        my $content = do { local $/; <$f> };
+        close($f);
+        $content //= '';
+        my $len  = length($content);
+        my $tail = $len > 8192 ? substr($content, $len - 8192) : $content;
+        my $refresh_url = "manage.cgi?instance_id=" . &html_escape($instance_id) . "&action=monitor";
+        print "<meta http-equiv=\"refresh\" content=\"2;url=$refresh_url\">\n";
+        print "<pre style='background:#111;color:#eee;padding:8px;height:500px;overflow:auto'>"
+            . &html_escape($tail) . "</pre>\n";
+    }
+    &footer('', '');
+    exit;
+}
+
+# Setup-Phase for fresh/lgsm_ready instances
+if ($is_fresh) {
+    my $istatus = $inst->{'instance_status'} // 'fresh';
+    &header($text{'setup_phase_title'}, '');
+    print "<h3>" . &html_escape($text{'setup_phase_title'}) . "</h3>\n";
+
+    if ($istatus eq 'fresh') {
+        print &ui_form_start('manage.cgi', 'post');
+        print &ui_hidden('instance_id', &html_escape($instance_id));
+        print &ui_hidden('action', 'setup_lgsm');
+        print &ui_submit($text{'setup_install_lgsm_btn'}, undef, undef, undef, 'btn-primary');
+        print &ui_form_end();
+    } elsif ($istatus eq 'lgsm_ready') {
+        print "<p style='color:green'>&#x2705; LGSM installiert.</p>\n";
+        print &ui_form_start('manage.cgi', 'post');
+        print &ui_hidden('instance_id', &html_escape($instance_id));
+        print &ui_hidden('action', 'install_game');
+        print &ui_submit($text{'setup_install_game_btn'}, undef, undef, undef, 'btn-primary');
+        print &ui_form_end();
+    }
+
+    &footer('', '');
+    exit;
 }
 
 my $safe_id = &html_escape($instance_id);
@@ -402,7 +569,7 @@ print "</p>\n";
 
 # Control buttons
 print "<p>\n";
-foreach my $action (qw(start stop restart update)) {
+foreach my $action (qw(start stop restart)) {
     print &ui_form_start("manage.cgi", "post");
     print &ui_hidden("instance_id", $safe_id);
     print &ui_hidden("action",      $action);
@@ -411,6 +578,30 @@ foreach my $action (qw(start stop restart update)) {
     print " ";
 }
 print "</p>\n";
+
+# Update/Validate
+print &ui_form_start('manage.cgi', 'post');
+print &ui_hidden('instance_id', $safe_id);
+print &ui_hidden('action', 'update');
+print &ui_submit($text{'manage_update_btn'}, undef, undef, undef, 'btn-default');
+print &ui_form_end();
+
+print &ui_form_start('manage.cgi', 'post');
+print &ui_hidden('instance_id', $safe_id);
+print &ui_hidden('action', 'validate');
+print &ui_submit($text{'manage_validate_btn'}, undef, undef, undef, 'btn-default');
+print &ui_form_end();
+
+# Monitor link
+print "<a href=\"manage.cgi?instance_id=" . $safe_id . "&action=monitor\" class=\"btn btn-default\">"
+    . &html_escape($text{'manage_monitor_btn'}) . "</a>\n";
+
+# Reinstall (destructive)
+print &ui_form_start('manage.cgi', 'post');
+print &ui_hidden('instance_id', $safe_id);
+print &ui_hidden('action', 'reinstall');
+print &ui_submit($text{'manage_reinstall_btn'}, undef, undef, undef, 'btn-danger');
+print &ui_form_end();
 
 print "<p>\n";
 print &ui_form_start("manage.cgi", "post");
