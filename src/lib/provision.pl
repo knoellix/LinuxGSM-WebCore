@@ -54,4 +54,49 @@ sub provision_server {
     return 1;
 }
 
+sub validate_provision_fast {
+    my ($user, $servername, $is_shared) = @_;
+    return $text{'err_invalid_input'} unless $user      =~ /^[a-z][a-z0-9_-]{0,30}$/;
+    return $text{'err_invalid_input'} unless $servername =~ /^[a-zA-Z0-9_-]{1,64}$/;
+    if (!$is_shared) {
+        return $text{'err_user_exists'} if getpwnam($user);
+    }
+    my @pw = getpwnam($user);
+    if (@pw) {
+        my $home = $pw[7];
+        return $text{'err_server_exists'} if -d "$home/$servername";
+    }
+    return undef;
+}
+
+sub provision_fast {
+    my ($user, $servername) = @_;
+    $user       =~ s/[^a-z0-9_-]//g;
+    $servername =~ s/[^a-zA-Z0-9_-]//g;
+    $servername = substr($servername, 0, 64);
+
+    die "Invalid username\n"   unless $user       =~ /^[a-z][a-z0-9_-]{0,30}$/;
+    die "Invalid servername\n" unless $servername  =~ /^[a-zA-Z0-9_-]{1,64}$/;
+
+    my $user_existed = getpwnam($user) ? 1 : 0;
+
+    if (!$user_existed) {
+        &system_logged("useradd -m -s /usr/sbin/nologin $user") == 0
+            or die "useradd failed for $user\n";
+    }
+
+    my @pw = getpwnam($user) or die "User $user not found after creation\n";
+    my ($uid, $gid, $home) = @pw[2, 3, 7];
+    my $server_dir = "$home/$servername";
+
+    my $rc = &system_logged("su -s /bin/bash -c \"mkdir -p $server_dir\" $user");
+    if ($rc != 0) {
+        &system_logged("userdel -r $user") unless $user_existed;
+        die "mkdir failed for $server_dir\n";
+    }
+    chown($uid, $gid, $server_dir);
+
+    return { created_user => !$user_existed ? 1 : 0, server_dir => $server_dir };
+}
+
 1;
