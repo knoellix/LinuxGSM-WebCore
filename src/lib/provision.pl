@@ -89,7 +89,9 @@ sub provision_fast {
     my ($uid, $gid, $home) = @pw[2, 3, 7];
     my $server_dir = "$home/$servername";
 
-    my $rc = &system_logged("su -s /bin/bash -c \"mkdir -p $server_dir\" $user");
+    my $server_dir_q = $server_dir;
+    $server_dir_q =~ s/'/'\\''/g;
+    my $rc = &system_logged("su -s /bin/bash -c 'mkdir -p \"$server_dir_q\"' $user");
     if ($rc != 0) {
         &system_logged("userdel -r $user") unless $user_existed;
         die "mkdir failed for $server_dir\n";
