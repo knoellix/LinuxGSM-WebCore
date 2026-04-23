@@ -42,28 +42,28 @@ sub list_webmin_users { return ('admin', 'user1') }
 
 require './src/lib/acl.pl';
 
-# 1. can_create defaults to 1 when key absent (stale ACL)
+# 1. can_create returns true for admin role
 {
-    %access = ();
+    %access = (role => 'admin');
     can_create()
-        ? pass('can_create defaults to 1 with absent key')
-        : fail('can_create should default to 1');
+        ? pass('can_create true for admin role')
+        : fail('can_create should return true for admin role');
 }
 
-# 2. can_create respects explicit 0
-{
-    %access = (can_create => 0);
-    !can_create()
-        ? pass('can_create returns 0 when explicitly set to 0')
-        : fail('can_create should return 0');
-}
-
-# 3. can_scan defaults to 1 when key absent
+# 2. can_create returns false for operator (no role = operator default)
 {
     %access = ();
+    !can_create()
+        ? pass('can_create false for operator (no role key)')
+        : fail('can_create should return false for operator');
+}
+
+# 3. can_scan returns true for admin role
+{
+    %access = (role => 'admin');
     can_scan()
-        ? pass('can_scan defaults to 1 with absent key')
-        : fail('can_scan should default to 1');
+        ? pass('can_scan true for admin role')
+        : fail('can_scan should return true for admin role');
 }
 
 # 4. user_can_manage: wildcard grants access to any instance
