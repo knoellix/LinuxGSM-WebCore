@@ -35,8 +35,14 @@ my $inst = &get_instance_flexible($instance_id) or &error($text{'err_not_found'}
 my $unix_user = $inst->{'user'};
 my $is_fresh  = ($inst->{'instance_status'} // 'installed') ne 'installed';
 
+&user_can_manage($instance_id)
+    or &error($text{'err_acl_admin_only'} || 'Access denied');
+
 if ($in{'action'}) {
     my $action = &sanitize_input($in{'action'});
+    if (&user_is_readonly($instance_id)) {
+        &error($text{'err_readonly'} || 'This server is read-only for your account');
+    }
 
     if ($action eq 'fw_open') {
         my $port = int($inst->{'port'});
@@ -302,6 +308,7 @@ if ($in{'action'}) {
         &redirect("index.cgi");
     }
     elsif ($action eq 'create_instance_ftp_user') {
+        &can_manage_ftp() or &error($text{'err_acl_admin_only'} || 'Access denied');
         my %ftp_state  = &discover_ftp_state();
         my $auth_file  = $ftp_state{'auth_user_file'} || '/etc/proftpd/ftpd.passwd';
         my $ftp_user   = 'ftp_' . $unix_user;
@@ -328,6 +335,7 @@ if ($in{'action'}) {
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id));
     }
     elsif ($action eq 'delete_instance_ftp_user') {
+        &can_manage_ftp() or &error($text{'err_acl_admin_only'} || 'Access denied');
         my $ftp_user  = &sanitize_input($in{'ftp_user'});
         my %ftp_state = &discover_ftp_state();
         my $auth_file = $ftp_state{'auth_user_file'} || '/etc/proftpd/ftpd.passwd';
