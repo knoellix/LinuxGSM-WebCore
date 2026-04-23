@@ -1,4 +1,13 @@
 #!/usr/bin/perl
+# -------------------------------------------------------------------------
+# LinuxGSM Webcore - Webmin Module
+# Copyright (C) 2026 Christian Möllmann knoellix 128321164+knoellix@users.noreply.github.com
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published
+# by the Free Software Foundation, either version 3 of the License.
+# -------------------------------------------------------------------------
+
 # acl_security.pl — Module ACL form and save for linuxgsm-webcore
 #
 # Called by Webmin's acl/edit_acl.cgi via foreign_require/foreign_call.
@@ -21,20 +30,28 @@ sub acl_security_form {
     my $yes = $text{'yes'} || 'Yes';
     my $no  = $text{'no'}  || 'No';
 
-    print &ui_table_row(
-        $text{'acl_can_create'} || 'May create servers',
-        &ui_radio('can_create', $maccess->{'can_create'} ? 1 : 0,
-            [ [ 1, $yes ], [ 0, $no ] ]));
+    my $role = $maccess->{'role'} // 'operator';
 
+    # Role dropdown
     print &ui_table_row(
-        $text{'acl_can_scan'} || 'May scan servers',
-        &ui_radio('can_scan', $maccess->{'can_scan'} ? 1 : 0,
-            [ [ 1, $yes ], [ 0, $no ] ]));
+        $text{'acl_role'} || 'Role',
+        &ui_select('role', $role, [
+            [ 'admin',    $text{'acl_role_admin'}    || 'Administrator' ],
+            [ 'operator', $text{'acl_role_operator'} || 'Operator'      ],
+            [ 'viewer',   $text{'acl_role_viewer'}   || 'Viewer'        ],
+        ]));
 
+    # Servers field (always shown; ignored at save time when role=admin)
     print &ui_table_row(
         $text{'acl_servers'} || 'Servers',
-        &ui_textbox('servers', $maccess->{'servers'} // '*', 40) .
-        " <small>(" . ($text{'acl_servers_all'} || '* = all') . ")</small>");
+        &ui_textbox('servers', $maccess->{'servers'} // '', 40) .
+        " <small>(" . ($text{'acl_manage_servers_hint'} || 'Instance IDs, space-separated') . ")</small>");
+
+    # FTP management toggle
+    print &ui_table_row(
+        $text{'acl_can_manage_ftp'} || 'May manage FTP users',
+        &ui_radio('can_manage_ftp', $maccess->{'can_manage_ftp'} ? 1 : 0,
+            [ [ 1, $yes ], [ 0, $no ] ]));
 }
 
 # acl_security_save(\%maccess, \%in)
@@ -42,15 +59,19 @@ sub acl_security_form {
 sub acl_security_save {
     my ($maccess, $in) = @_;
 
-    $maccess->{'can_create'} = $in->{'can_create'} ? 1 : 0;
-    $maccess->{'can_scan'}   = $in->{'can_scan'}   ? 1 : 0;
+    my $role = $in->{'role'} // 'operator';
+    $role = 'operator' unless $role =~ /^(admin|operator|viewer)$/;
+    $maccess->{'role'} = $role;
 
-    # Sanitize servers field: allow alphanumeric, underscore, hyphen, space, *
+    # Sanitize servers field: allow alphanumeric, underscore, hyphen, space
     my $servers = $in->{'servers'} // '';
-    $servers =~ s/[^a-z0-9_\- \*]//g;
+    $servers =~ s/[^a-z0-9A-Z_\- ]//g;
     $servers =~ s/\s+/ /g;
-    $servers = '*' if $servers eq '';
-    $maccess->{'servers'} = $servers;
+    $servers =~ s/^\s+|\s+$//g;
+    $maccess->{'servers'} = $role eq 'admin' ? '' : $servers;
+
+    $maccess->{'can_manage_ftp'} = ($role eq 'admin') ? 1
+        : ($in->{'can_manage_ftp'} ? 1 : 0);
 }
 
 1;
