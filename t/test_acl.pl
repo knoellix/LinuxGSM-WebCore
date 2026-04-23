@@ -10,115 +10,126 @@ sub pass { print "ok - $_[0]\n" }
 sub fail { print "not ok - $_[0]\n" }
 sub error { die "error: $_[0]\n" }
 
+# Mock acl::master_admin — never a Webmin admin in these tests
+package acl;
+sub master_admin { return 0 }
+package main;
+
 require 't/stubs.pl';
 
-# Temp-Verzeichnis für ACL-Dateien
 our $stub_acl_dir = tempdir(CLEANUP => 1);
 our $module_name  = 'linuxgsm-webcore';
+our (%access, $remote_user);
+$remote_user = 'testuser';
 
-# %access wird von init_config() befüllt — hier manuell gesetzt
-our %access;
-
-# list_instances() wird in list_managed_instances() genutzt
 sub list_instances {
     return (
-        { user => 'mc-test',  game => 'Minecraft',         port => 25565 },
-        { user => 'tf2-test', game => 'Team Fortress 2',   port => 27015 },
+        { id => 'mc-test',  user => 'mc-test',  game => 'Minecraft',       port => 25565 },
+        { id => 'tf2-test', user => 'tf2-test',  game => 'Team Fortress 2', port => 27015 },
     );
 }
 
 require 'src/lib/acl.pl';
 
-print "1..16\n";
+print "1..14\n";
 
-# 1. can_create: true by default when key missing (fallback for stale ACL files)
+# 1. can_create: false for operator (no role key = operator default)
 {
     %access = ();
-    &can_create()
-        ? pass('can_create true by default when key missing')
-        : fail('can_create true by default when key missing');
+    !can_create()
+        ? pass('can_create false for operator (no role key)')
+        : fail('can_create false for operator (no role key)');
 }
 
-# 2. can_create: true when set
+# 2. can_create: true for explicit admin role
 {
-    %access = (can_create => 1);
-    &can_create()
-        ? pass('can_create true when set')
-        : fail('can_create true when set');
+    %access = (role => 'admin');
+    can_create()
+        ? pass('can_create true for admin role')
+        : fail('can_create true for admin role');
 }
 
-# 3. can_scan: true by default when key missing (fallback for stale ACL files)
+# 3. can_scan: false for operator
 {
-    %access = ();
-    &can_scan()
-        ? pass('can_scan true by default when key missing')
-        : fail('can_scan true by default when key missing');
+    %access = (role => 'operator');
+    !can_scan()
+        ? pass('can_scan false for operator')
+        : fail('can_scan false for operator');
 }
 
-# 4. can_scan: true when set
+# 4. can_scan: true for admin
 {
-    %access = (can_scan => 1);
-    &can_scan()
-        ? pass('can_scan true when set')
-        : fail('can_scan true when set');
+    %access = (role => 'admin');
+    can_scan()
+        ? pass('can_scan true for admin')
+        : fail('can_scan true for admin');
 }
 
-# 5. allowed_servers: returns ('*') for wildcard
+# 5. allowed_servers: admin → returns ('*')
 {
-    %access = (servers => '*');
-    my @s = &allowed_servers();
+    %access = (role => 'admin');
+    my @s = allowed_servers();
     ($s[0] // '') eq '*'
-        ? pass('allowed_servers returns wildcard')
-        : fail("allowed_servers returns wildcard (got: @s)");
+        ? pass('allowed_servers returns wildcard for admin')
+        : fail("allowed_servers returns wildcard for admin (got: @s)");
 }
 
-# 6. allowed_servers: parses space-separated list
+# 6. allowed_servers: operator, parses space-separated list
 {
-    %access = (servers => 'mc-test tf2-test');
-    my @s = &allowed_servers();
+    %access = (role => 'operator', servers => 'mc-test tf2-test');
+    my @s = allowed_servers();
     (scalar(@s) == 2 && $s[0] eq 'mc-test' && $s[1] eq 'tf2-test')
-        ? pass('allowed_servers parses list')
-        : fail("allowed_servers parses list (got: @s)");
+        ? pass('allowed_servers parses list for operator')
+        : fail("allowed_servers parses list for operator (got: @s)");
 }
 
-# 7. user_can_manage: wildcard grants access to any server
+# 7. user_can_manage: admin can manage any server
 {
-    %access = (servers => '*');
-    &user_can_manage('any-server')
-        ? pass('user_can_manage true with wildcard')
-        : fail('user_can_manage true with wildcard');
+    %access = (role => 'admin');
+    user_can_manage('any-server')
+        ? pass('user_can_manage true for admin')
+        : fail('user_can_manage true for admin');
 }
 
-# 8. user_can_manage: listed server granted
+# 8. user_can_manage: operator with listed server
 {
-    %access = (servers => 'mc-test');
-    &user_can_manage('mc-test')
+    %access = (role => 'operator', servers => 'mc-test');
+    user_can_manage('mc-test')
         ? pass('user_can_manage true for listed server')
         : fail('user_can_manage true for listed server');
 }
 
-# 9. user_can_manage: unlisted server denied
+# 9. user_can_manage: operator, unlisted server denied
 {
-    %access = (servers => 'mc-test');
-    !&user_can_manage('tf2-test')
+    %access = (role => 'operator', servers => 'mc-test');
+    !user_can_manage('tf2-test')
         ? pass('user_can_manage false for unlisted server')
         : fail('user_can_manage false for unlisted server');
 }
 
-# 10. list_managed_instances: filters by servers
+# 10. list_managed_instances: operator filtered by servers
 {
-    %access = (servers => 'mc-test');
-    my @inst = &list_managed_instances();
-    (scalar(@inst) == 1 && $inst[0]{'user'} eq 'mc-test')
+    %access = (role => 'operator', servers => 'mc-test');
+    my @inst = list_managed_instances();
+    (scalar(@inst) == 1 && $inst[0]{'id'} eq 'mc-test')
         ? pass('list_managed_instances filters correctly')
         : fail("list_managed_instances filters correctly (got " . scalar(@inst) . ")");
 }
 
-# 11. grant_server_access: schreibt Server in ACL, keine Duplikate
+# 11. list_managed_instances: admin gets all
 {
-    &grant_server_access('alice', 'mc-test');
-    &grant_server_access('alice', 'mc-test');  # zweites Mal — kein Duplikat
-    my %acl = &get_module_acl('alice', 'linuxgsm-webcore');
+    %access = (role => 'admin');
+    my @inst = list_managed_instances();
+    scalar(@inst) == 2
+        ? pass('list_managed_instances returns all for admin')
+        : fail("list_managed_instances returns all for admin (got " . scalar(@inst) . ")");
+}
+
+# 12. grant_server_access: schreibt Server in ACL, keine Duplikate
+{
+    grant_server_access('alice', 'mc-test');
+    grant_server_access('alice', 'mc-test');
+    my %acl = get_module_acl('alice', 'linuxgsm-webcore');
     my @servers = split /\s+/, ($acl{'servers'} // '');
     my $count = scalar grep { $_ eq 'mc-test' } @servers;
     $count == 1
@@ -126,44 +137,18 @@ print "1..16\n";
         : fail("grant_server_access writes once, no duplicate (count=$count)");
 }
 
-# 12. list_managed_instances: wildcard gibt alle zurück
+# 13. Legacy: servers=* without role → effective_role = admin
 {
     %access = (servers => '*');
-    my @inst = &list_managed_instances();
-    scalar(@inst) == 2
-        ? pass('list_managed_instances returns all with wildcard')
-        : fail("list_managed_instances returns all with wildcard (got " . scalar(@inst) . ")");
+    effective_role() eq 'admin'
+        ? pass('legacy servers=* → effective_role admin')
+        : fail('legacy servers=* → effective_role admin (got: ' . effective_role() . ')');
 }
 
-# 13. allowed_servers: Key fehlt → ('*') — stale ACL-Datei ohne servers-Feld
-{
-    %access = ();
-    my @s = &allowed_servers();
-    ($s[0] // '') eq '*'
-        ? pass('allowed_servers defaults to wildcard when key missing')
-        : fail("allowed_servers defaults to wildcard when key missing (got: @s)");
-}
-
-# 14. is_admin: true wenn servers=*
+# 14. is_admin: legacy servers=* → true
 {
     %access = (servers => '*');
-    &is_admin()
-        ? pass('is_admin true when servers=*')
-        : fail('is_admin true when servers=*');
-}
-
-# 15. is_admin: false wenn servers auf einen Server beschränkt
-{
-    %access = (servers => 'mc-test');
-    !&is_admin()
-        ? pass('is_admin false when servers restricted')
-        : fail('is_admin false when servers restricted');
-}
-
-# 16. is_admin: true wenn servers-Key fehlt (stale ACL → voller Zugriff)
-{
-    %access = ();
-    &is_admin()
-        ? pass('is_admin true when servers key missing (stale ACL)')
-        : fail('is_admin true when servers key missing (stale ACL)');
+    is_admin()
+        ? pass('is_admin true for legacy servers=*')
+        : fail('is_admin true for legacy servers=*');
 }
