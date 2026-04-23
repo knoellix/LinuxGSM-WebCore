@@ -4,26 +4,58 @@
 #   /etc/webmin/<module_name>/<webmin_user>  (oder defaultacl als Fallback)
 #
 # Felder:
-#   can_create  0/1   Darf Wizard/neue Server anlegen
-#   can_scan    0/1   Darf Scan-Seite aufrufen
-#   servers     '*' oder Leerzeichen-getrennte Unix-Usernamen
+#   role           admin | operator | viewer
+#   servers        Leerzeichen-getrennte Instance-IDs (oder leer für admins)
+#   can_manage_ftp 0/1  — gilt für operator und viewer; admins haben immer FTP
+#
+# Rückwärtskompatibilität:
+#   servers=* ohne role-Feld → admin
+#   Kein role-Feld, servers eingeschränkt → operator
 use strict;
 use warnings;
 
-our (%access, $module_name);
+our (%access, $module_name, $remote_user);
 
-# Returns 1 if current Webmin user may create new game servers.
-# Defaults to 1 if the key is absent (e.g. stale ACL file missing the key).
-sub can_create { return !defined($access{'can_create'}) ? 1 : ($access{'can_create'} ? 1 : 0) }
+# Returns effective role string: 'admin', 'operator', or 'viewer'.
+# Webmin-native admins always get 'admin', regardless of the role field.
+# Legacy: servers=* without role field → 'admin'.
+sub effective_role {
+    my $is_wbm_admin = 0;
+    eval {
+        foreign_require('acl', 'acl-lib.pl');
+        $is_wbm_admin = acl::master_admin($remote_user) ? 1 : 0;
+    };
+    return 'admin' if $is_wbm_admin;
 
-# Returns 1 if current Webmin user may run the scanner.
-# Defaults to 1 if the key is absent.
-sub can_scan { return !defined($access{'can_scan'}) ? 1 : ($access{'can_scan'} ? 1 : 0) }
+    # Legacy backwards-compat: old servers=* without explicit role → admin
+    if (!defined $access{'role'} && defined $access{'servers'}
+            && $access{'servers'} =~ /^\s*\*\s*$/) {
+        return 'admin';
+    }
 
-# Returns list of Unix usernames the current user may manage.
-# Returns ('*') for unrestricted access, including when the key is absent
-# (stale ACL file written before the servers field was introduced).
+    return $access{'role'} // 'operator';
+}
+
+# Returns 1 if current user is admin.
+sub is_admin { return effective_role() eq 'admin' ? 1 : 0 }
+
+# Returns 1 if current user may create new game servers (admin only).
+sub can_create { return is_admin() }
+
+# Returns 1 if current user may run the scanner (admin only).
+sub can_scan { return is_admin() }
+
+# Returns 1 if current user may manage FTP users.
+# Admins always can; operator/viewer need can_manage_ftp=1.
+sub can_manage_ftp {
+    return 1 if is_admin();
+    return $access{'can_manage_ftp'} ? 1 : 0;
+}
+
+# Returns list of Instance-IDs the current user may access.
+# Returns ('*') for admins (unrestricted).
 sub allowed_servers {
+    return ('*') if is_admin();
     return ('*') unless defined $access{'servers'};
     my $s = $access{'servers'};
     $s =~ s/^\s+|\s+$//g;
@@ -31,57 +63,53 @@ sub allowed_servers {
     return grep { /\S/ } split /\s+/, $s;
 }
 
-# Returns 1 if the current user has unrestricted (admin-level) access.
-sub is_admin {
-    return 1 if grep { $_ eq '*' } allowed_servers();
-    return 0;
-}
-
-# Returns 1 if the current user may manage the given instance (by script ID).
+# Returns 1 if current user may access the given instance ID.
 sub user_can_manage {
-    my ($script_name) = @_;
+    my ($id) = @_;
+    return 1 if is_admin();
     my @allowed = allowed_servers();
     return 1 if grep { $_ eq '*' } @allowed;
-    return scalar grep { $_ eq $script_name } @allowed;
+    return scalar grep { $_ eq $id } @allowed;
 }
 
-# Returns all instances the current user may manage.
-# Admins (servers=*) get the full unfiltered list.
+# Returns 1 if current user has read-only access to the given instance.
+# Viewers with access are read-only; operators and admins are never read-only.
+sub user_is_readonly {
+    my ($id) = @_;
+    return 0 unless effective_role() eq 'viewer';
+    return user_can_manage($id) ? 1 : 0;
+}
+
+# Returns all instances the current user may see (filtered by role/servers).
 sub list_managed_instances {
-    my @all = &list_instances();
-    return @all if grep { $_ eq '*' } (allowed_servers());
-    return grep {
-        my $instance_key = $_->{'id'} // $_->{'user'} // '';
-        user_can_manage($instance_key);
-    } @all;
+    my @all = list_instances();
+    return @all if is_admin();
+    return grep { user_can_manage($_->{'id'} // $_->{'user'} // '') } @all;
 }
 
-# Grants $webmin_user access to $script_name by appending to their servers list.
-# No-op if already has access (including wildcard). Called by wizard/scan after install.
+# Grants $webmin_user access to $instance_id by appending to their servers list.
+# No-op if already has access. Called by wizard/scan after install.
 sub grant_server_access {
-    my ($webmin_user, $script_name) = @_;
+    my ($webmin_user, $instance_id) = @_;
     my %acl = get_module_acl($webmin_user, $module_name);
     my @servers = grep { /\S/ } split /\s+/, ($acl{'servers'} // '');
-    return if grep { $_ eq $script_name || $_ eq '*' } @servers;
-    push @servers, $script_name;
+    return if grep { $_ eq $instance_id || $_ eq '*' } @servers;
+    push @servers, $instance_id;
     $acl{'servers'} = join(' ', @servers);
     save_module_acl(\%acl, $webmin_user, $module_name);
 }
 
-# Returns sorted list of Webmin usernames explicitly assigned to $script_name.
-# Uses list_webmin_users() (known to work) and reads each user's ACL via
-# get_module_acl() — avoids fragile foreign_require inside an eval block.
-# Users with servers=* (admins) are excluded — they have implicit access.
+# Returns sorted list of Webmin usernames explicitly assigned to $instance_id.
+# Admins (via Webmin or servers=*) are excluded — they have implicit access.
 sub get_server_owners {
-    my ($script_name) = @_;
+    my ($instance_id) = @_;
     my @owners;
-    for my $uname (&list_webmin_users()) {
+    for my $uname (list_webmin_users()) {
         next unless $uname =~ /\S/;
         eval {
-            my %acl = &get_module_acl($uname, $module_name);
+            my %acl = get_module_acl($uname, $module_name);
             my @s = grep { /\S/ } split /\s+/, ($acl{'servers'} // '');
-            # Only explicit assignments — wildcard (*) users have implicit access
-            push @owners, $uname if grep { $_ eq $script_name } @s;
+            push @owners, $uname if grep { $_ eq $instance_id } @s;
         };
     }
     return sort @owners;
