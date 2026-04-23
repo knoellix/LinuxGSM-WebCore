@@ -37,6 +37,12 @@ if (&can_scan()) {
     print &ui_form_end();
 }
 
+if (&is_admin()) {
+    print &ui_form_start('acl_manage.cgi', 'get');
+    print &ui_submit($text{'acl_manage_btn'} || 'Manage permissions', undef, undef, undef, 'btn-default');
+    print &ui_form_end();
+}
+
 my @instances = &list_managed_instances();
 
 if (!@instances) {
@@ -60,7 +66,9 @@ if (!@instances) {
             int($inst->{'port'}),
             $status_cell,
             $health_cell,
-            "<a href='$manage_url'>$text{'index_btn_manage'}</a>",
+            (&user_is_readonly($id)
+                ? "<a href='$manage_url'>$text{'index_btn_manage'}</a> <small>(" . ($text{'acl_role_viewer'} || 'Viewer') . ")</small>"
+                : "<a href='$manage_url'>$text{'index_btn_manage'}</a>"),
         ];
     }
 
