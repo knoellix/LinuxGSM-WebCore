@@ -14,7 +14,7 @@ require './lib/ftp_proftpd.pl';
 our (%text, %in);
 &ReadParse(\%in);
 
-&can_scan() or &error($text{'err_access_denied'});
+&can_manage_ftp() or &error($text{'err_acl_admin_only'} || 'Access denied');
 
 my %state = &discover_ftp_state();
 # Determine the auth file: prefer value from config, fall back to common default.
