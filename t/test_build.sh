@@ -21,12 +21,12 @@ bash scripts/build.sh > /dev/null 2>&1 || true
 # Test 3: .wbm ist gültiges tar.gz
 tar tzf "dist/linuxgsm-webcore-${VERSION}.wbm" > /dev/null 2>&1 && pass ".wbm is valid tar.gz" || fail ".wbm is valid tar.gz"
 
-# Test 4: .wbm enthält module.info
-tar tzf "dist/linuxgsm-webcore-${VERSION}.wbm" | grep -q "linuxgsm-webcore/module.info" \
+# Test 4+5: .wbm enthält module.info und index.cgi
+# Note: grep -q exits early → SIGPIPE on tar → pipefail fires. Read full listing first.
+WBM_LIST=$(tar tzf "dist/linuxgsm-webcore-${VERSION}.wbm")
+echo "$WBM_LIST" | grep -q "linuxgsm-webcore/module.info" \
     && pass ".wbm contains module.info" || fail ".wbm contains module.info"
-
-# Test 5: .wbm enthält index.cgi
-tar tzf "dist/linuxgsm-webcore-${VERSION}.wbm" | grep -q "linuxgsm-webcore/index.cgi" \
+echo "$WBM_LIST" | grep -q "linuxgsm-webcore/index.cgi" \
     && pass ".wbm contains index.cgi" || fail ".wbm contains index.cgi"
 
 # Test 6: install.sh wird erzeugt
