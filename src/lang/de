@@ -255,3 +255,10 @@ acl_manage_servers_hint=Instanz-IDs, Leerzeichen-getrennt
 acl_manage_btn=Rechte verwalten
 err_acl_admin_only=Zugriff verweigert — nur für Administratoren
 err_readonly=Dieser Server ist für Sie schreibgeschützt
+
+hint_apt_deps_title=Fehlende Pakete
+hint_apt_deps_desc=Diese Pakete fehlen und müssen manuell installiert werden:
+hint_lib_old_version=Sehr alte Library-Version benötigt — nicht in aktuellen Debian-Repos verfügbar. Manuell installieren oder Backports prüfen.
+manage_steamcmd_source=Dieser Server wird direkt über SteamCMD verwaltet (kein LinuxGSM).
+wizard_source_lgsm=LinuxGSM (empfohlen)
+wizard_source_steamcmd=Direkter SteamCMD-Download (für Spiele ohne LGSM-Support)

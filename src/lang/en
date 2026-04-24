@@ -255,3 +255,10 @@ acl_manage_servers_hint=Instance IDs, space-separated
 acl_manage_btn=Manage permissions
 err_acl_admin_only=Access denied — administrators only
 err_readonly=This server is read-only for your account
+
+hint_apt_deps_title=Missing Packages
+hint_apt_deps_desc=These packages are missing and need to be installed manually:
+hint_lib_old_version=Very old library version required -- not available in current Debian repos. Install manually or check backports.
+manage_steamcmd_source=This server is managed directly via SteamCMD (no LinuxGSM).
+wizard_source_lgsm=LinuxGSM (recommended)
+wizard_source_steamcmd=Direct SteamCMD download (for games without LGSM support)
