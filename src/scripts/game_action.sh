@@ -21,10 +21,26 @@ if [ "$ACTION" = "reinstall" ]; then
     ACTION="install"
 fi
 
+OUTPUT_FILE="$JOB_DIR/lgsm_output.txt"
+
 if ! su -s /bin/bash -c "
     cd '$SERVER_DIR' &&
     ./'$GAME_SCRIPT' '$ACTION'
-" "$UNIX_USER"; then
+" "$UNIX_USER" 2>&1 | tee "$OUTPUT_FILE"; then
+
+    if grep -qiE "unable to locate package|E: Package" "$OUTPUT_FILE" 2>/dev/null; then
+        MISSING=$(grep -oiE "E: Package '[^']+' has no installation candidate|Unable to locate package [^ ]+" \
+            "$OUTPUT_FILE" | head -5 | tr '\n' ' ')
+        echo "hint_package_not_found: $MISSING" > "$JOB_DIR/error_hint"
+    elif grep -qiE "error.*libssl|cannot open shared object|no such file.*\.so" "$OUTPUT_FILE" 2>/dev/null; then
+        MISSING_LIB=$(grep -oiE "lib[a-z0-9._-]+\.so[.0-9]*" "$OUTPUT_FILE" | head -3 | tr '\n' ' ')
+        echo "hint_lib_missing: $MISSING_LIB" > "$JOB_DIR/error_hint"
+    elif grep -qiE "command not found|No such file or directory" "$OUTPUT_FILE" 2>/dev/null; then
+        echo "hint_command_not_found" > "$JOB_DIR/error_hint"
+    else
+        echo "hint_generic_install_error" > "$JOB_DIR/error_hint"
+    fi
+
     echo "failed" > "$JOB_DIR/status"
     exit 1
 fi
