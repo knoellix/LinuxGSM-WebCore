@@ -79,6 +79,8 @@
   "csgoserver": {
     "name": "Counter-Strike: Global Offensive",
     "steam_required": true,
+    "source": "lgsm",
+    "apt_deps": ["lib32gcc-s1", "lib32stdc++6", "libsdl2-2.0-0:i386"],
     "fields": [
       {"key": "port",       "type": "port",   "label_de": "Port",         "label_en": "Port",          "default": "27015"},
       {"key": "gamename",   "type": "text",   "label_de": "Spielname",    "label_en": "Game name",     "default": "CS:GO"},
@@ -98,10 +100,25 @@
   "armaserver": {
     "name": "Arma 3",
     "steam_required": true,
+    "source": "lgsm",
     "fields": [
       {"key": "port",       "type": "port",   "label_de": "Port",         "label_en": "Port",          "default": "2302"},
       {"key": "gamename",   "type": "text",   "label_de": "Spielname",    "label_en": "Game name",     "default": "Arma 3"},
       {"key": "maxplayers", "type": "int",    "label_de": "Max. Spieler", "label_en": "Max players",   "default": "64"}
+    ]
+  },
+  "windrose": {
+    "name": "Windrose Dedicated Server",
+    "steam_required": true,
+    "source": "steamcmd",
+    "steam_app_id": 4129620,
+    "engine": "unreal",
+    "login_required": false,
+    "apt_deps": ["lib32gcc-s1", "libsdl2-2.0-0:i386"],
+    "fields": [
+      {"key": "port",       "type": "port",    "label_de": "Game Port",    "label_en": "Game Port",    "default": "7777"},
+      {"key": "queryport",  "type": "port",    "label_de": "Query Port",   "label_en": "Query Port",   "default": "27015"},
+      {"key": "maxplayers", "type": "int",     "label_de": "Max. Spieler", "label_en": "Max players",  "default": "16"}
     ]
   }
 }
