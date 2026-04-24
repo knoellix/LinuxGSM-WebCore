@@ -30,6 +30,16 @@ our $current_lang;
 $main::gconfig{'charset'} = 'utf-8';
 &ReadParse(\%in);
 
+sub _parse_script_info {
+    my ($inst) = @_;
+    my $script_path = $inst->{'script'} // '';
+    my ($script_name) = $script_path =~ m{/([^/]+)$};
+    $script_name //= '';
+    (my $server_dir = $script_path) =~ s{/[^/]+$}{};
+    $script_name =~ s/[^a-zA-Z0-9_-]//g;
+    return ($script_path, $script_name, $server_dir);
+}
+
 my $instance_id = &sanitize_input($in{'instance_id'} || $in{'user'} || '');
 my $inst = &get_instance_flexible($instance_id) or &error($text{'err_not_found'});
 my $unix_user = $inst->{'user'};
@@ -362,26 +372,65 @@ if ($in{'action'}) {
     }
     elsif ($action eq 'install_game') {
         my $reg = &get_registered_instance($instance_id) or &error($text{'err_not_found'});
-        my $script_path = $reg->{'script'} // '';
-        my $script_name = (split('/', $script_path))[-1] // '';
-        (my $server_dir = $script_path) =~ s|/[^/]+$||;
-        $script_name =~ s/[^a-zA-Z0-9_-]//g;
+        my $source = $reg->{'source'} // 'lgsm';
+        my ($script_path, $script_name, $server_dir) = _parse_script_info($reg);
 
         our ($config_directory, $module_root);
         my $job_id = &create_job();
-        my $worker = "$module_root/scripts/game_action.sh";
-        &system_logged("nohup bash \Q$worker\E \Q$config_directory/jobs/$job_id\E \Q$unix_user\E \Q$server_dir\E \Q$script_name\E install >/dev/null 2>&1 &");
-        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&action=poll_job&job=" . &html_escape($job_id) . "&next_status=installed");
+
+        if ($source eq 'steamcmd') {
+            my $app_id = $reg->{'steam_app_id'} // '';
+            $app_id =~ s/[^0-9]//g;
+            &system_logged(
+                "MODULE_ROOT=" . quotemeta($module_root)
+                . " nohup bash " . quotemeta("$module_root/scripts/steamcmd_install.sh")
+                . " " . quotemeta("$config_directory/jobs/$job_id")
+                . " " . quotemeta($unix_user)
+                . " " . quotemeta($server_dir)
+                . " " . quotemeta($app_id)
+                . " >/dev/null 2>&1 &"
+            );
+        } else {
+            &system_logged(
+                "nohup bash " . quotemeta("$module_root/scripts/game_action.sh")
+                . " " . quotemeta("$config_directory/jobs/$job_id")
+                . " " . quotemeta($unix_user)
+                . " " . quotemeta($server_dir)
+                . " " . quotemeta($script_name)
+                . " install >/dev/null 2>&1 &"
+            );
+        }
+        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id)
+            . "&action=poll_job&job=" . &html_escape($job_id)
+            . "&next_status=installed");
     }
     elsif ($action eq 'update') {
-        my $script_name = (split('/', $inst->{'script'}))[-1];
-        (my $server_dir = $inst->{'script'}) =~ s|/[^/]+$||;
-        $script_name =~ s/[^a-zA-Z0-9_-]//g;
+        my $source = $inst->{'source'} // 'lgsm';
+        my ($script_path, $script_name, $server_dir) = _parse_script_info($inst);
 
         our ($config_directory, $module_root);
         my $job_id = &create_job();
-        my $worker = "$module_root/scripts/game_action.sh";
-        &system_logged("nohup bash \Q$worker\E \Q$config_directory/jobs/$job_id\E \Q$unix_user\E \Q$server_dir\E \Q$script_name\E update >/dev/null 2>&1 &");
+
+        if ($source eq 'steamcmd') {
+            &system_logged(
+                "MODULE_ROOT=" . quotemeta($module_root)
+                . " nohup bash " . quotemeta("$module_root/scripts/steamcmd_control.sh")
+                . " update"
+                . " " . quotemeta("$config_directory/jobs/$job_id")
+                . " " . quotemeta($unix_user)
+                . " " . quotemeta($server_dir)
+                . " >/dev/null 2>&1 &"
+            );
+        } else {
+            &system_logged(
+                "nohup bash " . quotemeta("$module_root/scripts/game_action.sh")
+                . " " . quotemeta("$config_directory/jobs/$job_id")
+                . " " . quotemeta($unix_user)
+                . " " . quotemeta($server_dir)
+                . " " . quotemeta($script_name)
+                . " update >/dev/null 2>&1 &"
+            );
+        }
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&action=poll_job&job=" . &html_escape($job_id));
     }
     elsif ($action eq 'validate') {
@@ -421,6 +470,29 @@ if ($in{'action'}) {
 
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) .
                   "&config_file=game&config_view=game");
+    }
+    elsif ($action eq 'start' || $action eq 'stop') {
+        my $source = $inst->{'source'} // 'lgsm';
+        my ($script_path, $script_name, $server_dir) = _parse_script_info($inst);
+
+        if ($source eq 'steamcmd') {
+            our ($config_directory, $module_root);
+            my $job_id = &create_job();
+            &system_logged(
+                "MODULE_ROOT=" . quotemeta($module_root)
+                . " nohup bash " . quotemeta("$module_root/scripts/steamcmd_control.sh")
+                . " " . quotemeta($action)
+                . " " . quotemeta("$config_directory/jobs/$job_id")
+                . " " . quotemeta($unix_user)
+                . " " . quotemeta($server_dir)
+                . " >/dev/null 2>&1 &"
+            );
+            &redirect("manage.cgi?instance_id=" . &html_escape($instance_id)
+                . "&action=poll_job&job=" . &html_escape($job_id));
+        } else {
+            &run_server_action($unix_user, $action, $script_name, $server_dir);
+            &redirect("manage.cgi?instance_id=" . &html_escape($instance_id));
+        }
     }
     else {
         my $script_name = (split('/', $inst->{'script'}))[-1];
