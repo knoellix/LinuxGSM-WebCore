@@ -1,18 +1,20 @@
 #!/usr/bin/perl
 use strict;
 use warnings;
-use Test::More tests => 8;
+use Test::More tests => 13;
 use FindBin qw($Bin);
 
 require "$Bin/stubs.pl";
 our %text;
 %text = (
-    hint_package_not_found => 'PACKAGE_NOT_FOUND',
-    hint_lib_missing       => 'LIB_MISSING',
-    hint_command_not_found => 'CMD_NOT_FOUND',
-    hint_permission_denied => 'PERM_DENIED',
-    hint_no_space          => 'NO_SPACE',
-    hint_network_error     => 'NET_ERROR',
+    hint_package_not_found      => 'PACKAGE_NOT_FOUND',
+    hint_lib_missing            => 'LIB_MISSING',
+    hint_command_not_found      => 'CMD_NOT_FOUND',
+    hint_permission_denied      => 'PERM_DENIED',
+    hint_no_space               => 'NO_SPACE',
+    hint_network_error          => 'NET_ERROR',
+    hint_steamcmd_login         => 'STEAMCMD_LOGIN',
+    hint_generic_install_error  => 'GENERIC_ERROR',
 );
 
 require "$Bin/../src/lib/error_hints.pl";
@@ -25,3 +27,12 @@ is(detect_error_hint('No space left on device'),           'NO_SPACE',          
 is(detect_error_hint('curl: (6) Could not resolve host'),  'NET_ERROR',         'curl network error');
 is(detect_error_hint('wget: unable to resolve host'),      'NET_ERROR',         'wget network error');
 is(detect_error_hint('Everything went fine!'),             '',                  'no hint for clean output');
+
+# steamcmd login
+is(detect_error_hint('Login Failure: Invalid Password'), 'STEAMCMD_LOGIN', 'steamcmd login failure');
+
+# get_hint function
+is(get_hint('hint_package_not_found'), 'PACKAGE_NOT_FOUND', 'get_hint returns correct text');
+is(get_hint('hint_generic_install_error'), 'GENERIC_ERROR',   'get_hint for generic error');
+is(get_hint('hint_steamcmd_login'),    'STEAMCMD_LOGIN',      'get_hint for steamcmd login');
+is(get_hint('nonexistent_key'),        '',                     'get_hint returns empty for unknown key');

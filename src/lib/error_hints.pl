@@ -5,13 +5,20 @@ use warnings;
 our %text;
 
 my @_PATTERNS = (
-    [ qr/Unable to locate package/i,             'hint_package_not_found' ],
-    [ qr/lib\S+\.so[.\d]*: cannot open/i,        'hint_lib_missing' ],
-    [ qr/command not found/i,                     'hint_command_not_found' ],
-    [ qr/Permission denied/i,                     'hint_permission_denied' ],
-    [ qr/No space left on device/i,               'hint_no_space' ],
-    [ qr/curl: \(\d+\)|wget: unable to resolve/i, 'hint_network_error' ],
+    [ qr/Unable to locate package|E: Package '[^']+' has no installation candidate/i, 'hint_package_not_found' ],
+    [ qr/lib\S+\.so[.\d]*: cannot open|error.*libssl|no such file.*\.so/i,           'hint_lib_missing' ],
+    [ qr/command not found/i,                                                          'hint_command_not_found' ],
+    [ qr/Permission denied/i,                                                          'hint_permission_denied' ],
+    [ qr/No space left on device/i,                                                    'hint_no_space' ],
+    [ qr/curl: \(\d+\)|wget: unable to resolve/i,                                     'hint_network_error' ],
+    [ qr/Login Failure|Invalid Password|steamcmd.*login.*fail/i,                      'hint_steamcmd_login' ],
 );
+
+sub get_hint {
+    my ($key) = @_;
+    return '' unless defined $key && length $key;
+    return $text{$key} // '';
+}
 
 sub detect_error_hint {
     my ($output) = @_;
