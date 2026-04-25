@@ -29,12 +29,9 @@ if ! su -s /bin/bash -c "
 " "$UNIX_USER" 2>&1 | tee "$OUTPUT_FILE"; then
 
     if grep -qiE "unable to locate package|E: Package" "$OUTPUT_FILE" 2>/dev/null; then
-        MISSING=$(grep -oiE "E: Package '[^']+' has no installation candidate|Unable to locate package [^ ]+" \
-            "$OUTPUT_FILE" | head -5 | tr '\n' ' ')
-        echo "hint_package_not_found: $MISSING" > "$JOB_DIR/error_hint"
+        echo "hint_package_not_found" > "$JOB_DIR/error_hint"
     elif grep -qiE "error.*libssl|cannot open shared object|no such file.*\.so" "$OUTPUT_FILE" 2>/dev/null; then
-        MISSING_LIB=$(grep -oiE "lib[a-z0-9._-]+\.so[.0-9]*" "$OUTPUT_FILE" | head -3 | tr '\n' ' ')
-        echo "hint_lib_missing: $MISSING_LIB" > "$JOB_DIR/error_hint"
+        echo "hint_lib_missing" > "$JOB_DIR/error_hint"
     elif grep -qiE "command not found|No such file or directory" "$OUTPUT_FILE" 2>/dev/null; then
         echo "hint_command_not_found" > "$JOB_DIR/error_hint"
     else

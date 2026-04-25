@@ -3,7 +3,7 @@
 # Manages a steamcmd login session via FIFO.
 # Writes status to $SESSION_DIR/status:
 #   connecting | guard_required | ok | failed | timeout
-set -e
+set -euo pipefail
 
 SESSION_DIR="$1"
 USERNAME="$2"

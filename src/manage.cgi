@@ -278,6 +278,7 @@ if ($in{'action'}) {
                   "&config_view=" . &html_escape($cfg_view_key));
     }
     elsif ($action eq 'delete_instance') {
+        &is_admin() or &error($text{'err_acl_admin_only'} || 'Access denied');
         my $script_name = (split('/', $inst->{'script'}))[-1];
         my $script_dir  = $inst->{'script'};
         $script_dir =~ s|/[^/]+$||;
@@ -371,6 +372,7 @@ if ($in{'action'}) {
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&action=poll_job&job=" . &html_escape($job_id) . "&next_status=lgsm_ready");
     }
     elsif ($action eq 'install_game') {
+        &can_create() or &error($text{'err_acl_admin_only'} || 'Access denied');
         my $reg = &get_registered_instance($instance_id) or &error($text{'err_not_found'});
         my $source = $reg->{'source'} // 'lgsm';
         my ($script_path, $script_name, $server_dir) = _parse_script_info($reg);
