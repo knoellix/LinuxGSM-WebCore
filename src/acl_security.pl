@@ -11,15 +11,14 @@
 # acl_security.pl — Module ACL form and save for linuxgsm-webcore
 #
 # Called by Webmin's acl/edit_acl.cgi via foreign_require/foreign_call.
-# Imports all Webmin functions into this package via WebminCore.
+# Uses &main::ui_* directly — avoids loading WebminCore a second time,
+# which can cause symbol conflicts and slowdowns.
 # acl_security_form: called inside an already-open ui_table_start.
 # acl_security_save: called by save_acl.cgi before save_module_acl.
 
-BEGIN { push(@INC, ".."); }
-use WebminCore;
+use strict;
+use warnings;
 
-# load_theme_library()
-# Called by Webmin's edit_acl.cgi before acl_security_form. No-op.
 sub load_theme_library { }
 
 # acl_security_form(\%maccess)
@@ -27,30 +26,29 @@ sub load_theme_library { }
 sub acl_security_form {
     my ($maccess) = @_;
 
-    my $yes = $text{'yes'} || 'Yes';
-    my $no  = $text{'no'}  || 'No';
-
+    my $yes  = $main::text{'yes'} || 'Yes';
+    my $no   = $main::text{'no'}  || 'No';
     my $role = $maccess->{'role'} // 'operator';
 
     # Role dropdown
-    print &ui_table_row(
-        $text{'acl_role'} || 'Role',
-        &ui_select('role', $role, [
-            [ 'admin',    $text{'acl_role_admin'}    || 'Administrator' ],
-            [ 'operator', $text{'acl_role_operator'} || 'Operator'      ],
-            [ 'viewer',   $text{'acl_role_viewer'}   || 'Viewer'        ],
+    print &main::ui_table_row(
+        $main::text{'acl_role'} || 'Role',
+        &main::ui_select('role', $role, [
+            [ 'admin',    $main::text{'acl_role_admin'}    || 'Administrator' ],
+            [ 'operator', $main::text{'acl_role_operator'} || 'Operator'      ],
+            [ 'viewer',   $main::text{'acl_role_viewer'}   || 'Viewer'        ],
         ]));
 
     # Servers field (always shown; ignored at save time when role=admin)
-    print &ui_table_row(
-        $text{'acl_servers'} || 'Servers',
-        &ui_textbox('servers', $maccess->{'servers'} // '', 40) .
-        " <small>(" . ($text{'acl_manage_servers_hint'} || 'Instance IDs, space-separated') . ")</small>");
+    print &main::ui_table_row(
+        $main::text{'acl_servers'} || 'Servers',
+        &main::ui_textbox('servers', $maccess->{'servers'} // '', 40) .
+        " <small>(" . ($main::text{'acl_manage_servers_hint'} || 'Instance IDs, space-separated') . ")</small>");
 
     # FTP management toggle
-    print &ui_table_row(
-        $text{'acl_can_manage_ftp'} || 'May manage FTP users',
-        &ui_radio('can_manage_ftp', $maccess->{'can_manage_ftp'} ? 1 : 0,
+    print &main::ui_table_row(
+        $main::text{'acl_can_manage_ftp'} || 'May manage FTP users',
+        &main::ui_radio('can_manage_ftp', $maccess->{'can_manage_ftp'} ? 1 : 0,
             [ [ 1, $yes ], [ 0, $no ] ]));
 }
 

@@ -34,7 +34,7 @@ sub has_ufw {
 
 # Internal: return ufw status output (split out for testability)
 sub _ufw_status_output {
-    return `ufw status 2>/dev/null`;
+    return `timeout 2 ufw status 2>/dev/null`;
 }
 
 # Check if a port is open in the firewall.
@@ -49,7 +49,7 @@ sub firewall_status {
         return 0;
     } else {
         # iptables: check rule via system_logged (Webmin handles privilege escalation)
-        my $rc = &system_logged("iptables -C INPUT -p tcp --dport $port -j ACCEPT 2>/dev/null");
+        my $rc = &system_logged("timeout 2 iptables -C INPUT -p tcp --dport $port -j ACCEPT 2>/dev/null");
         return $rc == 0 ? 1 : 0;
     }
 }
