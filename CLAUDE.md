@@ -77,6 +77,7 @@ Dieser Abschnitt dokumentiert zwingende Webmin-spezifische Details, die aus real
   2. `do '../ui-lib.pl';`
   3. `&init_config();`
 - `our (%text, %config, %in, %gconfig);` muss nach den `require`/`do`-Zeilen stehen.
+- `$module_root` explizit in `our()` aufnehmen wenn `load_games_meta()` oder andere `$module_root`-abhaengige Funktionen aufgerufen werden — z. B.: `our (%text, %in, $config_directory, $module_name, $module_root);`
 - Charset fuer Header in `package main` setzen: `$main::gconfig{'charset'} = 'utf-8';`
 - `&ReadParse(\%in);` global initialisieren.
 - `check_referer()` nicht verwenden (in dieser Webmin-Version nicht verfuegbar).
@@ -98,6 +99,8 @@ Dieser Abschnitt dokumentiert zwingende Webmin-spezifische Details, die aus real
 - `$current_lang` explizit als `our $current_lang` deklarieren wenn Sprachlogik benoetigt wird.
 - Lang-Strings kein Perl-Syntax wie `$script` enthalten — wird nicht interpoliert; Wert dynamisch im CGI bauen.
 - `<details><summary>...</summary>...</details>` fuer einklappbare Abschnitte — funktioniert nativ in Authentic Theme ohne JS.
+- **`&redirect()` immer mit `exit` abschliessen:** Nach jedem `&redirect(...)` muss ein `exit;` folgen. Ohne `exit` laeuft der CGI weiter, kann eine zweite HTTP-Response rendern und Folgefehler ausloesen (z. B. "Ungueltige Aktion" weil `$is_fresh`-Block nach dem Redirect erneut ausgefuehrt wird).
+- **`sanitize_input()` nur fuer Pflichtfelder:** Die Funktion ruft `&error()` wenn das Ergebnis leer ist. Optionale Parameter (z. B. `$in{'action'}` auf Uebersichtsseiten) immer manuell strippen: `$var = $in{'key'} // ''; $var =~ s/[^a-zA-Z0-9_\-]//g;`
 
 ### 7.4 Referenz-Recherche in Webmin
 - Bei Unsicherheit zuerst `webmin/webmin` auf GitHub durchsuchen.
@@ -123,6 +126,8 @@ Dieser Abschnitt dokumentiert zwingende Webmin-spezifische Details, die aus real
 - Lokale Ueberschreibung: `$config_directory/games_meta_local.json`
 - Bibliothek: `src/lib/games_meta.pl` — `get_game_fields($script)`, `get_game_display_name($script)`
 - In Tests: `_reset_meta_cache()` zwischen verschiedenen Fixtures aufrufen
+- **Non-LGSM-Spiele (source=steamcmd):** `get_custom_game_list()` liefert Eintraege mit `source != 'lgsm'`. `get_game_source($script)` gibt den Installations-Source zurueck. Wizard-Registrierung mit `source=steamcmd` → Setup-Phase ueberspringt LGSM-Schritt, geht direkt zu `install_game` via `steamcmd_install.sh`.
+- **Lokale Verwaltung:** `save_local_game_meta($script, $entry_ref)` / `delete_local_game_meta($script)` schreiben in `games_meta_local.json`. `local_game_scripts()` gibt die dort definierten Script-Namen zurueck.
 
 ### 8.4 GitHub-Referenzen
 - LGSM Config-Struktur: `GameServerManagers/LinuxGSM` (Repo)
