@@ -14,26 +14,50 @@
 use strict;
 use warnings;
 
-our (%access, $module_name, $remote_user);
+our (%access, $module_name, $remote_user, $config_directory);
+
+# Per-request cache — reset to undef between test cases
+our $_effective_role_cache;
 
 # Returns effective role string: 'admin', 'operator', or 'viewer'.
-# Webmin-native admins always get 'admin', regardless of the role field.
-# Legacy: servers=* without role field → 'admin'.
 sub effective_role {
-    my $is_wbm_admin = 0;
-    eval {
-        foreign_require('acl', 'acl-lib.pl');
-        $is_wbm_admin = acl::master_admin($remote_user) ? 1 : 0;
-    };
-    return 'admin' if $is_wbm_admin;
+    return $_effective_role_cache if defined $_effective_role_cache;
+    $_effective_role_cache = _compute_role();
+    return $_effective_role_cache;
+}
 
-    # Legacy backwards-compat: old servers=* without explicit role → admin
-    if (!defined $access{'role'} && defined $access{'servers'}
-            && $access{'servers'} =~ /^\s*\*\s*$/) {
-        return 'admin';
+sub _compute_role {
+    # 1. Webmin master admins always get full access regardless of module ACL
+    if (defined $remote_user) {
+        eval {
+            foreign_require('acl', 'acl-lib.pl');
+            return 'admin' if acl::master_admin($remote_user);
+        };
     }
 
-    return $access{'role'} // 'operator';
+    # 2. Role from %access (populated by init_config from module ACL)
+    return $access{'role'} if defined $access{'role'};
+
+    # 3. Direct file fallback when %access is empty (package namespace mismatch)
+    if (defined $remote_user && defined $module_name && defined $config_directory) {
+        my %facl;
+        eval {
+            my $ufile = "$config_directory/$module_name/$remote_user";
+            my $dfile = "$config_directory/$module_name/defaultacl";
+            &read_file($ufile, \%facl) if -r $ufile;
+            &read_file($dfile, \%facl) if !%facl && -r $dfile;
+        };
+        return $facl{'role'} if defined $facl{'role'};
+    }
+
+    # 4. Legacy: servers=* without role field → admin
+    return 'admin' if defined $access{'servers'} && $access{'servers'} =~ /^\s*\*\s*$/;
+
+    # 5. Legacy: restricted servers without role field → operator
+    return 'operator' if defined $access{'servers'} && $access{'servers'} =~ /\S/;
+
+    # 6. Safe default
+    return 'operator';
 }
 
 # Returns 1 if current user is admin.
