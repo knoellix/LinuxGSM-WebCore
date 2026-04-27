@@ -143,6 +143,35 @@ sub get_game_default_port {
     return 27015;
 }
 
+# Returns sorted list of non-LGSM games from games_meta.json.
+# Each entry: { shortname, name, source }
+# Only games with an explicit 'source' field (e.g. 'steamcmd') are included.
+sub get_custom_game_list {
+    my %meta = load_games_meta();
+    my @games;
+    for my $script (sort keys %meta) {
+        my $entry  = $meta{$script};
+        my $source = $entry->{'source'} // '';
+        next unless $source && $source ne 'lgsm';
+        push @games, {
+            shortname => $script,
+            name      => $entry->{'name'} // $script,
+            source    => $source,
+        };
+    }
+    return sort { $a->{'name'} cmp $b->{'name'} } @games;
+}
+
+# Returns the installation source for a game script.
+# Returns 'lgsm' for unknown / LGSM games, otherwise the value from games_meta.json.
+sub get_game_source {
+    my ($script_name) = @_;
+    my %meta = load_games_meta();
+    my $key  = _resolve_meta_key($script_name);
+    return $meta{$key}{'source'} if defined $meta{$key} && defined $meta{$key}{'source'};
+    return 'lgsm';
+}
+
 # Reset the module-level cache (used in tests to reload different fixtures).
 sub _reset_meta_cache {
     %_meta_cache  = ();

@@ -95,11 +95,13 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
         my $result = eval { &provision_fast($unix_user, $servername) };
         &error("Fehler: $@") if $@;
 
-        my $instance_id = "${unix_user}_${servername}";
-        my $script_path = $result->{'server_dir'} . "/$game";
+        my $instance_id  = "${unix_user}_${servername}";
+        my $script_path  = $result->{'server_dir'} . "/$game";
+        my $game_source  = &get_game_source($game);
+        my $reg_source   = ($game_source eq 'lgsm') ? 'provisioned' : $game_source;
 
         &register_instance($instance_id, $unix_user, $script_path, {
-            source          => 'provisioned',
+            source          => $reg_source,
             sftp_user       => '',
             owners          => $webmin_user,
             steam_account   => $steam_account,
@@ -122,8 +124,15 @@ _step1_form();
 
 sub _step1_form {
     print "<h3>" . &html_escape($text{'wizard_step1_title'}) . "</h3>\n";
-    my @games = &get_game_list();
-    my @opts  = map { [$_->{'shortname'}, &html_escape("$_->{'name'} ($_->{'shortname'})") ] } @games;
+    my @lgsm_games   = &get_game_list();
+    my @custom_games = &get_custom_game_list();
+
+    my @opts;
+    push @opts, map { [$_->{'shortname'}, &html_escape("$_->{'name'} ($_->{'shortname'})") ] } @lgsm_games;
+    if (@custom_games) {
+        push @opts, ['', '─── ' . ($text{'wizard_custom_games'} || 'Weitere Spiele') . ' ───'];
+        push @opts, map { [$_->{'shortname'}, &html_escape("$_->{'name'} ($_->{'source'})") ] } @custom_games;
+    }
 
     print &ui_form_start('wizard.cgi', 'post');
     print &ui_hidden('step', '2');

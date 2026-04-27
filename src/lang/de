@@ -47,6 +47,7 @@ manage_game=Spiel
 manage_port=Port
 manage_status=Status
 wizard_game=Spiel
+wizard_custom_games=Weitere Spiele (ohne LGSM)
 wizard_username=Unix-Benutzername
 wizard_port=Port
 wizard_sftp=SFTP-Zugang aktivieren

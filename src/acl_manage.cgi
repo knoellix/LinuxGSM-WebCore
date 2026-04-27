@@ -52,7 +52,10 @@ if ($action eq 'save_acl') {
 # --- Edit form ---
 if ($action eq 'edit') {
     my $target_user = &sanitize_input($in{'target_user'} // '');
-    $target_user =~ /^[a-zA-Z0-9_.\@\-]+$/ or &error($text{'err_invalid_input'});
+    unless ($target_user && $target_user =~ /^[a-zA-Z0-9_.\@\-]+$/) {
+        &redirect("acl_manage.cgi");
+        exit;
+    }
 
     my %acl = &get_module_acl($target_user, $module_name);
     my $role = $acl{'role'} // 'operator';
