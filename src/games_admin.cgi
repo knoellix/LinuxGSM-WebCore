@@ -18,7 +18,7 @@ require './lib/core.pl';
 require './lib/acl.pl';
 require './lib/games_meta.pl';
 
-our (%text, %in, $config_directory, $module_name);
+our (%text, %in, $config_directory, $module_name, $module_root);
 $main::gconfig{'charset'} = 'utf-8';
 &ReadParse(\%in);
 
@@ -58,12 +58,10 @@ if ($action eq 'save') {
         or &error($text{'err_invalid_input'} || 'Pflichtfelder fehlen');
 
     &save_local_game_meta($script, {
-        name           => $name,
-        source         => 'steamcmd',
-        steam_required => JSON::PP::true(),
-        steam_app_id   => int($app_id),
-        login_required => JSON::PP::false(),
-        fields         => [
+        name         => $name,
+        source       => 'steamcmd',
+        steam_app_id => int($app_id),
+        fields       => [
             { key => 'port', type => 'port',
               label_de => 'Port', label_en => 'Port',
               default  => "$port" },
@@ -94,6 +92,7 @@ print &ui_submit($text{'games_admin_add'} || 'Neues Spiel hinzufügen', undef, u
 print &ui_form_end();
 
 if (@custom) {
+    my %local_scripts = map { $_ => 1 } &local_game_scripts();
     my @rows;
     for my $g (@custom) {
         my $sn   = $g->{'shortname'};
@@ -109,13 +108,7 @@ if (@custom) {
             . " onclick='return confirm(\"" . ($text{'games_admin_delete_confirm'} || 'Wirklich löschen?') . "\")'>"
             . "</form>";
 
-        # Only show delete for locally overridden entries
-        my $is_local = do {
-            my $local_file = "$config_directory/games_meta_local.json";
-            my %loc;
-            &_merge_meta(\%loc, $local_file) if -f $local_file;
-            exists $loc{$sn} ? 1 : 0;
-        };
+        my $is_local = $local_scripts{$sn} ? 1 : 0;
 
         push @rows, [
             &html_escape($sn),

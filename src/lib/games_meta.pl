@@ -172,6 +172,16 @@ sub get_game_source {
     return 'lgsm';
 }
 
+# Returns the set of script names that exist in games_meta_local.json.
+sub local_game_scripts {
+    return () unless defined $config_directory;
+    my $file = "$config_directory/games_meta_local.json";
+    return () unless -f $file;
+    my %loc;
+    _merge_meta(\%loc, $file);
+    return keys %loc;
+}
+
 # Write or update one entry in games_meta_local.json.
 # $entry_ref is a hashref with keys: name, source, steam_app_id, fields, etc.
 sub save_local_game_meta {
