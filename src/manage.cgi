@@ -382,6 +382,11 @@ if ($in{'action'}) {
 
         if ($source eq 'steamcmd') {
             my $app_id = $reg->{'steam_app_id'} // '';
+            if (!$app_id) {
+                my %gmeta = load_games_meta();
+                my $game_key = $reg->{'cached_game'} || $script_name;
+                $app_id = $gmeta{$game_key}{'steam_app_id'} // '';
+            }
             $app_id =~ s/[^0-9]//g;
             &system_logged(
                 "MODULE_ROOT=" . quotemeta($module_root)

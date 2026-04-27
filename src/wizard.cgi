@@ -106,6 +106,7 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
             owners          => $webmin_user,
             steam_account   => $steam_account,
             instance_status => 'fresh',
+            game            => $game,
         });
 
         &grant_server_access($webmin_user, $instance_id) if $webmin_user;
