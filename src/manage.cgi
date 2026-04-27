@@ -593,10 +593,18 @@ if (($in{'action'} // '') eq 'monitor') {
 # Setup-Phase for fresh/lgsm_ready instances
 if ($is_fresh) {
     my $istatus = $inst->{'instance_status'} // 'fresh';
+    my $source  = $inst->{'source'} // 'provisioned';
     &header($text{'setup_phase_title'}, '');
     print "<h3>" . &html_escape($text{'setup_phase_title'}) . "</h3>\n";
 
-    if ($istatus eq 'fresh') {
+    if ($source eq 'steamcmd') {
+        # steamcmd games skip LGSM setup — install directly via SteamCMD
+        print &ui_form_start('manage.cgi', 'post');
+        print &ui_hidden('instance_id', &html_escape($instance_id));
+        print &ui_hidden('action', 'install_game');
+        print &ui_submit($text{'setup_install_game_btn'} || 'Spiel installieren', undef, undef, undef, 'btn-primary');
+        print &ui_form_end();
+    } elsif ($istatus eq 'fresh') {
         print &ui_form_start('manage.cgi', 'post');
         print &ui_hidden('instance_id', &html_escape($instance_id));
         print &ui_hidden('action', 'setup_lgsm');
