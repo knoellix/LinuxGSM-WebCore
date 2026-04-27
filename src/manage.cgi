@@ -59,12 +59,14 @@ if ($in{'action'}) {
         &firewall_open_port($port, 'tcp');
         &firewall_open_port($port, 'udp');
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id));
+        exit;
     }
     elsif ($action eq 'fw_close') {
         my $port = int($inst->{'port'});
         &firewall_close_port($port, 'tcp');
         &firewall_close_port($port, 'udp');
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id));
+        exit;
     }
     elsif ($action eq 'fix_config') {
         my $script_name = (split('/', $inst->{'script'}))[-1];
@@ -128,6 +130,7 @@ if ($in{'action'}) {
         rename($default_cfg, $backup_cfg) if -f $default_cfg;
 
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id));
+        exit;
     }
     elsif ($action eq 'migrate_config') {
         my $script_name = (split('/', $inst->{'script'}))[-1];
@@ -180,6 +183,7 @@ if ($in{'action'}) {
         }
 
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id));
+        exit;
     }
     elsif ($action eq 'save_config') {
         my $script_name = (split('/', $inst->{'script'}))[-1];
@@ -276,6 +280,7 @@ if ($in{'action'}) {
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) .
                   "&config_file=" . &html_escape($cfg_file_key) .
                   "&config_view=" . &html_escape($cfg_view_key));
+        exit;
     }
     elsif ($action eq 'delete_instance') {
         &is_admin() or &error($text{'err_acl_admin_only'} || 'Access denied');
@@ -317,6 +322,7 @@ if ($in{'action'}) {
         }
 
         &redirect("index.cgi");
+        exit;
     }
     elsif ($action eq 'create_instance_ftp_user') {
         &can_manage_ftp() or &error($text{'err_acl_admin_only'} || 'Access denied');
@@ -344,6 +350,7 @@ if ($in{'action'}) {
         our $config_directory;
         &save_ftp_password($config_directory, $instance_id, $ftp_pass);
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id));
+        exit;
     }
     elsif ($action eq 'delete_instance_ftp_user') {
         &can_manage_ftp() or &error($text{'err_acl_admin_only'} || 'Access denied');
@@ -357,6 +364,7 @@ if ($in{'action'}) {
         our $config_directory;
         &delete_ftp_password($config_directory, $instance_id);
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id));
+        exit;
     }
     elsif ($action eq 'setup_lgsm') {
         my $reg = &get_registered_instance($instance_id) or &error($text{'err_not_found'});
@@ -370,6 +378,7 @@ if ($in{'action'}) {
         my $worker = "$module_root/scripts/setup_lgsm.sh";
         &system_logged("nohup bash \Q$worker\E \Q$config_directory/jobs/$job_id\E \Q$unix_user\E \Q$server_dir\E \Q$script_name\E >/dev/null 2>&1 &");
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&action=poll_job&job=" . &html_escape($job_id) . "&next_status=lgsm_ready");
+        exit;
     }
     elsif ($action eq 'install_game') {
         &can_create() or &error($text{'err_acl_admin_only'} || 'Access denied');
@@ -410,6 +419,7 @@ if ($in{'action'}) {
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id)
             . "&action=poll_job&job=" . &html_escape($job_id)
             . "&next_status=installed");
+        exit;
     }
     elsif ($action eq 'update') {
         my $source = $inst->{'source'} // 'lgsm';
@@ -439,6 +449,7 @@ if ($in{'action'}) {
             );
         }
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&action=poll_job&job=" . &html_escape($job_id));
+        exit;
     }
     elsif ($action eq 'validate') {
         my $script_name = (split('/', $inst->{'script'}))[-1];
@@ -450,6 +461,7 @@ if ($in{'action'}) {
         my $worker = "$module_root/scripts/game_action.sh";
         &system_logged("nohup bash \Q$worker\E \Q$config_directory/jobs/$job_id\E \Q$unix_user\E \Q$server_dir\E \Q$script_name\E validate >/dev/null 2>&1 &");
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&action=poll_job&job=" . &html_escape($job_id));
+        exit;
     }
     elsif ($action eq 'reinstall') {
         my $script_name = (split('/', $inst->{'script'}))[-1];
@@ -461,6 +473,7 @@ if ($in{'action'}) {
         my $worker = "$module_root/scripts/game_action.sh";
         &system_logged("nohup bash \Q$worker\E \Q$config_directory/jobs/$job_id\E \Q$unix_user\E \Q$server_dir\E \Q$script_name\E reinstall >/dev/null 2>&1 &");
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&action=poll_job&job=" . &html_escape($job_id));
+        exit;
     }
     elsif ($action eq 'init_game_config') {
         my $script_name = (split('/', $inst->{'script'}))[-1];
@@ -477,6 +490,7 @@ if ($in{'action'}) {
 
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) .
                   "&config_file=game&config_view=game");
+        exit;
     }
     elsif ($action eq 'start' || $action eq 'stop') {
         my $source = $inst->{'source'} // 'lgsm';
@@ -496,9 +510,11 @@ if ($in{'action'}) {
             );
             &redirect("manage.cgi?instance_id=" . &html_escape($instance_id)
                 . "&action=poll_job&job=" . &html_escape($job_id));
+            exit;
         } else {
             &run_server_action($unix_user, $action, $script_name, $server_dir);
             &redirect("manage.cgi?instance_id=" . &html_escape($instance_id));
+            exit;
         }
     }
     else {
@@ -507,6 +523,7 @@ if ($in{'action'}) {
         $script_dir =~ s|/[^/]+$||;
         &run_server_action($unix_user, $action, $script_name, $script_dir);
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id));
+        exit;
     }
 }
 
