@@ -172,6 +172,44 @@ sub get_game_source {
     return 'lgsm';
 }
 
+# Write or update one entry in games_meta_local.json.
+# $entry_ref is a hashref with keys: name, source, steam_app_id, fields, etc.
+sub save_local_game_meta {
+    my ($script_name, $entry_ref) = @_;
+    return unless defined $config_directory;
+    my $file = "$config_directory/games_meta_local.json";
+    my %local;
+    _merge_meta(\%local, $file) if -f $file;
+    $local{$script_name} = $entry_ref;
+    _write_local_meta($file, \%local);
+    _reset_meta_cache();
+}
+
+# Remove one entry from games_meta_local.json.
+sub delete_local_game_meta {
+    my ($script_name) = @_;
+    return unless defined $config_directory;
+    my $file = "$config_directory/games_meta_local.json";
+    return unless -f $file;
+    my %local;
+    _merge_meta(\%local, $file);
+    delete $local{$script_name};
+    _write_local_meta($file, \%local);
+    _reset_meta_cache();
+}
+
+sub _write_local_meta {
+    my ($file, $data) = @_;
+    eval {
+        require JSON::PP;
+        my $json = JSON::PP->new->pretty->canonical->utf8;
+        open(my $fh, '>', $file) or die "Cannot write $file: $!";
+        print $fh $json->encode($data);
+        close $fh;
+    };
+    warn "save_local_game_meta failed: $@" if $@;
+}
+
 # Reset the module-level cache (used in tests to reload different fixtures).
 sub _reset_meta_cache {
     %_meta_cache  = ();

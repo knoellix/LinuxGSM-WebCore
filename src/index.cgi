@@ -41,6 +41,10 @@ if (&is_admin()) {
     print &ui_form_start('acl_manage.cgi', 'get');
     print &ui_submit($text{'acl_manage_btn'} || 'Manage permissions', undef, undef, undef, 'btn-default');
     print &ui_form_end();
+
+    print &ui_form_start('games_admin.cgi', 'get');
+    print &ui_submit($text{'games_admin_btn'} || 'Game Database', undef, undef, undef, 'btn-default');
+    print &ui_form_end();
 }
 
 my @instances = &list_managed_instances();
@@ -50,22 +54,14 @@ if (!@instances) {
 } else {
     my @rows;
     foreach my $inst (@instances) {
-        my $id       = $inst->{'id'};
-        my $warnings = $inst->{'warnings'};
-        my $status   = $inst->{'status'};
-
-        my $status_cell = &html_escape($text{"status_$status"} // $status);
-        my $health_cell = @$warnings
-            ? "&#x26A0; (" . scalar(@$warnings) . ")"
-            : "&#x2705;";
-        my $manage_url  = "manage.cgi?instance_id=" . &html_escape($id);
+        my $id         = $inst->{'id'};
+        my $manage_url = "manage.cgi?instance_id=" . &html_escape($id);
+        my $port_str   = $inst->{'port'} ? int($inst->{'port'}) : '—';
 
         push @rows, [
             &html_escape($inst->{'user'}),
             &html_escape($inst->{'game'}),
-            int($inst->{'port'}),
-            $status_cell,
-            $health_cell,
+            $port_str,
             (&user_is_readonly($id)
                 ? "<a href='$manage_url'>$text{'index_btn_manage'}</a> <small>(" . ($text{'acl_role_viewer'} || 'Viewer') . ")</small>"
                 : "<a href='$manage_url'>$text{'index_btn_manage'}</a>"),
@@ -77,8 +73,6 @@ if (!@instances) {
             $text{'index_col_user'},
             $text{'index_col_game'},
             $text{'index_col_port'},
-            $text{'index_col_status'},
-            $text{'index_col_health'},
             $text{'index_col_manage'},
         ],
         "100%",
