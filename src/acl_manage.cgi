@@ -24,7 +24,8 @@ $main::gconfig{'charset'} = 'utf-8';
 
 &is_admin() or &error($text{'err_acl_admin_only'} || 'Access denied — administrators only');
 
-my $action = &sanitize_input($in{'action'} // '');
+my $action = $in{'action'} // '';
+$action =~ s/[^a-zA-Z0-9_\-]//g;
 
 # --- Save action ---
 if ($action eq 'save_acl') {
