@@ -376,7 +376,8 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         our ($config_directory, $module_root);
         my $job_id = &create_job();
         my $worker = "$module_root/scripts/setup_lgsm.sh";
-        &system_logged("nohup bash \Q$worker\E \Q$config_directory/jobs/$job_id\E \Q$unix_user\E \Q$server_dir\E \Q$script_name\E >/dev/null 2>&1 &");
+        write_job_meta($job_id, $instance_id, 'setup_lgsm', $unix_user);
+        &system_logged("setsid nohup bash \Q$worker\E \Q$config_directory/jobs/$job_id\E \Q$unix_user\E \Q$server_dir\E \Q$script_name\E >/dev/null 2>&1 &");
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&action=poll_job&job=" . &html_escape($job_id) . "&next_status=lgsm_ready");
         exit;
     }
@@ -388,6 +389,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
 
         our ($config_directory, $module_root);
         my $job_id = &create_job();
+        write_job_meta($job_id, $instance_id, 'install_game', $unix_user);
 
         if ($source eq 'steamcmd') {
             my $app_id = $reg->{'steam_app_id'} // '';
@@ -399,7 +401,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
             $app_id =~ s/[^0-9]//g;
             &system_logged(
                 "MODULE_ROOT=" . quotemeta($module_root)
-                . " nohup bash " . quotemeta("$module_root/scripts/steamcmd_install.sh")
+                . " setsid nohup bash " . quotemeta("$module_root/scripts/steamcmd_install.sh")
                 . " " . quotemeta("$config_directory/jobs/$job_id")
                 . " " . quotemeta($unix_user)
                 . " " . quotemeta($server_dir)
@@ -408,7 +410,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
             );
         } else {
             &system_logged(
-                "nohup bash " . quotemeta("$module_root/scripts/game_action.sh")
+                "setsid nohup bash " . quotemeta("$module_root/scripts/game_action.sh")
                 . " " . quotemeta("$config_directory/jobs/$job_id")
                 . " " . quotemeta($unix_user)
                 . " " . quotemeta($server_dir)
@@ -427,11 +429,12 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
 
         our ($config_directory, $module_root);
         my $job_id = &create_job();
+        write_job_meta($job_id, $instance_id, 'update', $unix_user);
 
         if ($source eq 'steamcmd') {
             &system_logged(
                 "MODULE_ROOT=" . quotemeta($module_root)
-                . " nohup bash " . quotemeta("$module_root/scripts/steamcmd_control.sh")
+                . " setsid nohup bash " . quotemeta("$module_root/scripts/steamcmd_control.sh")
                 . " update"
                 . " " . quotemeta("$config_directory/jobs/$job_id")
                 . " " . quotemeta($unix_user)
@@ -440,7 +443,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
             );
         } else {
             &system_logged(
-                "nohup bash " . quotemeta("$module_root/scripts/game_action.sh")
+                "setsid nohup bash " . quotemeta("$module_root/scripts/game_action.sh")
                 . " " . quotemeta("$config_directory/jobs/$job_id")
                 . " " . quotemeta($unix_user)
                 . " " . quotemeta($server_dir)
@@ -458,8 +461,9 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
 
         our ($config_directory, $module_root);
         my $job_id = &create_job();
+        write_job_meta($job_id, $instance_id, 'validate', $unix_user);
         my $worker = "$module_root/scripts/game_action.sh";
-        &system_logged("nohup bash \Q$worker\E \Q$config_directory/jobs/$job_id\E \Q$unix_user\E \Q$server_dir\E \Q$script_name\E validate >/dev/null 2>&1 &");
+        &system_logged("setsid nohup bash \Q$worker\E \Q$config_directory/jobs/$job_id\E \Q$unix_user\E \Q$server_dir\E \Q$script_name\E validate >/dev/null 2>&1 &");
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&action=poll_job&job=" . &html_escape($job_id));
         exit;
     }
@@ -470,9 +474,18 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
 
         our ($config_directory, $module_root);
         my $job_id = &create_job();
+        write_job_meta($job_id, $instance_id, 'reinstall', $unix_user);
         my $worker = "$module_root/scripts/game_action.sh";
-        &system_logged("nohup bash \Q$worker\E \Q$config_directory/jobs/$job_id\E \Q$unix_user\E \Q$server_dir\E \Q$script_name\E reinstall >/dev/null 2>&1 &");
+        &system_logged("setsid nohup bash \Q$worker\E \Q$config_directory/jobs/$job_id\E \Q$unix_user\E \Q$server_dir\E \Q$script_name\E reinstall >/dev/null 2>&1 &");
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&action=poll_job&job=" . &html_escape($job_id));
+        exit;
+    }
+    elsif ($action eq 'abort_job') {
+        my $job_id = $in{'job'} // '';
+        $job_id =~ s/[^0-9a-f]//g;
+        $job_id or &error($text{'err_invalid_input'});
+        abort_job($job_id);
+        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id));
         exit;
     }
     elsif ($action eq 'init_game_config') {
@@ -499,9 +512,10 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         if ($source eq 'steamcmd') {
             our ($config_directory, $module_root);
             my $job_id = &create_job();
+            write_job_meta($job_id, $instance_id, $action, $unix_user);
             &system_logged(
                 "MODULE_ROOT=" . quotemeta($module_root)
-                . " nohup bash " . quotemeta("$module_root/scripts/steamcmd_control.sh")
+                . " setsid nohup bash " . quotemeta("$module_root/scripts/steamcmd_control.sh")
                 . " " . quotemeta($action)
                 . " " . quotemeta("$config_directory/jobs/$job_id")
                 . " " . quotemeta($unix_user)
@@ -551,6 +565,13 @@ if (($in{'action'} // '') eq 'poll_job') {
             . "&next_status=" . &html_escape($next_status);
         print "<meta http-equiv=\"refresh\" content=\"3;url=$poll_url\">\n";
         print "<p>" . &html_escape($text{'job_running'}) . "</p>\n";
+        print &ui_form_start('manage.cgi', 'post', undef,
+            "onsubmit=\"return confirm('" . &html_escape($text{'jobs_abort_confirm'} || 'Abbrechen?') . "')\"");
+        print &ui_hidden('instance_id', &html_escape($instance_id));
+        print &ui_hidden('action', 'abort_job');
+        print &ui_hidden('job', &html_escape($job_id));
+        print &ui_submit($text{'jobs_abort_btn'} || 'Abbrechen', undef, undef, undef, 'btn-danger');
+        print &ui_form_end();
     } elsif ($status eq 'ok') {
         print "<p style='color:green'>" . &html_escape($text{'job_ok'}) . "</p>\n";
         print "<p><a href=\"manage.cgi?instance_id=" . &html_escape($instance_id) . "\">&larr; Zur&uuml;ck</a></p>\n";
@@ -1065,6 +1086,56 @@ JS
     print "<script>lgsmShowConfigView('" . &html_escape($cfg_view_key) . "');</script>\n";
 
     print "</details>\n";
+}
+
+# Per-instance job list (operators and admins only)
+unless (&user_is_readonly($instance_id)) {
+    my @inst_jobs = grep { ($_->{instance_id} // '') eq $instance_id }
+                    get_all_jobs();
+    @inst_jobs = @inst_jobs[0..4] if @inst_jobs > 5;
+
+    if (@inst_jobs) {
+        print "<h3>" . &html_escape($text{'jobs_title'} || 'Jobs') . "</h3>\n";
+        my %status_icons = (
+            running => '&#x23F3;',
+            ok      => '&#x2705;',
+            failed  => '&#x1F534;',
+            aborted => '&#x1F6AB;',
+        );
+        my @rows;
+        for my $job (@inst_jobs) {
+            my $jid    = $job->{job_id};
+            my $status = $job->{status};
+            my $ts     = $job->{started_at} || 0;
+            my @lt     = localtime($ts);
+            my $ts_str = $ts ? sprintf('%02d:%02d', $lt[2], $lt[1]) : '—';
+            my $st_icon = $status_icons{$status} // '';
+            my $out_cell = '—';
+            if ($status eq 'running') {
+                $out_cell = "<a href='manage.cgi?instance_id=" . &html_escape($instance_id)
+                    . "&amp;action=poll_job&amp;job=" . &html_escape($jid) . "'>Live</a>";
+            } elsif ($status eq 'failed' || $status eq 'aborted') {
+                $out_cell = "<a href='jobs.cgi?action=view_output&amp;job_id="
+                    . &html_escape($jid) . "'>Log</a>";
+            }
+            push @rows, [
+                &html_escape($job->{action} || '—'),
+                $ts_str,
+                "$st_icon " . &html_escape($status),
+                $out_cell,
+            ];
+        }
+        print &ui_columns_table(
+            [
+                $text{'jobs_col_action'}  || 'Aktion',
+                $text{'jobs_col_started'} || 'Gestartet',
+                $text{'jobs_col_status'}  || 'Status',
+                $text{'jobs_col_output'}  || 'Ausgabe',
+            ],
+            "100%",
+            \@rows,
+        );
+    }
 }
 
 &footer('index.cgi', $text{'index_title'});
