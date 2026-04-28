@@ -37,6 +37,12 @@ if (&can_scan()) {
     print &ui_form_end();
 }
 
+if (&effective_role() ne 'viewer') {
+    print &ui_form_start('jobs.cgi', 'get');
+    print &ui_submit($text{'jobs_title'} || 'Job-Übersicht', undef, undef, undef, 'btn-default');
+    print &ui_form_end();
+}
+
 if (&is_admin()) {
     print &ui_form_start('acl_manage.cgi', 'get');
     print &ui_submit($text{'acl_manage_btn'} || 'Manage permissions', undef, undef, undef, 'btn-default');
