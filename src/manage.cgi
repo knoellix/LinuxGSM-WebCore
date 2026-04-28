@@ -536,8 +536,7 @@ if (($in{'action'} // '') eq 'poll_job') {
     $next_status =~ s/[^a-z_]//g;
 
     my $status = &get_job_status($job_id) // 'unknown';
-    my $offset = int($in{'offset'} || 0);
-    my ($new_out, $new_len) = &get_job_output($job_id, $offset);
+    my ($all_out, undef) = &get_job_output($job_id, 0);  # always read all output from start
 
     if ($status eq 'ok' && $next_status) {
         &set_instance_status($instance_id, $next_status);
@@ -549,8 +548,7 @@ if (($in{'action'} // '') eq 'poll_job') {
     if ($status eq 'running') {
         my $poll_url = "manage.cgi?instance_id=" . &html_escape($instance_id)
             . "&action=poll_job&job=" . &html_escape($job_id)
-            . "&next_status=" . &html_escape($next_status)
-            . "&offset=$new_len";
+            . "&next_status=" . &html_escape($next_status);
         print "<meta http-equiv=\"refresh\" content=\"3;url=$poll_url\">\n";
         print "<p>" . &html_escape($text{'job_running'}) . "</p>\n";
     } elsif ($status eq 'ok') {
@@ -566,9 +564,10 @@ if (($in{'action'} // '') eq 'poll_job') {
         print "<p><a href=\"manage.cgi?instance_id=" . &html_escape($instance_id) . "\">&larr; Zur&uuml;ck</a></p>\n";
     }
 
-    if ($new_out) {
-        print "<pre style='background:#111;color:#eee;padding:8px;overflow:auto'>"
-            . &html_escape($new_out) . "</pre>\n";
+    if (defined $all_out && $all_out ne '') {
+        print "<pre id='job_out' style='background:#111;color:#eee;padding:8px;overflow:auto;max-height:500px'>"
+            . &html_escape($all_out) . "</pre>\n";
+        print "<script>var p=document.getElementById('job_out');if(p)p.scrollTop=p.scrollHeight;</script>\n";
     }
     &footer('', '');
     exit;
