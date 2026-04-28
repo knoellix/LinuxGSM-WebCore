@@ -9,7 +9,7 @@ SERVER_DIR="$3"
 STEAM_APP_ID="$4"
 VALIDATE="${5:-}"
 
-echo $$ > "$JOB_DIR/pid"
+echo $$ > "$JOB_DIR/pgid"
 exec >> "$JOB_DIR/output" 2>&1
 
 INSTALL_DIR="$SERVER_DIR/serverfiles"
@@ -59,4 +59,5 @@ if ! su -s /bin/bash -c "
 fi
 
 echo "=== Installation complete ==="
+echo "$STEAM_APP_ID" > "$SERVER_DIR/.steam_app_id"
 echo "ok" > "$JOB_DIR/status"

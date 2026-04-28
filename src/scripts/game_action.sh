@@ -7,7 +7,7 @@ SERVER_DIR="$3"
 GAME_SCRIPT="$4"
 ACTION="${5:-install}"
 
-echo $$ > "$JOB_DIR/pid"
+echo $$ > "$JOB_DIR/pgid"
 exec >> "$JOB_DIR/output" 2>&1
 
 echo "=== Performing '$ACTION': $GAME_SCRIPT ==="

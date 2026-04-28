@@ -6,7 +6,7 @@ UNIX_USER="$2"
 SERVER_DIR="$3"
 GAME_SCRIPT="$4"
 
-echo $$ > "$JOB_DIR/pid"
+echo $$ > "$JOB_DIR/pgid"
 exec >> "$JOB_DIR/output" 2>&1
 
 echo "=== Ensuring i386 architecture ==="
