@@ -585,10 +585,13 @@ if (($in{'action'} // '') eq 'poll_job') {
         print "<p><a href=\"manage.cgi?instance_id=" . &html_escape($instance_id) . "\">&larr; Zur&uuml;ck</a></p>\n";
     }
 
+    print "<h3>" . &html_escape($text{'job_output_title'} || 'Ausgabe') . "</h3>\n";
     if (defined $all_out && $all_out ne '') {
         print "<pre id='job_out' style='background:#111;color:#eee;padding:8px;overflow:auto;max-height:500px'>"
             . &html_escape($all_out) . "</pre>\n";
         print "<script>var p=document.getElementById('job_out');if(p)p.scrollTop=p.scrollHeight;</script>\n";
+    } elsif ($status eq 'running') {
+        print "<p style='color:gray'><i>Warte auf Worker-Ausgabe…</i></p>\n";
     }
     &footer('', '');
     exit;
