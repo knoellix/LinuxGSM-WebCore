@@ -66,7 +66,6 @@ sub finish_job {
     open(my $fh, '>', $file) or return;
     print $fh "$status\n";
     close($fh);
-    _auto_cleanup_jobs();
 }
 
 sub write_job_meta {

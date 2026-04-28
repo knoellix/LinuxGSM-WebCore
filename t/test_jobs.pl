@@ -165,9 +165,8 @@ is(get_job_status('nonexistent1234567'), undef, 'unknown job returns undef statu
         print $mf "instance_id=t\naction=update\nstarted_at=$i\nunix_user=u\n";
         close $mf;
     }
-    # create_job löst _auto_cleanup_jobs aus
+    # create_job löst _auto_cleanup_jobs aus — direkt danach prüfen (vor finish_job)
     my $new_jid = create_job();
-    finish_job($new_jid, 'ok');
 
     my @done = grep { $_->{status} ne 'running' } get_all_jobs();
     ok(scalar(@done) <= 10, '_auto_cleanup_jobs: keeps max 10 completed jobs');
