@@ -12,6 +12,7 @@ require './lib/instance.pl';
 require './lib/ftp_proftpd.pl';
 
 our (%text, %in, %access);
+$main::gconfig{'charset'} = 'utf-8';
 &ReadParse(\%in);
 
 &can_scan() or &error($text{'err_access_denied'});
@@ -52,6 +53,7 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
 
         &grant_server_access($webmin_user, $instance_id);
         &redirect('scan.cgi?msg=assigned');
+        exit;
     }
     elsif ($action eq 'quickregister') {
         my $instance_id = &sanitize_input($in{'instance_id'});
@@ -73,6 +75,7 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
         });
         &grant_server_access($reg_wbuser, $instance_id) if $reg_wbuser;
         &redirect('scan.cgi?msg=registered&show_scan=1');
+        exit;
     }
     elsif ($action eq 'register') {
         my $reg_user   = &sanitize_input($in{'reg_user'});
@@ -117,6 +120,7 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
         });
         &grant_server_access($reg_wbuser, $script_id) if $reg_wbuser;
         &redirect('scan.cgi?msg=registered');
+        exit;
     }
     elsif ($action eq 'untrack_manual') {
         my $instance_id = &sanitize_input($in{'instance_id'});
@@ -125,7 +129,105 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
         ($meta->{'source'} // '') eq 'manual' or &error($text{'err_invalid_action'});
         &unregister_instance($instance_id);
         &redirect('scan.cgi');
+        exit;
     }
+    elsif ($action eq 'delete') {
+        &is_admin() or &error($text{'err_acl_admin_only'} || 'Access denied');
+        my $instance_id = $in{'instance_id'} // '';
+        $instance_id =~ s/[^a-zA-Z0-9_\-]//g;
+        $instance_id or &error($text{'err_invalid_input'});
+
+        my $inst = &get_instance_flexible($instance_id) or &error($text{'err_not_found'});
+        my $unix_user  = $inst->{'user'} // '';
+        my $script_path = $inst->{'script'} // '';
+        (my $server_dir = $script_path) =~ s|/[^/]+$||;
+
+        my $delete_opt = $in{'delete_opt'} // 'files';
+        $delete_opt = 'files' unless $delete_opt =~ /^(files|user|user_ftp)$/;
+
+        my $sftp_user = &resolve_instance_sftp_user($instance_id, $unix_user);
+
+        my @all_inst = &list_instances();
+        my @other_for_user = grep {
+            ($_->{'id'} // '') ne $instance_id && ($_->{'user'} // '') eq $unix_user
+        } @all_inst;
+
+        # Remove server files if path looks safe
+        if ($server_dir && $server_dir =~ m|^/[a-zA-Z0-9_./()\-]+$| && $server_dir ne '/') {
+            (my $safe_dir = $server_dir) =~ s/'/'\\''/g;
+            &system_logged("rm -rf '$safe_dir'");
+        }
+
+        &unregister_instance($instance_id);
+
+        if ($delete_opt eq 'user_ftp' && $sftp_user && $sftp_user ne $unix_user) {
+            my %ftp_state = &discover_ftp_state();
+            my $auth_file = $ftp_state{'auth_user_file'} || '/etc/proftpd/ftpd.passwd';
+            &ftpasswd_delete_user(file => $auth_file, name => $sftp_user);
+        }
+
+        if (($delete_opt eq 'user' || $delete_opt eq 'user_ftp') && !@other_for_user && $unix_user) {
+            (my $safe_user = $unix_user) =~ s/[^a-zA-Z0-9_\-]//g;
+            &system_logged("userdel -r $safe_user") if $safe_user;
+        }
+
+        &redirect('scan.cgi?msg=deleted');
+        exit;
+    }
+}
+
+# --- GET: delete confirmation ---
+if (($in{'action'} // '') eq 'delete_confirm') {
+    &is_admin() or &error($text{'err_acl_admin_only'} || 'Access denied');
+    my $instance_id = $in{'instance_id'} // '';
+    $instance_id =~ s/[^a-zA-Z0-9_\-]//g;
+    $instance_id or &error($text{'err_invalid_input'});
+
+    my $inst = &get_instance_flexible($instance_id) or &error($text{'err_not_found'});
+    my $unix_user = $inst->{'user'} // '';
+
+    my @all_inst = &list_instances();
+    my @other_for_user = grep {
+        ($_->{'id'} // '') ne $instance_id && ($_->{'user'} // '') eq $unix_user
+    } @all_inst;
+
+    my $sftp_user = &resolve_instance_sftp_user($instance_id, $unix_user);
+
+    &header($text{'scan_delete_title'} || 'Instanz löschen', '');
+    print "<h3>" . ($text{'scan_delete_title'} || 'Instanz löschen') . ": " . &html_escape($instance_id) . "</h3>\n";
+
+    if (@other_for_user) {
+        my $others = join(', ', map { &html_escape($_->{'id'}) } @other_for_user);
+        print "<div class='alert alert-warning'><b>"
+            . ($text{'scan_delete_warn_shared'} || 'Warnung') . ":</b> "
+            . &html_escape("Unix-User '$unix_user' wird auch von: ")
+            . $others . " " . ($text{'scan_delete_warn_shared_suffix'} || 'genutzt — nur Instanz-Dateien löschen empfohlen.')
+            . "</div>\n";
+    }
+
+    my $default_opt = @other_for_user ? 'files' : ($sftp_user ? 'user_ftp' : 'user');
+    my @radio_opts = (
+        ['files',    $text{'scan_delete_opt_files'}    || 'Nur Instanz-Dateien + Registrierung löschen (Unix-User bleibt)'],
+        ['user',     $text{'scan_delete_opt_user'}     || 'Instanz-Dateien + Unix-User löschen'],
+    );
+    push @radio_opts, ['user_ftp', $text{'scan_delete_opt_user_ftp'} || 'Instanz-Dateien + Unix-User + FTP-User löschen']
+        if $sftp_user && $sftp_user ne $unix_user;
+
+    print &ui_form_start('scan.cgi', 'post');
+    print &ui_hidden('action',      'delete');
+    print &ui_hidden('instance_id', &html_escape($instance_id));
+    print &ui_table_start('', undef, 2);
+    print &ui_table_row(
+        $text{'scan_delete_options'} || 'Lösch-Umfang',
+        &ui_radio('delete_opt', $default_opt, \@radio_opts)
+    );
+    print &ui_table_end();
+    print &ui_submit($text{'scan_delete_confirm_btn'} || 'Jetzt löschen', undef, undef, undef, 'btn-danger');
+    print " ";
+    print "<a href='scan.cgi' class='btn btn-default'>" . ($text{'cancel'} || 'Abbrechen') . "</a>";
+    print &ui_form_end();
+    &footer('scan.cgi', $text{'scan_title'} || 'Zurück');
+    exit;
 }
 
 # --- GET: show page ---
@@ -137,6 +239,8 @@ if ($msg eq 'assigned') {
     print "<div class='alert alert-success'><b>" . &html_escape($text{'scan_assigned_ok'}) . "</b></div>\n";
 } elsif ($msg eq 'registered') {
     print "<div class='alert alert-success'><b>" . &html_escape($text{'scan_registered_ok'}) . "</b></div>\n";
+} elsif ($msg eq 'deleted') {
+    print "<div class='alert alert-success'><b>" . &html_escape($text{'scan_deleted_ok'} || 'Instanz wurde gelöscht.') . "</b></div>\n";
 }
 
 my @instances    = &list_instances();
@@ -244,6 +348,12 @@ if (@registered) {
             $actions_cell .= &ui_hidden('instance_id', &html_escape($id));
             $actions_cell .= &ui_submit($text{'scan_remove_panel_btn'}, undef, undef, undef, 'btn-danger');
             $actions_cell .= &ui_form_end();
+        }
+
+        if (&is_admin()) {
+            $actions_cell .= " <a href='scan.cgi?action=delete_confirm&amp;instance_id="
+                . &html_escape($id) . "' class='btn btn-danger btn-xs'>"
+                . ($text{'scan_delete_btn'} || 'Löschen') . "</a>";
         }
 
         push @rows, [

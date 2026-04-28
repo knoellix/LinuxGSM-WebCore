@@ -48,7 +48,7 @@ my $is_fresh  = ($inst->{'instance_status'} // 'installed') ne 'installed';
 &user_can_manage($instance_id)
     or &error($text{'err_acl_admin_only'} || 'Access denied');
 
-if ($in{'action'}) {
+if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
     my $action = &sanitize_input($in{'action'});
     if (&user_is_readonly($instance_id)) {
         &error($text{'err_readonly'} || 'This server is read-only for your account');
