@@ -17,6 +17,7 @@ do '../ui-lib.pl';
 require './lib/core.pl';
 require './lib/instance.pl';
 require './lib/acl.pl';
+require './lib/logging.pl';
 
 our (%text, %config, %in, %gconfig, $module_name);
 $main::gconfig{'charset'} = 'utf-8';
@@ -47,6 +48,7 @@ if ($action eq 'save_acl') {
         : ($in{'can_manage_ftp'} ? 1 : 0);
 
     &save_module_acl(\%acl, $target_user, $module_name);
+    &log_action('acl_saved', $target_user, {role => $role});
     &redirect("acl_manage.cgi");
 }
 

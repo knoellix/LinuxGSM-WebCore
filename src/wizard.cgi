@@ -13,6 +13,7 @@ require './lib/instance.pl';
 require './lib/provision.pl';
 require './lib/games_meta.pl';
 require './lib/steam.pl';
+require './lib/logging.pl';
 
 our (%text, %in, %access, $config_directory);
 $main::gconfig{'charset'} = 'utf-8';
@@ -111,6 +112,7 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
 
         &grant_server_access($webmin_user, $instance_id) if $webmin_user;
 
+        &log_action('server_provisioned', $instance_id, {user => $webmin_user, game => $game});
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id));
         exit;
     }

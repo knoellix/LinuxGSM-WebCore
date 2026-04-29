@@ -10,6 +10,7 @@ require './lib/core.pl';
 require './lib/instance.pl';
 require './lib/acl.pl';
 require './lib/jobs.pl';
+require './lib/logging.pl';
 
 our (%text, %config, %in, %gconfig);
 $main::gconfig{'charset'} = 'utf-8';
@@ -37,6 +38,7 @@ if ($action eq 'abort_job') {
     &is_admin() || &user_can_manage($inst_id)
         or &error($text{'err_acl_admin_only'});
 
+    &log_debug("jobs.cgi: abort_job job_id=$job_id");
     abort_job($job_id);
     &redirect('jobs.cgi');
     exit;
@@ -56,6 +58,7 @@ if ($action eq 'delete_job') {
     &is_admin() || &user_can_manage($inst_id)
         or &error($text{'err_acl_admin_only'});
 
+    &log_debug("jobs.cgi: delete_job job_id=$job_id");
     delete_job($job_id)
         or &error($text{'err_invalid_action'} || 'Cannot delete running job');
     &redirect('jobs.cgi');

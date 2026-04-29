@@ -10,6 +10,7 @@ require './lib/core.pl';
 require './lib/acl.pl';
 require './lib/instance.pl';
 require './lib/ftp_proftpd.pl';
+require './lib/logging.pl';
 
 our (%text, %in, %access);
 $main::gconfig{'charset'} = 'utf-8';
@@ -171,6 +172,7 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
             &system_logged("userdel -r $safe_user") if $safe_user;
         }
 
+        &log_action('server_deleted', $instance_id, {unix_user => $unix_user, scope => $delete_opt});
         &redirect('scan.cgi?msg=deleted');
         exit;
     }
