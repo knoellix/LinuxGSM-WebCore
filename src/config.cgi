@@ -1,12 +1,4 @@
 #!/usr/bin/perl
-# -------------------------------------------------------------------------
-# LinuxGSM Webcore - Webmin Module
-# Copyright (C) 2026 Christian Möllmann knoellix 128321164+knoellix@users.noreply.github.com
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as published
-# by the Free Software Foundation, either version 3 of the License.
-# -------------------------------------------------------------------------
 use strict;
 use warnings;
 
@@ -18,10 +10,27 @@ require './lib/core.pl';
 
 our (%text, %config, %in);
 &ReadParse(\%in);
+
+if ($in{'save'}) {
+    $config{debug_logging} = $in{'debug_logging'} ? 1 : 0;
+    &save_module_config(\%config);
+    &redirect('config.cgi');
+    exit;
+}
+
 &header($text{'config_title'}, '');
 
+print &ui_form_start('config.cgi', 'post');
 print &ui_table_start($text{'config_title'}, "width=100%", 2);
-# TODO: Modul-Konfigurationsoptionen
+
+print &ui_table_row(
+    $text{'config_debug_logging'},
+    &ui_radio('debug_logging', $config{debug_logging} ? 1 : 0,
+        [[1, $text{'yes'}], [0, $text{'no'}]])
+);
+
 print &ui_table_end();
+print &ui_submit($text{'acl_manage_save'} || 'Save');
+print &ui_form_end();
 
 &footer('index.cgi', $text{'index_title'});

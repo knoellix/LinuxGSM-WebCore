@@ -13,6 +13,7 @@ manage_restart=Restart
 manage_update=Update
 manage_logs=View Logs
 config_title=Module Settings
+config_debug_logging=Enable debug logging (writes details to miniserv.error)
 err_root=This action cannot be run as root.
 err_not_found=Instance not found.
 err_port_in_use=Port is already in use.
