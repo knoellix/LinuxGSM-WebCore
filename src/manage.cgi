@@ -23,6 +23,7 @@ require './lib/config_editor.pl';
 require './lib/ftp_proftpd.pl';
 require './lib/steam.pl';
 require './lib/jobs.pl';
+require './lib/logging.pl';
 require './lib/error_hints.pl';
 
 our (%text, %config, %in, %gconfig);
@@ -50,6 +51,7 @@ my $is_fresh  = ($inst->{'instance_status'} // 'installed') ne 'installed';
 
 if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
     my $action = &sanitize_input($in{'action'});
+    &log_debug("action=$action instance=$instance_id");
     if (&user_is_readonly($instance_id)) {
         &error($text{'err_readonly'} || 'This server is read-only for your account');
     }
@@ -277,6 +279,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         my @pw = getpwnam($unix_user);
         chown($pw[2], $pw[3], $cfg_path) if @pw;
 
+        &log_action('config_saved', $instance_id, {config_type => $cfg_file_key});
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) .
                   "&config_file=" . &html_escape($cfg_file_key) .
                   "&config_view=" . &html_escape($cfg_view_key));
@@ -377,6 +380,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         my $job_id = &create_job();
         my $worker = "$module_root/scripts/setup_lgsm.sh";
         write_job_meta($job_id, $instance_id, 'setup_lgsm', $unix_user);
+        &log_action('job_started', $job_id, {instance_id => $instance_id, action => 'setup_lgsm'});
         &system_logged("setsid nohup bash \Q$worker\E \Q$config_directory/jobs/$job_id\E \Q$unix_user\E \Q$server_dir\E \Q$script_name\E >/dev/null 2>&1 &");
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&action=poll_job&job=" . &html_escape($job_id) . "&next_status=lgsm_ready");
         exit;
@@ -390,6 +394,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         our ($config_directory, $module_root);
         my $job_id = &create_job();
         write_job_meta($job_id, $instance_id, 'install_game', $unix_user);
+        &log_action('job_started', $job_id, {instance_id => $instance_id, action => 'install_game'});
 
         if ($source eq 'steamcmd') {
             my $app_id = $reg->{'steam_app_id'} // '';
@@ -430,6 +435,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         our ($config_directory, $module_root);
         my $job_id = &create_job();
         write_job_meta($job_id, $instance_id, 'update', $unix_user);
+        &log_action('job_started', $job_id, {instance_id => $instance_id, action => 'update'});
 
         if ($source eq 'steamcmd') {
             &system_logged(
@@ -462,6 +468,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         our ($config_directory, $module_root);
         my $job_id = &create_job();
         write_job_meta($job_id, $instance_id, 'validate', $unix_user);
+        &log_action('job_started', $job_id, {instance_id => $instance_id, action => 'validate'});
         my $worker = "$module_root/scripts/game_action.sh";
         &system_logged("setsid nohup bash \Q$worker\E \Q$config_directory/jobs/$job_id\E \Q$unix_user\E \Q$server_dir\E \Q$script_name\E validate >/dev/null 2>&1 &");
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&action=poll_job&job=" . &html_escape($job_id));
@@ -475,6 +482,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         our ($config_directory, $module_root);
         my $job_id = &create_job();
         write_job_meta($job_id, $instance_id, 'reinstall', $unix_user);
+        &log_action('job_started', $job_id, {instance_id => $instance_id, action => 'reinstall'});
         my $worker = "$module_root/scripts/game_action.sh";
         &system_logged("setsid nohup bash \Q$worker\E \Q$config_directory/jobs/$job_id\E \Q$unix_user\E \Q$server_dir\E \Q$script_name\E reinstall >/dev/null 2>&1 &");
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&action=poll_job&job=" . &html_escape($job_id));
@@ -485,6 +493,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         $job_id =~ s/[^0-9a-f]//g;
         $job_id or &error($text{'err_invalid_input'});
         abort_job($job_id);
+        &log_action('job_aborted', $job_id, {instance_id => $instance_id});
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id));
         exit;
     }
@@ -513,6 +522,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
             our ($config_directory, $module_root);
             my $job_id = &create_job();
             write_job_meta($job_id, $instance_id, $action, $unix_user);
+            &log_action('job_started', $job_id, {instance_id => $instance_id, action => $action});
             &system_logged(
                 "MODULE_ROOT=" . quotemeta($module_root)
                 . " setsid nohup bash " . quotemeta("$module_root/scripts/steamcmd_control.sh")
