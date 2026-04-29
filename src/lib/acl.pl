@@ -92,8 +92,9 @@ sub user_can_manage {
     my ($id) = @_;
     return 1 if is_admin();
     my @allowed = allowed_servers();
-    return 1 if grep { $_ eq '*' } @allowed;
-    return scalar grep { $_ eq $id } @allowed;
+    my $ok = (grep { $_ eq '*' } @allowed) || (scalar grep { $_ eq $id } @allowed);
+    &log_debug("ACL: user=" . ($remote_user // '?') . " role=" . effective_role() . " instance=$id → " . ($ok ? "allowed" : "denied"));
+    return $ok ? 1 : 0;
 }
 
 # Returns 1 if current user has read-only access to the given instance.

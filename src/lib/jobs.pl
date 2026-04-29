@@ -71,7 +71,10 @@ sub finish_job {
 sub write_job_meta {
     my ($job_id, $instance_id, $action, $unix_user) = @_;
     my $job_dir = _job_dir($job_id);
-    open(my $fh, '>', "$job_dir/meta") or return;
+    open(my $fh, '>', "$job_dir/meta") or do {
+        &log_error("Cannot write meta for job $job_id: $!");
+        return;
+    };
     print $fh "instance_id=$instance_id\n";
     print $fh "action=$action\n";
     print $fh "started_at=" . time() . "\n";
@@ -127,6 +130,7 @@ sub get_all_jobs {
                     finish_job($jid, 'failed');
                     _write_error_hint($jid, 'hint_zombie');
                     $status = 'failed';
+                    &log_debug("Job $jid: running → failed (zombie, pgid=$pgid)");
                 }
             }
         }
