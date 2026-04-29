@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 use strict;
 use warnings;
-use Test::More tests => 6;
+use Test::More tests => 8;
 use FindBin qw($Bin);
 use File::Temp qw(tempfile);
 
@@ -43,7 +43,9 @@ sub capture_stderr {
     @webmin_log_calls = ();
     log_action('job_started', 'abc123', {instance_id => 'mc_srv', action => 'install_game'});
     is(scalar @webmin_log_calls, 1, 'log_action calls webmin_log once');
-    is($webmin_log_calls[0][0], 'job_started', 'log_action passes action as first arg');
+    is($webmin_log_calls[0][0], 'job_started', 'log_action: action arg correct');
+    is($webmin_log_calls[0][1], 'lgsm',        'log_action: type arg is lgsm');
+    is($webmin_log_calls[0][2], 'abc123',       'log_action: object arg correct');
 }
 
 # Test 5: log_debug stumm wenn debug_logging=0

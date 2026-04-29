@@ -1,4 +1,5 @@
 # LinuxGSM-WebCore - Structured logging
+package main;
 use strict;
 use warnings;
 
