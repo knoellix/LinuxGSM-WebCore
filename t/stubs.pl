@@ -101,4 +101,9 @@ sub save_module_acl {
     close($fh);
 }
 
+# Stubs: log_* — no-op so libs can call them without require logging.pl
+sub log_error  {}
+sub log_action {}
+sub log_debug  {}
+
 1;
