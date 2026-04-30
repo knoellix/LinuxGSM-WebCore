@@ -51,7 +51,7 @@ sub _compute_role {
                 $facl{'role'} //= $dflt{'role'};
             }
         };
-        &log_debug("ACL file fallback: user=" . ($remote_user // '?') . " role=" . ($facl{'role'} // 'undef'));
+        &log_debug("ACL file fallback: user=" . ($remote_user // '?') . " role=" . ($facl{'role'} // 'undef')) if defined &log_debug;
         return $facl{'role'} if defined $facl{'role'};
     }
 
