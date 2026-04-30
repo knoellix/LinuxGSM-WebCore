@@ -45,8 +45,13 @@ sub _compute_role {
             my $ufile = "$config_directory/$module_name/$remote_user";
             my $dfile = "$config_directory/$module_name/defaultacl";
             &read_file($ufile, \%facl) if -r $ufile;
-            &read_file($dfile, \%facl) if !%facl && -r $dfile;
+            if (!defined $facl{'role'} && -r $dfile) {
+                my %dflt;
+                &read_file($dfile, \%dflt);
+                $facl{'role'} //= $dflt{'role'};
+            }
         };
+        &log_debug("ACL file fallback: user=" . ($remote_user // '?') . " role=" . ($facl{'role'} // 'undef'));
         return $facl{'role'} if defined $facl{'role'};
     }
 
@@ -149,6 +154,23 @@ sub list_webmin_users {
     };
     warn "list_webmin_users failed: $@" if $@;
     return sort @names;
+}
+
+# Returns the subset of @all_ftp_names visible to the current user.
+# Admins: all. Operators/viewers: only names linked via sftp_user to their instances.
+sub allowed_ftp_users {
+    my (@all_ftp_names) = @_;
+    return @all_ftp_names if is_admin();
+    my @srv = allowed_servers();
+    return @all_ftp_names if grep { $_ eq '*' } @srv;
+    my %allowed;
+    for my $iid (@srv) {
+        my $inst = eval { get_instance($iid) };
+        next unless $inst;
+        my $su = $inst->{'sftp_user'} // '';
+        $allowed{$su} = 1 if $su ne '';
+    }
+    return grep { $allowed{$_} } @all_ftp_names;
 }
 
 1;
