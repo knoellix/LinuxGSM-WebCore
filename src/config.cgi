@@ -7,9 +7,11 @@ do '../ui-lib.pl';
 &init_config();
 
 require './lib/core.pl';
+require './lib/acl.pl';
 
 our (%text, %config, %in);
 &ReadParse(\%in);
+&is_admin() or &error($text{'err_acl_admin_only'} || 'Access denied');
 
 if ($in{'save'}) {
     $config{debug_logging} = $in{'debug_logging'} ? 1 : 0;
