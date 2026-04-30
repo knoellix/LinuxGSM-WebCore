@@ -125,6 +125,11 @@ if ($auth_file_from_config) {
     print "<p><i>" . &html_escape($text{'ftp_authfile_fallback'}) . "</i> <code>" . &html_escape($auth_file) . "</code></p>\n";
 }
 my @ftp_users = &parse_ftpd_passwd($auth_file);
+unless (&is_admin()) {
+    my @visible = &allowed_ftp_users(map { $_->{'name'} } @ftp_users);
+    my %vis = map { $_ => 1 } @visible;
+    @ftp_users = grep { $vis{$_->{'name'}} } @ftp_users;
+}
 if (@ftp_users) {
     # Build lookup: ftp_username -> instance_id
     my @all_instances = &list_instances();
