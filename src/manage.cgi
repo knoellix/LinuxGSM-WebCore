@@ -405,9 +405,13 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
                 $app_id = $gmeta{$game_key}{'steam_app_id'} // '';
             }
             $app_id =~ s/[^0-9]//g;
-            &system_logged("MODULE_ROOT='$module_root' setsid nohup bash '$module_root/scripts/steamcmd_install.sh' '$config_directory/jobs/$job_id' '$unix_user' '$server_dir' '$app_id' >/dev/null 2>&1 &");
+            my $cmd = "MODULE_ROOT='$module_root' setsid nohup bash '$module_root/scripts/steamcmd_install.sh' '$config_directory/jobs/$job_id' '$unix_user' '$server_dir' '$app_id' >/dev/null 2>&1 &";
+            &log_debug("install_game steamcmd: module_root=$module_root server_dir=$server_dir app_id=$app_id cmd=$cmd");
+            &system_logged($cmd);
         } else {
-            &system_logged("setsid nohup bash '$module_root/scripts/game_action.sh' '$config_directory/jobs/$job_id' '$unix_user' '$server_dir' '$script_name' install >/dev/null 2>&1 &");
+            my $cmd2 = "setsid nohup bash '$module_root/scripts/game_action.sh' '$config_directory/jobs/$job_id' '$unix_user' '$server_dir' '$script_name' install >/dev/null 2>&1 &";
+            &log_debug("install_game lgsm: module_root=$module_root server_dir=$server_dir cmd=$cmd2");
+            &system_logged($cmd2);
         }
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id)
             . "&action=poll_job&job=" . &html_escape($job_id)
