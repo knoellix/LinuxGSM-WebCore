@@ -10,7 +10,7 @@ require './lib/core.pl';
 require './lib/acl.pl';
 require './lib/steam.pl';
 
-our (%text, %in);
+our (%text, %config, %in);
 $main::gconfig{'charset'} = 'utf-8';
 &ReadParse(\%in);
 
@@ -61,6 +61,13 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
         $code  or &error($text{'err_invalid_input'});
         &submit_guard_code($token, $code);
         &redirect("steam_settings.cgi?action=poll&session=" . &html_escape($token) . "&username=" . &html_escape($username));
+
+    } elsif ($action eq 'save_settings') {
+        &is_admin() or &error($text{'err_acl_admin_only'} || 'Access denied');
+        $config{debug_logging} = $in{'debug_logging'} ? 1 : 0;
+        &save_module_config(\%config);
+        &redirect('steam_settings.cgi?xnavigation=1');
+        exit;
 
     } elsif ($action eq 'relogin') {
         my $username = $in{'steam_username'} // '';
@@ -221,5 +228,19 @@ print &ui_table_row(&html_escape($text{'steam_password_hint'}),
 print &ui_table_end();
 print &ui_submit($text{'steam_login_start_btn'}, undef, undef, undef, 'btn-primary');
 print &ui_form_end();
+
+if (&is_admin()) {
+    print "<h3>" . &html_escape($text{'config_title'} || 'Einstellungen') . "</h3>\n";
+    print &ui_form_start('steam_settings.cgi', 'post');
+    print &ui_hidden('action', 'save_settings');
+    print &ui_table_start('', undef, 2);
+    print &ui_table_row(
+        &html_escape($text{'config_debug_logging'} || 'Debug-Logging'),
+        &ui_radio('debug_logging', $config{debug_logging} ? 1 : 0,
+            [[1, ($text{'yes'} || 'Ja')], [0, ($text{'no'} || 'Nein')]]));
+    print &ui_table_end();
+    print &ui_submit($text{'acl_manage_save'} || 'Speichern', undef, undef, undef, 'btn-default');
+    print &ui_form_end();
+}
 
 &footer('index.cgi', $text{'index_title'});
