@@ -23,8 +23,10 @@ echo "connecting" > "$SESSION_DIR/status"
 # Create FIFO for steamcmd stdin
 mkfifo "$SESSION_DIR/steam_in"
 
+STEAMCMD="${STEAMCMD_PATH:-steamcmd}"
+
 # Start steamcmd reading from FIFO, writing output to file
-steamcmd < "$SESSION_DIR/steam_in" > "$SESSION_DIR/steam_out" 2>&1 &
+"$STEAMCMD" < "$SESSION_DIR/steam_in" > "$SESSION_DIR/steam_out" 2>&1 &
 STEAM_PID=$!
 echo $STEAM_PID > "$SESSION_DIR/pid"
 
@@ -77,4 +79,7 @@ if grep -qE "Login.*OK|Logged in OK" "$SESSION_DIR/steam_out" 2>/dev/null; then
     echo "ok" > "$SESSION_DIR/status"
 else
     echo "failed" > "$SESSION_DIR/status"
+    # Log steamcmd output for debugging
+    echo "[LGSM-DEBUG] steam_login_worker failed for user $USERNAME" >> /var/webmin/miniserv.error
+    sed 's/^/[LGSM-DEBUG] steamcmd: /' "$SESSION_DIR/steam_out" >> /var/webmin/miniserv.error 2>/dev/null || true
 fi

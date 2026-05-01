@@ -94,7 +94,7 @@ if ($get_action eq 'relogin_form') {
     print &ui_hidden('steam_username', &html_escape($username));
     print &ui_table_start('', undef, 2);
     print &ui_table_row(&html_escape($text{'steam_password_hint'}),
-        &ui_password('steam_password', '', 30));
+        "<input type='password' name='steam_password' size='30' autocomplete='new-password'>");
     print &ui_table_end();
     print &ui_submit($text{'steam_login_start_btn'}, undef, undef, undef, 'btn-primary');
     print &ui_form_end();
@@ -218,13 +218,15 @@ if (@$accounts) {
 print "<h4>" . &html_escape($text{'steam_add_account'}) . "</h4>\n";
 print &ui_form_start('steam_settings.cgi', 'post');
 print &ui_hidden('action', 'add_account');
+print "<input type='text' name='_dummy_user' style='display:none' autocomplete='username'>\n";
+print "<input type='password' name='_dummy_pass' style='display:none' autocomplete='current-password'>\n";
 print &ui_table_start('', undef, 2);
 print &ui_table_row(&html_escape($text{'steam_display_name'}),
     &ui_textbox('steam_display_name', '', 30));
 print &ui_table_row(&html_escape($text{'steam_username'}),
-    &ui_textbox('steam_username', '', 30));
+    "<input type='text' name='steam_username' size='30' autocomplete='off'>");
 print &ui_table_row(&html_escape($text{'steam_password_hint'}),
-    &ui_password('steam_password', '', 30));
+    "<input type='password' name='steam_password' size='30' autocomplete='new-password'>");
 print &ui_table_end();
 print &ui_submit($text{'steam_login_start_btn'}, undef, undef, undef, 'btn-primary');
 print &ui_form_end();

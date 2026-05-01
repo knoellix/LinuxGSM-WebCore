@@ -251,8 +251,13 @@ sub start_login_session {
     chmod(0600, $pass_file);
 
     my $worker = "$module_root/scripts/steam_login_worker.sh";
-    # Use quotemeta to prevent shell injection on all arguments
-    my $cmd = "nohup " . quotemeta($worker) . " " . quotemeta($session_dir) . " " . quotemeta($username) . " " . quotemeta($pass_file) . " </dev/null >/dev/null 2>&1 &";
+    my $steamcmd_path = detect_steamcmd() // 'steamcmd';
+    (my $w  = $worker)      =~ s/'/'\\''/g;
+    (my $sd = $session_dir) =~ s/'/'\\''/g;
+    (my $un = $username)    =~ s/'/'\\''/g;
+    (my $pf = $pass_file)   =~ s/'/'\\''/g;
+    (my $sc = $steamcmd_path) =~ s/'/'\\''/g;
+    my $cmd = "STEAMCMD_PATH='$sc' nohup '$w' '$sd' '$un' '$pf' </dev/null >/dev/null 2>&1 &";
     system($cmd);
 
     return $token;
