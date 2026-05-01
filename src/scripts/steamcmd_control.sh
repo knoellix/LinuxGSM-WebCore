@@ -57,12 +57,13 @@ case "$ACTION" in
             exit 1
         fi
         STEAM_APP_ID=$(cat "$APP_ID_FILE")
-        echo "=== Updating App ID $STEAM_APP_ID via SteamCMD ==="
+        STEAMCMD="${STEAMCMD_PATH:-steamcmd}"
+        echo "=== Updating App ID $STEAM_APP_ID via SteamCMD ($STEAMCMD) ==="
         if ! su -s /bin/bash -c "
-            steamcmd +force_install_dir '$SERVERFILES' \
-                     +login anonymous \
-                     +app_update '$STEAM_APP_ID' validate \
-                     +quit
+            '$STEAMCMD' +force_install_dir '$SERVERFILES' \
+                        +login anonymous \
+                        +app_update '$STEAM_APP_ID' validate \
+                        +quit
         " "$UNIX_USER"; then
             echo "hint_steamcmd_login" > "$JOB_DIR/error_hint"
             echo "failed" > "$JOB_DIR/status"

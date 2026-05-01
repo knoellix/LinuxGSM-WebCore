@@ -47,11 +47,14 @@ mkdir -p "$INSTALL_DIR"
 VALIDATE_FLAG=""
 [ "$VALIDATE" = "validate" ] && VALIDATE_FLAG="validate"
 
+STEAMCMD="${STEAMCMD_PATH:-steamcmd}"
+echo "Using SteamCMD: $STEAMCMD"
+
 if ! su -s /bin/bash -c "
-    steamcmd +force_install_dir '$INSTALL_DIR' \
-             +login anonymous \
-             +app_update '$STEAM_APP_ID' $VALIDATE_FLAG \
-             +quit
+    '$STEAMCMD' +force_install_dir '$INSTALL_DIR' \
+                +login anonymous \
+                +app_update '$STEAM_APP_ID' $VALIDATE_FLAG \
+                +quit
 " "$UNIX_USER" 2>&1; then
     echo "hint_steamcmd_login" > "$JOB_DIR/error_hint"
     echo "failed" > "$JOB_DIR/status"
