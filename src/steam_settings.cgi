@@ -9,6 +9,7 @@ do '../ui-lib.pl';
 require './lib/core.pl';
 require './lib/acl.pl';
 require './lib/steam.pl';
+require './lib/instance.pl';
 
 our (%text, %config, %in);
 our ($module_root, $module_root_directory, $config_directory, $module_name);
@@ -217,6 +218,29 @@ if (@$accounts) {
     );
 } else {
     print "<p><i>" . &html_escape($text{'steam_no_accounts'}) . "</i></p>\n";
+}
+
+# Show which servers use each account
+{
+    my @instances = &list_instances();
+    my %by_account;
+    for my $inst (@instances) {
+        my $sa = $inst->{'steam_account'} // '';
+        next unless $sa;
+        push @{ $by_account{$sa} }, $inst->{'id'};
+    }
+    if (%by_account) {
+        print "<h4>" . &html_escape($text{'steam_linked_servers'} || 'Zugewiesene Server') . "</h4>\n";
+        my @rows;
+        for my $acc (sort keys %by_account) {
+            push @rows, [&html_escape($acc), &html_escape(join(', ', @{ $by_account{$acc} }))];
+        }
+        print &ui_columns_table(
+            [&html_escape($text{'steam_col_username'}), &html_escape($text{'steam_col_servers'} || 'Server')],
+            '100%',
+            \@rows,
+        );
+    }
 }
 
 print "<h4>" . &html_escape($text{'steam_add_account'}) . "</h4>\n";

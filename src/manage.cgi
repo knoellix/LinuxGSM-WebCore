@@ -371,6 +371,17 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
         exit;
     }
+    elsif ($action eq 'save_steam_account') {
+        &can_create() or &error($text{'err_acl_admin_only'} || 'Access denied');
+        my $sa = $in{'steam_account'} // '';
+        $sa =~ s/[^a-zA-Z0-9_\-]//g;
+        $sa = substr($sa, 0, 64);
+        &register_instance($instance_id, $unix_user, $inst->{'script'}, {
+            steam_account => $sa,
+        });
+        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
+        exit;
+    }
     elsif ($action eq 'setup_lgsm') {
         my $reg = &get_registered_instance($instance_id) or &error($text{'err_not_found'});
         my $script_path = $reg->{'script'} // '';
@@ -753,30 +764,45 @@ print "</p>\n";
     }
 }
 
-# Steam account section
-if (&game_requires_steam($script_name_for_cfg)) {
+# Steam account section — shown for all servers
+{
     my $sa        = $inst->{'steam_account'} // '';
     my $sa_status = $sa ? (&get_steam_account_status($sa) // '') : '';
+    my $accounts  = &load_steam_accounts();
+    my @ok        = grep { $_->{'status'} eq 'ok' } @$accounts;
 
     print "<h3>" . &html_escape($text{'steam_manage_section'}) . "</h3>\n";
     print &ui_table_start(undef, undef, 2);
 
     if ($sa) {
-        my $badge = $sa_status eq 'ok'            ? '&#x2705; ' . $text{'steam_status_ok'}
-                  : $sa_status eq 'token_expired' ? '&#x26A0;&#xFE0F; ' . $text{'steam_status_expired'}
-                  :                                 '&#x23F3; ' . $text{'steam_status_pending'};
-        print &ui_table_row($text{'steam_account_label'}, &html_escape($sa) . " \x{2014} " . $badge);
+        my $badge = $sa_status eq 'ok'            ? '&#x2705; ' . &html_escape($text{'steam_status_ok'})
+                  : $sa_status eq 'token_expired' ? '&#x26A0;&#xFE0F; ' . &html_escape($text{'steam_status_expired'})
+                  :                                 '&#x23F3; ' . &html_escape($text{'steam_status_pending'});
+        print &ui_table_row(&html_escape($text{'steam_account_label'}), &html_escape($sa) . " \x{2014} " . $badge);
     } else {
-        print &ui_table_row($text{'steam_account_label'}, $text{'steam_manage_no_account'});
+        print &ui_table_row(&html_escape($text{'steam_account_label'}), &html_escape($text{'steam_manage_no_account'}));
     }
-
     print &ui_table_end();
 
-    print &ui_form_start('steam_settings.cgi', 'get');
-    print &ui_hidden('action',   'relogin_form');
-    print &ui_hidden('instance', &html_escape($instance_id));
-    print &ui_submit($text{'steam_relogin_btn'}, undef, undef, undef, 'btn-warning');
-    print &ui_form_end();
+    if (@ok) {
+        my @sopts = (['', '— ' . &html_escape($text{'steam_no_account_opt'} || 'Kein Account') . ' —'],
+                     map { [$_->{'username'}, &html_escape($_->{'display_name'} || $_->{'username'})] } @ok);
+        print &ui_form_start('manage.cgi', 'post');
+        print &ui_hidden('action',      'save_steam_account');
+        print &ui_hidden('instance_id', &html_escape($instance_id));
+        print &ui_select('steam_account', $sa, \@sopts);
+        print " ";
+        print &ui_submit($text{'acl_manage_save'} || 'Speichern', undef, undef, undef, 'btn-default');
+        print &ui_form_end();
+    }
+
+    if ($sa && $sa_status ne 'ok') {
+        print &ui_form_start('steam_settings.cgi', 'get');
+        print &ui_hidden('action',   'relogin_form');
+        print &ui_hidden('instance', &html_escape($instance_id));
+        print &ui_submit($text{'steam_relogin_btn'}, undef, undef, undef, 'btn-warning');
+        print &ui_form_end();
+    }
 }
 
 # Detect if common.cfg contains misplaced instance-specific fields

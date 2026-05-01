@@ -198,15 +198,21 @@ sub _step3_form {
     print &ui_table_row($text{'wizard_owner'},
         &ui_select('webmin_user', '', \@owner_opts));
 
-    if (&game_requires_steam($game)) {
+    {
+        my $requires = &game_requires_steam($game);
         my $accounts = &load_steam_accounts();
-        my @ok = grep { $_->{'status'} eq 'ok' } @$accounts;
+        my @ok       = grep { $_->{'status'} eq 'ok' } @$accounts;
         if (@ok) {
             my @sopts = map { [$_->{'username'}, &html_escape($_->{'display_name'} || $_->{'username'})] } @ok;
-            print &ui_table_row($text{'steam_account_label'}, &ui_select('steam_account', $sopts[0][0], \@sopts));
-        } else {
+            unshift @sopts, ['', '— ' . &html_escape($text{'steam_no_account_opt'} || 'Kein Account') . ' —'] unless $requires;
+            my $label = $requires ? $text{'steam_account_label'} : ($text{'steam_account_label'} . ' (' . ($text{'optional'} || 'optional') . ')');
+            print &ui_table_row(&html_escape($label), &ui_select('steam_account', '', \@sopts));
+        } elsif ($requires) {
             print &ui_table_row($text{'steam_account_label'},
                 &html_escape($text{'steam_no_accounts'}) . ' <a href="steam_settings.cgi">' . &html_escape($text{'steam_btn'}) . '</a>');
+        } else {
+            my $hint = &html_escape($text{'steam_no_accounts'}) . ' (<a href="steam_settings.cgi">' . &html_escape($text{'steam_btn'}) . '</a>)';
+            print &ui_table_row(&html_escape($text{'steam_account_label'} . ' (optional)'), $hint);
         }
     }
 
