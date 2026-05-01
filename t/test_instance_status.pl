@@ -38,7 +38,7 @@ open($fh, '<', "$tmp/instances") or die $!;
 my $line = <$fh>; chomp $line; close($fh);
 my @cols = split(/\t/, $line);
 is($cols[7], 'lgsm_ready', 'instance_status written as col 8');
-is(scalar @cols, 8, 'exactly 8 columns');
+is(scalar @cols, 10, 'exactly 10 columns');
 
 # Test 5: set_instance_status
 set_instance_status('gs_mc_myserver', 'installed');

@@ -58,6 +58,8 @@ Dieses Dokument trennt verbindliche Projektregeln (Policy) von Webmin-spezifisch
 - **`\Q...\E` nur fuer echte Untrusted-Input** — escaped `/` in Pfadstrings, bricht Shell-Ausfuehrung und Test-Regex; bei bereits whitelist-sanitizierten Variablen weglassen.
 - **Single-Quote-Escape in Shell-Pfaden:** Wenn `\Q...\E` nicht verwendbar ist (bricht Pfade), Pfad mit `$p =~ s/'/'\\''/g;` absichern und dann als `'cmd "$p"'` einbetten — sicher fuer Pfade mit Leerzeichen und Sonderzeichen.
 - **`%text` in Test-Stubs vollstaendig halten** — fehlt ein Fehlerschluessel, gibt `validate_*` `undef` statt Fehlerstring zurueck; Test besteht dann faelschlicherweise.
+- **STDERR-Capture in Tests:** `open(STDERR, '>>', \$scalar)` funktioniert nicht auf allen Perl-Versionen — stattdessen `File::Temp` nutzen: `my ($fh, $fname) = tempfile(UNLINK => 1); open(STDERR, '>&', $fh); ... seek $fh, 0, 0; my $out = do { local $/; <$fh> };`
+- **Lib-Tests mit CGI-geladenen Funktionen:** Wenn eine Lib (`jobs.pl`, `acl.pl`) Funktionen aufruft die nur von CGIs per `require` geladen werden (z.B. `log_error`), muessen leere Stubs dieser Funktionen in `t/stubs.pl` stehen — sonst `Undefined subroutine`-Fehler in Standalone-Lib-Tests.
 
 ## 6. Projektlayout
 - **Wiki-Repo:** `/mnt/Lager/github/LinuxGSM-WebCore.wiki/`
@@ -99,6 +101,7 @@ Dieser Abschnitt dokumentiert zwingende Webmin-spezifische Details, die aus real
 - `$current_lang` explizit als `our $current_lang` deklarieren wenn Sprachlogik benoetigt wird.
 - Lang-Strings kein Perl-Syntax wie `$script` enthalten — wird nicht interpoliert; Wert dynamisch im CGI bauen.
 - `<details><summary>...</summary>...</details>` fuer einklappbare Abschnitte — funktioniert nativ in Authentic Theme ohne JS.
+- **`save_module_config` kein Return-Check noetig:** Webmin-Core-Funktion ohne sinnvollen Rueckgabewert — kein Error-Handling implementieren, bestehende CGIs im Projekt machen das auch nicht.
 - **`&redirect()` immer mit `exit` abschliessen:** Nach jedem `&redirect(...)` muss ein `exit;` folgen. Ohne `exit` laeuft der CGI weiter, kann eine zweite HTTP-Response rendern und Folgefehler ausloesen (z. B. "Ungueltige Aktion" weil `$is_fresh`-Block nach dem Redirect erneut ausgefuehrt wird).
 - **`sanitize_input()` nur fuer Pflichtfelder:** Die Funktion ruft `&error()` wenn das Ergebnis leer ist. Optionale Parameter (z. B. `$in{'action'}` auf Uebersichtsseiten) immer manuell strippen: `$var = $in{'key'} // ''; $var =~ s/[^a-zA-Z0-9_\-]//g;`
 

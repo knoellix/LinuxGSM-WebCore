@@ -42,13 +42,15 @@ sub _load_registered {
         next if /^\s*#/ || !(/=/ || /\t/);
         my ($id, $user, $script, $source, $sftp_user, $owners, $steam_account);
         if (index($_, "\t") >= 0) {
-            my @cols = split(/\t/, $_, 8);
+            my @cols = split(/\t/, $_, 10);
             ($id, $user, $script, $source, $sftp_user) = @cols;
             $source    ||= 'manual';
             $sftp_user ||= '';
-            $owners = $cols[5] // '';
+            $owners        = $cols[5] // '';
             $steam_account = $cols[6] // '';
             my $instance_status = do { my $v = $cols[7] // ''; chomp $v; $v || 'installed' };
+            my $cached_game = do { my $v = $cols[8] // ''; chomp $v; $v };
+            my $cached_port = do { my $v = $cols[9] // 0;  chomp $v; int($v || 0) };
             $reg{$id} = {
                 user            => $user,
                 script          => $script,
@@ -57,6 +59,8 @@ sub _load_registered {
                 owners          => $owners,
                 steam_account   => $steam_account,
                 instance_status => $instance_status,
+                cached_game     => $cached_game,
+                cached_port     => $cached_port,
             } if defined $id && $id =~ /\S/ && defined $user && defined $script;
             next;
         } else {
@@ -76,6 +80,8 @@ sub _load_registered {
             owners          => $owners,
             steam_account   => $steam_account,
             instance_status => 'installed',
+            cached_game     => '',
+            cached_port     => 0,
         } if defined $id && $id =~ /\S/ && defined $user && defined $script;
     }
     close($fh);
@@ -94,9 +100,24 @@ sub _save_registered {
         my $own     = $reg_ref->{$id}{'owners'} // '';
         my $steam   = $reg_ref->{$id}{'steam_account'} // '';
         my $istatus = $reg_ref->{$id}{'instance_status'} // 'installed';
-        print $fh join("\t", $id, $u, $s, $src, $ftp, $own, $steam, $istatus) . "\n";
+        my $cgame   = $reg_ref->{$id}{'cached_game'} // '';
+        my $cport   = $reg_ref->{$id}{'cached_port'} // 0;
+        print $fh join("\t", $id, $u, $s, $src, $ftp, $own, $steam, $istatus, $cgame, $cport) . "\n";
     }
     close($fh);
+}
+
+# Update cached game name and port for an instance after a full config read.
+# Best-effort: silently skips if the instance is not registered.
+sub _update_instance_cache {
+    my ($id, $game, $port) = @_;
+    my %reg = _load_registered();
+    return unless exists $reg{$id};
+    return if ($reg{$id}{'cached_game'} // '') eq ($game // '')
+           && ($reg{$id}{'cached_port'} // 0) == ($port // 0);
+    $reg{$id}{'cached_game'} = $game // '';
+    $reg{$id}{'cached_port'} = int($port // 0);
+    _save_registered(\%reg);
 }
 
 # Register (or update) an instance.
@@ -112,6 +133,8 @@ sub register_instance {
         owners          => defined $opts{'owners'} ? $opts{'owners'} : ($reg{$id}{'owners'} // ''),
         steam_account   => defined $opts{'steam_account'} ? $opts{'steam_account'} : ($reg{$id}{'steam_account'} // ''),
         instance_status => defined $opts{'instance_status'} ? $opts{'instance_status'} : ($reg{$id}{'instance_status'} // 'installed'),
+        cached_game     => defined $opts{'game'} ? $opts{'game'} : ($reg{$id}{'cached_game'} // ''),
+        cached_port     => defined $opts{'port'} ? int($opts{'port'}) : ($reg{$id}{'cached_port'} // 0),
     };
     _save_registered(\%reg);
 }
@@ -160,40 +183,60 @@ sub list_instances {
     my %seen;
     my @instances;
 
-    # 1. Manually registered instances
+    # 1. Registered instances — build directly from registry cache.
+    # One _load_registered() call, zero getpwnam() calls, zero script-file checks.
     my %reg = _load_registered();
     for my $id (sort keys %reg) {
-        my $inst = get_instance($id, $reg{$id}{'user'}, $reg{$id}{'script'});
-        if ($inst) {
-            my $meta = $reg{$id};
-            $inst->{'registration_source'} = $meta->{'source'} // 'manual';
-            $inst->{'registered_sftp_user'} = $meta->{'sftp_user'} // '';
-            $inst->{'owners'} = $meta->{'owners'} // '';
-            $inst->{'steam_account'} = $meta->{'steam_account'} // '';
-            $inst->{'instance_status'} = $meta->{'instance_status'} // 'installed';
-            push @instances, $inst;
-            $seen{$id} = 1;
-        }
+        my $r           = $reg{$id};
+        my $script      = $r->{'script'} // '';
+        my $script_name = (split('/', $script))[-1] || $id;
+        my $cgame       = $r->{'cached_game'} // '';
+        my $cport       = $r->{'cached_port'} // 0;
+        push @instances, {
+            id                   => $id,
+            user                 => $r->{'user'} // '',
+            home                 => '',
+            script               => $script,
+            game                 => $cgame ne '' ? $cgame : $script_name,
+            port                 => $cport,
+            status               => 'unknown',
+            fw_open              => 0,
+            warnings             => [],
+            steam_account        => $r->{'steam_account'} // '',
+            instance_status      => $r->{'instance_status'} // 'installed',
+            registration_source  => $r->{'source'} // 'manual',
+            registered_sftp_user => $r->{'sftp_user'} // '',
+            owners               => $r->{'owners'} // '',
+        };
+        $seen{$id} = 1;
     }
 
-    # 2. Auto-detection: nologin shell + executable script named after user
+    # 2. Auto-detection: nologin shell + executable script named after user.
+    # Build instance hash directly from /etc/passwd — no getpwnam() call needed.
     open(my $fh, '<', '/etc/passwd') or return @instances;
     while (<$fh>) {
         chomp;
         my ($user, undef, undef, undef, undef, $home, $shell) = split(':', $_);
-        next unless $shell eq '/usr/sbin/nologin';
-        next unless -f "$home/$user" && -x "$home/$user";
-        next if $seen{$user};  # already covered by a registered entry
-        my $inst = get_instance($user, $user, "$home/$user");
-        if ($inst) {
-            $inst->{'registration_source'} = 'auto';
-            $inst->{'registered_sftp_user'} = '';
-            $inst->{'owners'} = '';
-            $inst->{'steam_account'} = '';
-            $inst->{'instance_status'} = 'installed';
-            push @instances, $inst;
-            $seen{$user} = 1;
-        }
+        next unless defined $shell && $shell eq '/usr/sbin/nologin';
+        next unless defined $home && -f "$home/$user" && -x "$home/$user";
+        next if $seen{$user};
+        push @instances, {
+            id                   => $user,
+            user                 => $user,
+            home                 => $home,
+            script               => "$home/$user",
+            game                 => $user,
+            port                 => 0,
+            status               => 'unknown',
+            fw_open              => 0,
+            warnings             => [],
+            steam_account        => '',
+            instance_status      => 'installed',
+            registration_source  => 'auto',
+            registered_sftp_user => '',
+            owners               => '',
+        };
+        $seen{$user} = 1;
     }
     close($fh);
     return @instances;
@@ -203,7 +246,8 @@ sub list_instances {
 # $user and $script_path are optional: if omitted, looked up from the
 # registered instances file (falling back to standard LGSM convention).
 sub get_instance {
-    my ($id, $user, $script_path) = @_;
+    my ($id, $user, $script_path, $quick) = @_;
+    $quick //= 0;
 
     my %reg = _load_registered();
     unless (defined $user && defined $script_path) {
@@ -221,26 +265,50 @@ sub get_instance {
 
     $user = &sanitize_input($user);
     my @pw = getpwnam($user) or return undef;
-    my $home  = $pw[7];
-    my $shell = $pw[8];
+    my $home        = $pw[7];
+    my $shell       = $pw[8];
+    my $script_name = (split('/', $script_path))[-1];
+
+    if ($quick) {
+        # Quick mode: read only registry cache — no disk I/O, no script-file check.
+        my $cgame = $reg{$id}{'cached_game'} // '';
+        my $cport = $reg{$id}{'cached_port'} // 0;
+        return {
+            id            => $id,
+            user          => $user,
+            home          => $home,
+            script        => $script_path,
+            game          => $cgame ne '' ? $cgame : $script_name,
+            port          => $cport,
+            status        => 'unknown',
+            fw_open       => 0,
+            warnings      => [],
+            steam_account => $steam_account,
+        };
+    }
+
     return undef unless -f $script_path;
 
-    my $script_name = (split('/', $script_path))[-1];
-    my $script_dir  = $script_path;
+    my $script_dir = $script_path;
     $script_dir =~ s|/[^/]+$||;
+
     my %cfg     = _parse_lgsm_config($script_dir, $script_name);
     my $status  = _detect_status($script_dir, $user, $script_name);
     my $port    = $cfg{port} // 0;
     $port       = _read_port_from_game_config($script_dir, \%cfg) unless $port;
     my $fw_open = &firewall_status($port);
     my $warns   = _check_instance_health($user, $script_dir, $shell, $script_path, \%cfg);
+    my $game    = $cfg{gamename} // $script_name;
+
+    # Update cached values so the next quick-mode listing is accurate.
+    _update_instance_cache($id, $game, $port);
 
     return {
         id            => $id,
         user          => $user,
         home          => $home,
         script        => $script_path,
-        game          => $cfg{gamename} // 'unknown',
+        game          => $game,
         port          => $port,
         status        => $status,
         fw_open       => $fw_open,

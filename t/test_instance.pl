@@ -39,7 +39,7 @@ print "1..7\n";
     my $file = &_instances_file();
     my $found = 0;
     open(my $fh, '<', $file) or die "Cannot read instances file: $!";
-    while (<$fh>) { $found = 1 if /^mcserver\tminecraft\t\/home\/minecraft\/mcserver\tmanual\tftp_mcserver$/ }
+    while (<$fh>) { $found = 1 if /^mcserver\tminecraft\t\/home\/minecraft\/mcserver\tmanual\tftp_mcserver\t\t\tinstalled\t\t0$/ }
     close($fh);
     $found
         ? pass('register_instance writes correct entry')

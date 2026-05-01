@@ -27,7 +27,10 @@ require './lib/logging.pl';
 require './lib/error_hints.pl';
 
 our (%text, %config, %in, %gconfig);
+our ($module_root, $module_root_directory, $config_directory, $module_name);
 our $current_lang;
+$module_root ||= $module_root_directory;
+$module_root ||= do { (my $d = __FILE__) =~ s{/[^/]+$}{}; $d };
 $main::gconfig{'charset'} = 'utf-8';
 &ReadParse(\%in);
 
@@ -351,7 +354,6 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         &register_instance($instance_id, $unix_user, $inst->{'script'}, {
             sftp_user => $ftp_user,
         });
-        our $config_directory;
         &save_ftp_password($config_directory, $instance_id, $ftp_pass);
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
         exit;
@@ -365,7 +367,6 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         &register_instance($instance_id, $unix_user, $inst->{'script'}, {
             sftp_user => '',
         });
-        our $config_directory;
         &delete_ftp_password($config_directory, $instance_id);
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
         exit;
@@ -377,7 +378,6 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         (my $server_dir = $script_path) =~ s|/[^/]+$||;
         $script_name =~ s/[^a-zA-Z0-9_-]//g;
 
-        our ($config_directory, $module_root);
         my $job_id = &create_job();
         my $worker = "$module_root/scripts/setup_lgsm.sh";
         write_job_meta($job_id, $instance_id, 'setup_lgsm', $unix_user);
@@ -392,7 +392,6 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         my $source = $reg->{'source'} // 'lgsm';
         my ($script_path, $script_name, $server_dir) = _parse_script_info($reg);
 
-        our ($config_directory, $module_root);
         my $job_id = &create_job();
         write_job_meta($job_id, $instance_id, 'install_game', $unix_user);
         &log_action('job_started', $job_id, {instance_id => $instance_id, action => 'install_game'});
@@ -422,7 +421,6 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         my $source = $inst->{'source'} // 'lgsm';
         my ($script_path, $script_name, $server_dir) = _parse_script_info($inst);
 
-        our ($config_directory, $module_root);
         my $job_id = &create_job();
         write_job_meta($job_id, $instance_id, 'update', $unix_user);
         &log_action('job_started', $job_id, {instance_id => $instance_id, action => 'update'});
@@ -440,7 +438,6 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         (my $server_dir = $inst->{'script'}) =~ s|/[^/]+$||;
         $script_name =~ s/[^a-zA-Z0-9_-]//g;
 
-        our ($config_directory, $module_root);
         my $job_id = &create_job();
         write_job_meta($job_id, $instance_id, 'validate', $unix_user);
         &log_action('job_started', $job_id, {instance_id => $instance_id, action => 'validate'});
@@ -454,7 +451,6 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         (my $server_dir = $inst->{'script'}) =~ s|/[^/]+$||;
         $script_name =~ s/[^a-zA-Z0-9_-]//g;
 
-        our ($config_directory, $module_root);
         my $job_id = &create_job();
         write_job_meta($job_id, $instance_id, 'reinstall', $unix_user);
         &log_action('job_started', $job_id, {instance_id => $instance_id, action => 'reinstall'});
@@ -494,7 +490,6 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         my ($script_path, $script_name, $server_dir) = _parse_script_info($inst);
 
         if ($source eq 'steamcmd') {
-            our ($config_directory, $module_root);
             my $job_id = &create_job();
             write_job_meta($job_id, $instance_id, $action, $unix_user);
             &log_action('job_started', $job_id, {instance_id => $instance_id, action => $action});
@@ -730,7 +725,6 @@ print "</p>\n";
     my $cur_ftp_user = &resolve_instance_sftp_user($instance_id, $unix_user);
     print "<h3>FTP</h3>\n";
     if ($cur_ftp_user && $cur_ftp_user ne $unix_user) {
-        our $config_directory;
         my $stored_pass = &read_ftp_password($config_directory, $instance_id);
         print &ui_table_start('', undef, 2);
         print &ui_table_row($text{'ftp_col_user'}, &html_escape($cur_ftp_user));
