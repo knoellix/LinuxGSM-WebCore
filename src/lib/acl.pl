@@ -99,7 +99,7 @@ sub user_can_manage {
     return 1 if is_admin();
     my @allowed = allowed_servers();
     my $ok = (grep { $_ eq '*' } @allowed) || (scalar grep { $_ eq $id } @allowed);
-    &log_debug("ACL: user=" . ($remote_user // '?') . " role=" . effective_role() . " instance=$id → " . ($ok ? "allowed" : "denied"));
+    &log_debug("ACL: user=" . ($remote_user // '?') . " role=" . effective_role() . " instance=$id → " . ($ok ? "allowed" : "denied")) if defined &log_debug;
     return $ok ? 1 : 0;
 }
 
