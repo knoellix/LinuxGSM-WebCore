@@ -381,7 +381,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         my $worker = "$module_root/scripts/setup_lgsm.sh";
         write_job_meta($job_id, $instance_id, 'setup_lgsm', $unix_user);
         &log_action('job_started', $job_id, {instance_id => $instance_id, action => 'setup_lgsm'});
-        &system_logged("setsid nohup bash \Q$worker\E \Q$config_directory/jobs/$job_id\E \Q$unix_user\E \Q$server_dir\E \Q$script_name\E >/dev/null 2>&1 &");
+        &system_logged("setsid nohup bash '$worker' '$config_directory/jobs/$job_id' '$unix_user' '$server_dir' '$script_name' >/dev/null 2>&1 &");
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&action=poll_job&job=" . &html_escape($job_id) . "&next_status=lgsm_ready");
         exit;
     }
@@ -404,24 +404,9 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
                 $app_id = $gmeta{$game_key}{'steam_app_id'} // '';
             }
             $app_id =~ s/[^0-9]//g;
-            &system_logged(
-                "MODULE_ROOT=" . quotemeta($module_root)
-                . " setsid nohup bash " . quotemeta("$module_root/scripts/steamcmd_install.sh")
-                . " " . quotemeta("$config_directory/jobs/$job_id")
-                . " " . quotemeta($unix_user)
-                . " " . quotemeta($server_dir)
-                . " " . quotemeta($app_id)
-                . " >/dev/null 2>&1 &"
-            );
+            &system_logged("MODULE_ROOT='$module_root' setsid nohup bash '$module_root/scripts/steamcmd_install.sh' '$config_directory/jobs/$job_id' '$unix_user' '$server_dir' '$app_id' >/dev/null 2>&1 &");
         } else {
-            &system_logged(
-                "setsid nohup bash " . quotemeta("$module_root/scripts/game_action.sh")
-                . " " . quotemeta("$config_directory/jobs/$job_id")
-                . " " . quotemeta($unix_user)
-                . " " . quotemeta($server_dir)
-                . " " . quotemeta($script_name)
-                . " install >/dev/null 2>&1 &"
-            );
+            &system_logged("setsid nohup bash '$module_root/scripts/game_action.sh' '$config_directory/jobs/$job_id' '$unix_user' '$server_dir' '$script_name' install >/dev/null 2>&1 &");
         }
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id)
             . "&action=poll_job&job=" . &html_escape($job_id)
@@ -438,24 +423,9 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         &log_action('job_started', $job_id, {instance_id => $instance_id, action => 'update'});
 
         if ($source eq 'steamcmd') {
-            &system_logged(
-                "MODULE_ROOT=" . quotemeta($module_root)
-                . " setsid nohup bash " . quotemeta("$module_root/scripts/steamcmd_control.sh")
-                . " update"
-                . " " . quotemeta("$config_directory/jobs/$job_id")
-                . " " . quotemeta($unix_user)
-                . " " . quotemeta($server_dir)
-                . " >/dev/null 2>&1 &"
-            );
+            &system_logged("MODULE_ROOT='$module_root' setsid nohup bash '$module_root/scripts/steamcmd_control.sh' update '$config_directory/jobs/$job_id' '$unix_user' '$server_dir' >/dev/null 2>&1 &");
         } else {
-            &system_logged(
-                "setsid nohup bash " . quotemeta("$module_root/scripts/game_action.sh")
-                . " " . quotemeta("$config_directory/jobs/$job_id")
-                . " " . quotemeta($unix_user)
-                . " " . quotemeta($server_dir)
-                . " " . quotemeta($script_name)
-                . " update >/dev/null 2>&1 &"
-            );
+            &system_logged("setsid nohup bash '$module_root/scripts/game_action.sh' '$config_directory/jobs/$job_id' '$unix_user' '$server_dir' '$script_name' update >/dev/null 2>&1 &");
         }
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&action=poll_job&job=" . &html_escape($job_id));
         exit;
@@ -470,7 +440,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         write_job_meta($job_id, $instance_id, 'validate', $unix_user);
         &log_action('job_started', $job_id, {instance_id => $instance_id, action => 'validate'});
         my $worker = "$module_root/scripts/game_action.sh";
-        &system_logged("setsid nohup bash \Q$worker\E \Q$config_directory/jobs/$job_id\E \Q$unix_user\E \Q$server_dir\E \Q$script_name\E validate >/dev/null 2>&1 &");
+        &system_logged("setsid nohup bash '$worker' '$config_directory/jobs/$job_id' '$unix_user' '$server_dir' '$script_name' validate >/dev/null 2>&1 &");
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&action=poll_job&job=" . &html_escape($job_id));
         exit;
     }
@@ -484,7 +454,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         write_job_meta($job_id, $instance_id, 'reinstall', $unix_user);
         &log_action('job_started', $job_id, {instance_id => $instance_id, action => 'reinstall'});
         my $worker = "$module_root/scripts/game_action.sh";
-        &system_logged("setsid nohup bash \Q$worker\E \Q$config_directory/jobs/$job_id\E \Q$unix_user\E \Q$server_dir\E \Q$script_name\E reinstall >/dev/null 2>&1 &");
+        &system_logged("setsid nohup bash '$worker' '$config_directory/jobs/$job_id' '$unix_user' '$server_dir' '$script_name' reinstall >/dev/null 2>&1 &");
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&action=poll_job&job=" . &html_escape($job_id));
         exit;
     }
@@ -523,15 +493,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
             my $job_id = &create_job();
             write_job_meta($job_id, $instance_id, $action, $unix_user);
             &log_action('job_started', $job_id, {instance_id => $instance_id, action => $action});
-            &system_logged(
-                "MODULE_ROOT=" . quotemeta($module_root)
-                . " setsid nohup bash " . quotemeta("$module_root/scripts/steamcmd_control.sh")
-                . " " . quotemeta($action)
-                . " " . quotemeta("$config_directory/jobs/$job_id")
-                . " " . quotemeta($unix_user)
-                . " " . quotemeta($server_dir)
-                . " >/dev/null 2>&1 &"
-            );
+            &system_logged("MODULE_ROOT='$module_root' setsid nohup bash '$module_root/scripts/steamcmd_control.sh' '$action' '$config_directory/jobs/$job_id' '$unix_user' '$server_dir' >/dev/null 2>&1 &");
             &redirect("manage.cgi?instance_id=" . &html_escape($instance_id)
                 . "&action=poll_job&job=" . &html_escape($job_id));
             exit;
