@@ -10,6 +10,7 @@ require './lib/core.pl';
 require './lib/acl.pl';
 require './lib/steam.pl';
 require './lib/instance.pl';
+require './lib/logging.pl';
 
 our (%text, %config, %in);
 our ($module_root, $module_root_directory, $config_directory, $module_name);
