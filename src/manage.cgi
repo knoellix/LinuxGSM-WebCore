@@ -60,14 +60,14 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         my $port = int($inst->{'port'});
         &firewall_open_port($port, 'tcp');
         &firewall_open_port($port, 'udp');
-        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id));
+        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
         exit;
     }
     elsif ($action eq 'fw_close') {
         my $port = int($inst->{'port'});
         &firewall_close_port($port, 'tcp');
         &firewall_close_port($port, 'udp');
-        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id));
+        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
         exit;
     }
     elsif ($action eq 'fix_config') {
@@ -131,7 +131,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         # Backup _default.cfg so LGSM regenerates it cleanly on next run
         rename($default_cfg, $backup_cfg) if -f $default_cfg;
 
-        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id));
+        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
         exit;
     }
     elsif ($action eq 'migrate_config') {
@@ -184,7 +184,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
             unlink $common_path;
         }
 
-        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id));
+        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
         exit;
     }
     elsif ($action eq 'save_config') {
@@ -282,7 +282,8 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         &log_action('config_saved', $instance_id, {config_type => $cfg_file_key});
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) .
                   "&config_file=" . &html_escape($cfg_file_key) .
-                  "&config_view=" . &html_escape($cfg_view_key));
+                  "&config_view=" . &html_escape($cfg_view_key) .
+                  "&xnavigation=1");
         exit;
     }
     elsif ($action eq 'delete_instance') {
@@ -324,7 +325,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
             &system_logged("userdel -r $game_user");
         }
 
-        &redirect("index.cgi");
+        &redirect("index.cgi?xnavigation=1");
         exit;
     }
     elsif ($action eq 'create_instance_ftp_user') {
@@ -352,7 +353,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         });
         our $config_directory;
         &save_ftp_password($config_directory, $instance_id, $ftp_pass);
-        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id));
+        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
         exit;
     }
     elsif ($action eq 'delete_instance_ftp_user') {
@@ -366,7 +367,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         });
         our $config_directory;
         &delete_ftp_password($config_directory, $instance_id);
-        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id));
+        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
         exit;
     }
     elsif ($action eq 'setup_lgsm') {
@@ -382,7 +383,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         write_job_meta($job_id, $instance_id, 'setup_lgsm', $unix_user);
         &log_action('job_started', $job_id, {instance_id => $instance_id, action => 'setup_lgsm'});
         &system_logged("setsid nohup bash '$worker' '$config_directory/jobs/$job_id' '$unix_user' '$server_dir' '$script_name' >/dev/null 2>&1 &");
-        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&action=poll_job&job=" . &html_escape($job_id) . "&next_status=lgsm_ready");
+        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&action=poll_job&job=" . &html_escape($job_id) . "&next_status=lgsm_ready&xnavigation=1");
         exit;
     }
     elsif ($action eq 'install_game') {
@@ -410,7 +411,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         }
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id)
             . "&action=poll_job&job=" . &html_escape($job_id)
-            . "&next_status=installed");
+            . "&next_status=installed&xnavigation=1");
         exit;
     }
     elsif ($action eq 'update') {
@@ -427,7 +428,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         } else {
             &system_logged("setsid nohup bash '$module_root/scripts/game_action.sh' '$config_directory/jobs/$job_id' '$unix_user' '$server_dir' '$script_name' update >/dev/null 2>&1 &");
         }
-        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&action=poll_job&job=" . &html_escape($job_id));
+        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&action=poll_job&job=" . &html_escape($job_id) . "&xnavigation=1");
         exit;
     }
     elsif ($action eq 'validate') {
@@ -441,7 +442,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         &log_action('job_started', $job_id, {instance_id => $instance_id, action => 'validate'});
         my $worker = "$module_root/scripts/game_action.sh";
         &system_logged("setsid nohup bash '$worker' '$config_directory/jobs/$job_id' '$unix_user' '$server_dir' '$script_name' validate >/dev/null 2>&1 &");
-        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&action=poll_job&job=" . &html_escape($job_id));
+        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&action=poll_job&job=" . &html_escape($job_id) . "&xnavigation=1");
         exit;
     }
     elsif ($action eq 'reinstall') {
@@ -455,7 +456,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         &log_action('job_started', $job_id, {instance_id => $instance_id, action => 'reinstall'});
         my $worker = "$module_root/scripts/game_action.sh";
         &system_logged("setsid nohup bash '$worker' '$config_directory/jobs/$job_id' '$unix_user' '$server_dir' '$script_name' reinstall >/dev/null 2>&1 &");
-        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&action=poll_job&job=" . &html_escape($job_id));
+        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&action=poll_job&job=" . &html_escape($job_id) . "&xnavigation=1");
         exit;
     }
     elsif ($action eq 'abort_job') {
@@ -464,7 +465,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         $job_id or &error($text{'err_invalid_input'});
         abort_job($job_id);
         &log_action('job_aborted', $job_id, {instance_id => $instance_id});
-        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id));
+        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
         exit;
     }
     elsif ($action eq 'init_game_config') {
@@ -481,7 +482,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         }
 
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) .
-                  "&config_file=game&config_view=game");
+                  "&config_file=game&config_view=game&xnavigation=1");
         exit;
     }
     elsif ($action eq 'start' || $action eq 'stop') {
@@ -495,11 +496,11 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
             &log_action('job_started', $job_id, {instance_id => $instance_id, action => $action});
             &system_logged("MODULE_ROOT='$module_root' setsid nohup bash '$module_root/scripts/steamcmd_control.sh' '$action' '$config_directory/jobs/$job_id' '$unix_user' '$server_dir' >/dev/null 2>&1 &");
             &redirect("manage.cgi?instance_id=" . &html_escape($instance_id)
-                . "&action=poll_job&job=" . &html_escape($job_id));
+                . "&action=poll_job&job=" . &html_escape($job_id) . "&xnavigation=1");
             exit;
         } else {
             &run_server_action($unix_user, $action, $script_name, $server_dir);
-            &redirect("manage.cgi?instance_id=" . &html_escape($instance_id));
+            &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
             exit;
         }
     }
@@ -508,7 +509,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         my $script_dir  = $inst->{'script'};
         $script_dir =~ s|/[^/]+$||;
         &run_server_action($unix_user, $action, $script_name, $script_dir);
-        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id));
+        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
         exit;
     }
 }
@@ -534,7 +535,8 @@ if (($in{'action'} // '') eq 'poll_job') {
     if ($status eq 'running') {
         my $poll_url = "manage.cgi?instance_id=" . &html_escape($instance_id)
             . "&action=poll_job&job=" . &html_escape($job_id)
-            . "&next_status=" . &html_escape($next_status);
+            . "&next_status=" . &html_escape($next_status)
+            . "&xnavigation=1";
         print "<meta http-equiv=\"refresh\" content=\"3;url=$poll_url\">\n";
         print "<p>" . &html_escape($text{'job_running'}) . "</p>\n";
         print &ui_form_start('manage.cgi', 'post', undef,
@@ -546,7 +548,7 @@ if (($in{'action'} // '') eq 'poll_job') {
         print &ui_form_end();
     } elsif ($status eq 'ok') {
         print "<p style='color:green'>" . &html_escape($text{'job_ok'}) . "</p>\n";
-        print "<p><a href=\"manage.cgi?instance_id=" . &html_escape($instance_id) . "\">&larr; Zur&uuml;ck</a></p>\n";
+        print "<p><a href=\"manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1\">&larr; Zur&uuml;ck</a></p>\n";
     } else {
         my $hint_key = &get_job_error_hint($job_id);
         print "<p style='color:red'>" . &html_escape($text{'job_failed'}) . "</p>\n";
@@ -554,7 +556,7 @@ if (($in{'action'} // '') eq 'poll_job') {
             print "<p><strong>" . &html_escape($text{'job_hint_title'}) . ":</strong> "
                 . &html_escape($text{$hint_key} // $hint_key) . "</p>\n";
         }
-        print "<p><a href=\"manage.cgi?instance_id=" . &html_escape($instance_id) . "\">&larr; Zur&uuml;ck</a></p>\n";
+        print "<p><a href=\"manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1\">&larr; Zur&uuml;ck</a></p>\n";
     }
 
     print "<h3>" . &html_escape($text{'job_output_title'} || 'Ausgabe') . "</h3>\n";
@@ -593,7 +595,7 @@ if (($in{'action'} // '') eq 'monitor') {
         $content //= '';
         my $len  = length($content);
         my $tail = $len > 8192 ? substr($content, $len - 8192) : $content;
-        my $refresh_url = "manage.cgi?instance_id=" . &html_escape($instance_id) . "&action=monitor";
+        my $refresh_url = "manage.cgi?instance_id=" . &html_escape($instance_id) . "&action=monitor&xnavigation=1";
         print "<meta http-equiv=\"refresh\" content=\"2;url=$refresh_url\">\n";
         print "<pre style='background:#111;color:#eee;padding:8px;height:500px;overflow:auto'>"
             . &html_escape($tail) . "</pre>\n";

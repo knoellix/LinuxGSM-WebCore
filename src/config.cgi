@@ -16,7 +16,7 @@ our (%text, %config, %in);
 if ($in{'save'}) {
     $config{debug_logging} = $in{'debug_logging'} ? 1 : 0;
     &save_module_config(\%config);
-    &redirect('config.cgi');
+    &redirect('config.cgi?xnavigation=1');
     exit;
 }
 

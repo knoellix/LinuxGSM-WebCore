@@ -40,7 +40,7 @@ if ($action eq 'abort_job') {
 
     &log_debug("jobs.cgi: abort_job job_id=$job_id");
     abort_job($job_id);
-    &redirect('jobs.cgi');
+    &redirect('jobs.cgi?xnavigation=1');
     exit;
 }
 
@@ -61,7 +61,7 @@ if ($action eq 'delete_job') {
     &log_debug("jobs.cgi: delete_job job_id=$job_id");
     delete_job($job_id)
         or &error($text{'err_invalid_action'} || 'Cannot delete running job');
-    &redirect('jobs.cgi');
+    &redirect('jobs.cgi?xnavigation=1');
     exit;
 }
 

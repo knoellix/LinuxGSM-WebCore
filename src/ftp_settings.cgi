@@ -30,7 +30,7 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
     if ($action eq 'apply_baseline') {
         my $rc = &apply_secure_ftp_baseline();
         $rc == 0 or &error("Failed applying FTP baseline");
-        &redirect('ftp_settings.cgi');
+        &redirect('ftp_settings.cgi?xnavigation=1');
     }
     elsif ($action eq 'create_ftp_user') {
         my $instance_id = &sanitize_input($in{'instance_id'});
@@ -56,7 +56,7 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
         &register_instance($instance_id, $inst->{'user'}, $inst->{'script'}, {
             sftp_user => $ftp_user,
         });
-        &redirect('ftp_settings.cgi');
+        &redirect('ftp_settings.cgi?xnavigation=1');
     }
     elsif ($action eq 'change_ftp_pass') {
         my $ftp_user = &sanitize_input($in{'ftp_user'});
@@ -67,7 +67,7 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
             name     => $ftp_user,
             password => $ftp_pass,
         ) == 0 or &error("Failed changing FTP password");
-        &redirect('ftp_settings.cgi');
+        &redirect('ftp_settings.cgi?xnavigation=1');
     }
     elsif ($action eq 'delete_ftp_user') {
         my $ftp_user = &sanitize_input($in{'ftp_user'});
@@ -75,7 +75,7 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
             file => $auth_file,
             name => $ftp_user,
         ) == 0 or &error("Failed deleting FTP user");
-        &redirect('ftp_settings.cgi');
+        &redirect('ftp_settings.cgi?xnavigation=1');
     }
     elsif ($action eq 'assign_ftp_user') {
         my $ftp_user    = &sanitize_input($in{'ftp_user'});
@@ -84,7 +84,7 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
         &register_instance($instance_id, $inst->{'user'}, $inst->{'script'}, {
             sftp_user => $ftp_user,
         });
-        &redirect('ftp_settings.cgi');
+        &redirect('ftp_settings.cgi?xnavigation=1');
     }
 }
 

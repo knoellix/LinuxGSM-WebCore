@@ -34,7 +34,7 @@ if ($action eq 'delete') {
     if ($script) {
         &delete_local_game_meta($script);
     }
-    &redirect("games_admin.cgi");
+    &redirect("games_admin.cgi?xnavigation=1");
     exit;
 }
 
@@ -67,7 +67,7 @@ if ($action eq 'save') {
               default  => "$port" },
         ],
     });
-    &redirect("games_admin.cgi");
+    &redirect("games_admin.cgi?xnavigation=1");
     exit;
 }
 

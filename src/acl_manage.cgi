@@ -49,14 +49,14 @@ if ($action eq 'save_acl') {
 
     &save_module_acl(\%acl, $target_user, $module_name);
     &log_action('acl_saved', $target_user, {role => $role});
-    &redirect("acl_manage.cgi");
+    &redirect("acl_manage.cgi?xnavigation=1");
 }
 
 # --- Edit form ---
 if ($action eq 'edit') {
     my $target_user = &sanitize_input($in{'target_user'} // '');
     unless ($target_user && $target_user =~ /^[a-zA-Z0-9_.\@\-]+$/) {
-        &redirect("acl_manage.cgi");
+        &redirect("acl_manage.cgi?xnavigation=1");
         exit;
     }
 
