@@ -257,7 +257,9 @@ sub start_login_session {
     (my $un = $username)    =~ s/'/'\\''/g;
     (my $pf = $pass_file)   =~ s/'/'\\''/g;
     (my $sc = $steamcmd_path) =~ s/'/'\\''/g;
-    my $cmd = "STEAMCMD_PATH='$sc' nohup '$w' '$sd' '$un' '$pf' </dev/null >/dev/null 2>&1 &";
+    my $log = '/var/webmin/miniserv.error';
+    my $cmd = "STEAMCMD_PATH='$sc' nohup '$w' '$sd' '$un' '$pf' </dev/null >>'$log' 2>&1 &";
+    &log_debug("steam login start: user=$username worker=$worker steamcmd=$steamcmd_path session=$session_dir");
     system($cmd);
 
     return $token;

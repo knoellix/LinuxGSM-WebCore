@@ -47,8 +47,8 @@ while kill -0 $STEAM_PID 2>/dev/null; do
         exit 1
     fi
 
-    # Check for Steam Guard prompt
-    if grep -q "Steam Guard" "$SESSION_DIR/steam_out" 2>/dev/null; then
+    # Check for Steam Guard prompt (email code or mobile authenticator)
+    if grep -qE "Steam Guard|Two-factor code|Enter the current code" "$SESSION_DIR/steam_out" 2>/dev/null; then
         echo "guard_required" > "$SESSION_DIR/status"
 
         # Wait for CGI to write the guard code
