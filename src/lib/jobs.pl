@@ -116,6 +116,7 @@ sub get_all_jobs {
         my $jdir = "$jobs_dir/$jid";
         next unless -d $jdir;
 
+        timeout_check_job($jid);
         my %meta   = _read_meta($jid);
         my $status = get_job_status($jid) // 'unknown';
 
@@ -148,6 +149,19 @@ sub get_all_jobs {
 
     # Newest first
     return sort { ($b->{started_at} || 0) <=> ($a->{started_at} || 0) } @jobs;
+}
+
+sub timeout_check_job {
+    my ($job_id) = @_;
+    my $jdir = _job_dir($job_id);
+    return unless -d $jdir;
+    return if get_job_status($job_id) ne 'running';
+    return if -f "$jdir/pgid";
+    my %meta = _read_meta($job_id);
+    return unless (time() - ($meta{started_at} // time())) > 30;
+    finish_job($job_id, 'failed');
+    _write_error_hint($job_id, 'hint_worker_never_started');
+    &log_debug("Job $job_id: running → failed (worker never started)") if defined &log_debug;
 }
 
 sub abort_job {

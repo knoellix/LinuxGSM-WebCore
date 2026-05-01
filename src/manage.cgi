@@ -522,6 +522,7 @@ if (($in{'action'} // '') eq 'poll_job') {
     my $next_status = $in{'next_status'} // '';
     $next_status =~ s/[^a-z_]//g;
 
+    &timeout_check_job($job_id);
     my $status = &get_job_status($job_id) // 'unknown';
     my ($all_out, undef) = &get_job_output($job_id, 0);  # always read all output from start
 

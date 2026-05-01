@@ -321,3 +321,4 @@ jobs_action_reinstall=Neu installieren
 jobs_action_start=Starten
 jobs_action_stop=Stoppen
 hint_zombie=Prozess unerwartet beendet — Worker-Prozess ist nicht mehr aktiv.
+hint_worker_never_started=Worker-Prozess wurde nicht gestartet — Befehl fehlgeschlagen. Bitte Webmin-Log (miniserv.error) prüfen.

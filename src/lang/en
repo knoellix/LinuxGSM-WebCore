@@ -321,3 +321,4 @@ jobs_action_reinstall=Reinstall
 jobs_action_start=Start
 jobs_action_stop=Stop
 hint_zombie=Process ended unexpectedly — worker process is no longer active.
+hint_worker_never_started=Worker process never started — command failed. Check Webmin log (miniserv.error) for details.
