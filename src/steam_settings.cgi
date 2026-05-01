@@ -11,6 +11,10 @@ require './lib/acl.pl';
 require './lib/steam.pl';
 
 our (%text, %config, %in);
+our ($module_root, $module_root_directory, $config_directory, $module_name);
+our $current_lang;
+$module_root ||= $module_root_directory;
+$module_root ||= do { (my $d = __FILE__) =~ s{/[^/]+$}{}; $d };
 $main::gconfig{'charset'} = 'utf-8';
 &ReadParse(\%in);
 
