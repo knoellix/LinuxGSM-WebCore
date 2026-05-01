@@ -39,11 +39,12 @@ sub _compute_role {
     return $access{'role'} if defined $access{'role'};
 
     # 3. Direct file fallback when %access is empty (package namespace mismatch)
-    if (defined $remote_user && defined $module_name && defined $config_directory) {
+    # $config_directory is the module-specific dir (e.g. /etc/webmin/linuxgsm-webcore)
+    if (defined $remote_user && defined $config_directory) {
         my %facl;
         eval {
-            my $ufile = "$config_directory/$module_name/$remote_user";
-            my $dfile = "$config_directory/$module_name/defaultacl";
+            my $ufile = "$config_directory/$remote_user";
+            my $dfile = "$config_directory/defaultacl";
             &read_file($ufile, \%facl) if -r $ufile;
             if (!defined $facl{'role'} && -r $dfile) {
                 my %dflt;
