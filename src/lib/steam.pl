@@ -10,14 +10,6 @@ use warnings;
 
 our ($config_directory, $module_root, $module_root_directory);
 
-# Webmin sets $config_directory to the global /etc/webmin in some CGI contexts
-# instead of /etc/webmin/linuxgsm-webcore. Derive the module-specific path
-# from $module_root_directory if needed.
-if ($module_root_directory && $config_directory) {
-    (my $_mn = $module_root_directory) =~ s{.*/}{};
-    $config_directory .= "/$_mn" unless !$_mn || $config_directory =~ /\Q$_mn\E/;
-}
-
 # ---------------------------------------------------------------------------
 # System detection
 # ---------------------------------------------------------------------------

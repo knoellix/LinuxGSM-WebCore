@@ -2,7 +2,14 @@
 use strict;
 use warnings;
 
-our (%text, %config, %gconfig, $module_root, $current_lang, $config_directory);
+our (%text, %config, %gconfig, $module_root, $module_root_directory, $current_lang, $config_directory);
+
+# Webmin sets $config_directory to the global /etc/webmin in some CGI contexts.
+# Derive the module-specific path from $module_root_directory if needed.
+if ($module_root_directory && $config_directory) {
+    (my $_mn = $module_root_directory) =~ s{.*/}{};
+    $config_directory .= "/$_mn" unless !$_mn || $config_directory =~ /\Q$_mn\E/;
+}
 
 # Prevent root execution of privileged actions
 sub error_if_root {
