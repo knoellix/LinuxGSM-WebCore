@@ -317,15 +317,15 @@ EOF
                 DETACH_METHOD="screen"
                 echo "Detached via screen -DmS $SCREEN_NAME"
                 echo "(attach later: sudo -u $UNIX_USER screen -r $SCREEN_NAME)"
+                # Inline command — mirrors the working manual pattern exactly:
+                # runuser (no PAM session) → bash -c → screen -dmS → bash -c '...'
+                # No redirect on wine: wine must see screen PTY on stdout+stderr.
+                _WINE_INLINE="cd '$SERVERFILES' && export WINEPREFIX='$SERVER_DIR/.wine-windrose' && export WINEARCH=win64 && xvfb-run -a /usr/bin/wine '$WINDROSE_DIRECT_BIN' -log"
                 {
                     echo "=== launching via screen -DmS $(date -Is) ==="
-                    echo "LAUNCH_CMD: runuser -u $UNIX_USER -- bash -c \"screen -dmS '$SCREEN_NAME' bash '$LAUNCH_SCRIPT'\""
-                    echo "LAUNCH_SCRIPT content (wine call):"
-                    grep "xvfb-run" "$LAUNCH_SCRIPT" || echo "(not found)"
+                    echo "WINE_INLINE: $_WINE_INLINE"
                 } >>"$DIAG_LOG" 2>&1
-                # runuser switches to user WITHOUT opening a PAM session (unlike su).
-                # No PAM session = no systemd session scope = no cgroup cleanup kill on exit.
-                runuser -u "$UNIX_USER" -- bash -c "screen -dmS '$SCREEN_NAME' bash '$LAUNCH_SCRIPT'" >>"$DIAG_LOG" 2>&1 || true
+                runuser -u "$UNIX_USER" -- bash -c "screen -dmS '$SCREEN_NAME' bash -c '$_WINE_INLINE'" >>"$DIAG_LOG" 2>&1 || true
             elif command -v tmux >/dev/null 2>&1; then
                 DETACH_METHOD="tmux"
                 echo "Detached via tmux new-session -d -s $SCREEN_NAME"
