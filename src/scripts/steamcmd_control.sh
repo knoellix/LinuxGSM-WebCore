@@ -195,6 +195,7 @@ case "$ACTION" in
                 exit 1
             fi
 
+            SCREEN_NAME="windrose-${UNIX_USER}"
             # Kill leftover screen/tmux sessions from previous start attempts first.
             su -s /bin/bash -c "screen -S '$SCREEN_NAME' -X quit 2>/dev/null || true" "$UNIX_USER" >>"$DIAG_LOG" 2>&1 || true
             su -s /bin/bash -c "tmux kill-session -t '$SCREEN_NAME' 2>/dev/null || true" "$UNIX_USER" >>"$DIAG_LOG" 2>&1 || true
