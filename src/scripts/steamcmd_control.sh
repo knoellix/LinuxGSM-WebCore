@@ -278,6 +278,7 @@ export WINEARCH=win64
 unset WINEDEBUG
 unset WINEDLLOVERRIDES
 echo "WINEPREFIX=\$WINEPREFIX" >>"\$DIAG"
+echo "WINEARCH=\$WINEARCH" >>"\$DIAG"
 echo "PATH=\$PATH" >>"\$DIAG"
 {
   echo "binary check:"
@@ -288,13 +289,13 @@ echo "PATH=\$PATH" >>"\$DIAG"
   echo "USER=\$USER"
   echo "server.log status:"
   ls -l "\$LOGFILE" 2>&1
-  echo "=== run xvfb-run wine $WINDROSE_DIRECT_BIN -log ==="
+  echo "=== run WINEPREFIX=\$WINEPREFIX WINEARCH=\$WINEARCH xvfb-run -a /usr/bin/wine $WINDROSE_DIRECT_BIN -log ==="
 } >>"\$DIAG" 2>&1
 if [ ! -w "\$LOGFILE" ]; then
   echo "FATAL: logfile not writable: \$LOGFILE" >>"\$DIAG"
   exit 91
 fi
-xvfb-run -a /usr/bin/wine "$WINDROSE_DIRECT_BIN" -log
+xvfb-run -a /usr/bin/wine "$WINDROSE_DIRECT_BIN" -log 2>>"\$DIAG"
 RC=\$?
 echo "wine launcher exited with rc=\$RC at \$(date -Is)" >>"\$DIAG"
 echo "Post-exit process snapshot:" >>"\$DIAG"
