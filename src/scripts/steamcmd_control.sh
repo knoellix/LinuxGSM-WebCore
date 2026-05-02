@@ -291,9 +291,8 @@ if [ ! -w "\$LOGFILE" ]; then
   echo "FATAL: logfile not writable: \$LOGFILE" >>"\$DIAG"
   exit 91
 fi
-xvfb-run -a /usr/bin/wine "$WINDROSE_DIRECT_BIN" -log >>"\$LOGFILE" 2>&1
+xvfb-run -a /usr/bin/wine "$WINDROSE_DIRECT_BIN" -log
 RC=\$?
-fi
 echo "wine launcher exited with rc=\$RC at \$(date -Is)" >>"\$DIAG"
 echo "Post-exit process snapshot:" >>"\$DIAG"
 pgrep -af -u "$UNIX_USER" "WindroseServer-Win64-Shipping.exe|WindroseServer.exe|xvfb-run|Xvfb|wineserver|wine" >>"\$DIAG" 2>&1 || true
