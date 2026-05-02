@@ -320,9 +320,9 @@ EOF
                 {
                     echo "=== launching via screen -DmS $(date -Is) ==="
                 } >>"$DIAG_LOG" 2>&1
-                # Run screen as root (stays in webmin cgroup); su inside screen holds PAM session open
-                # until wine exits. Previous order (su→screen) killed the session cgroup when su exited.
-                screen -dmS "$SCREEN_NAME" su -s /bin/bash -c "bash '$LAUNCH_SCRIPT'" "$UNIX_USER" >>"$DIAG_LOG" 2>&1 || true
+                # runuser switches to user WITHOUT opening a PAM session (unlike su).
+                # No PAM session = no systemd session scope = no cgroup cleanup kill on exit.
+                runuser -u "$UNIX_USER" -- bash -c "screen -dmS '$SCREEN_NAME' bash '$LAUNCH_SCRIPT'" >>"$DIAG_LOG" 2>&1 || true
             elif command -v tmux >/dev/null 2>&1; then
                 DETACH_METHOD="tmux"
                 echo "Detached via tmux new-session -d -s $SCREEN_NAME"
