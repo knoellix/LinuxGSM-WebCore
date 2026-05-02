@@ -291,12 +291,8 @@ if [ ! -w "\$LOGFILE" ]; then
   echo "FATAL: logfile not writable: \$LOGFILE" >>"\$DIAG"
   exit 91
 fi
-if command -v stdbuf >/dev/null 2>&1; then
-  stdbuf -oL -eL xvfb-run -a /usr/bin/wine "$WINDROSE_DIRECT_BIN" -log 2>&1 | tee -a "\$LOGFILE" >>"\$DIAG"
-  RC=\${PIPESTATUS[0]}
-else
-  xvfb-run -a /usr/bin/wine "$WINDROSE_DIRECT_BIN" -log 2>&1 | tee -a "\$LOGFILE" >>"\$DIAG"
-  RC=\${PIPESTATUS[0]}
+xvfb-run -a /usr/bin/wine "$WINDROSE_DIRECT_BIN" -log >>"\$LOGFILE" 2>&1
+RC=\$?
 fi
 echo "wine launcher exited with rc=\$RC at \$(date -Is)" >>"\$DIAG"
 echo "Post-exit process snapshot:" >>"\$DIAG"
