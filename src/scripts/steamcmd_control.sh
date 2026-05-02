@@ -195,6 +195,15 @@ case "$ACTION" in
                 exit 1
             fi
 
+            # Kill leftover screen/tmux sessions from previous start attempts first.
+            su -s /bin/bash -c "screen -S '$SCREEN_NAME' -X quit 2>/dev/null || true" "$UNIX_USER" >>"$DIAG_LOG" 2>&1 || true
+            su -s /bin/bash -c "tmux kill-session -t '$SCREEN_NAME' 2>/dev/null || true" "$UNIX_USER" >>"$DIAG_LOG" 2>&1 || true
+            # Kill all xvfb-run+wine instances for this user unconditionally.
+            pkill -9 -u "$UNIX_USER" -f "xvfb-run -a /usr/bin/wine" 2>/dev/null || true
+            pkill -9 -u "$UNIX_USER" -f "WindroseServer-Win64-Shipping.exe|WindroseServer.exe" 2>/dev/null || true
+            su -s /bin/bash -c "WINEPREFIX='$SERVER_DIR/.wine-windrose' /usr/bin/wineserver -k 2>/dev/null || true" "$UNIX_USER" 2>/dev/null || true
+            sleep 2
+
             echo "Collecting existing Windrose PIDs..." >>"$DIAG_LOG" 2>&1
             mapfile -t WINDROSE_PIDS < <(_list_windrose_pids) || true
             echo "Found ${#WINDROSE_PIDS[@]} Windrose PID candidates" >>"$DIAG_LOG" 2>&1
