@@ -187,6 +187,9 @@ case "$ACTION" in
         } >>"$DIAG_LOG" 2>&1
         if [ -n "$WINDROSE_DIRECT_BIN" ]; then
             LOCK_FILE="$SERVER_DIR/.windrose_start.lock"
+            touch "$LOCK_FILE" 2>/dev/null || true
+            chown "$UNIX_USER":"$UNIX_USER" "$LOCK_FILE" 2>/dev/null || true
+            chmod 0644 "$LOCK_FILE"
             exec 8>"$LOCK_FILE"
             if ! flock -w 5 8; then
                 echo "ERROR: Could not acquire Windrose start lock ($LOCK_FILE)" >&2
