@@ -319,6 +319,9 @@ EOF
                 echo "(attach later: sudo -u $UNIX_USER screen -r $SCREEN_NAME)"
                 {
                     echo "=== launching via screen -DmS $(date -Is) ==="
+                    echo "LAUNCH_CMD: runuser -u $UNIX_USER -- bash -c \"screen -dmS '$SCREEN_NAME' bash '$LAUNCH_SCRIPT'\""
+                    echo "LAUNCH_SCRIPT content (wine call):"
+                    grep "xvfb-run" "$LAUNCH_SCRIPT" || echo "(not found)"
                 } >>"$DIAG_LOG" 2>&1
                 # runuser switches to user WITHOUT opening a PAM session (unlike su).
                 # No PAM session = no systemd session scope = no cgroup cleanup kill on exit.
