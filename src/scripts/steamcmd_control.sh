@@ -222,10 +222,11 @@ case "$ACTION" in
                 mapfile -t WINDROSE_LEFT < <(_list_windrose_pids) || true
                 echo "Remaining Windrose PIDs after cleanup: ${#WINDROSE_LEFT[@]}" >>"$DIAG_LOG" 2>&1
                 if [ "${#WINDROSE_LEFT[@]}" -gt 0 ]; then
-                    echo "ERROR: Could not clean old Windrose processes; aborting fresh start" >&2
-                    echo "hint_server_process_exited" > "$JOB_DIR/error_hint"
-                    set_final_status "failed"
-                    exit 1
+                    echo "WARNING: ${#WINDROSE_LEFT[@]} process(es) still alive after cleanup (D-state?), proceeding anyway" >>"$DIAG_LOG" 2>&1
+                    echo "WARNING: Could not fully clean old Windrose processes, starting anyway" >&2
+                    for leftpid in "${WINDROSE_LEFT[@]}"; do
+                        echo "  leftover PID $leftpid: $(ps -o args= -p "$leftpid" 2>/dev/null || echo 'gone')" >>"$DIAG_LOG" 2>&1
+                    done
                 fi
             fi
             echo "Using direct Windrose start path: $WINDROSE_DIRECT_BIN"
