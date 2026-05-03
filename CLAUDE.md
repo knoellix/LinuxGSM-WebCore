@@ -111,6 +111,7 @@ Dieser Abschnitt dokumentiert zwingende Webmin-spezifische Details, die aus real
 - **`&redirect()` immer mit `exit` abschliessen:** Nach jedem `&redirect(...)` muss ein `exit;` folgen. Ohne `exit` laeuft der CGI weiter, kann eine zweite HTTP-Response rendern und Folgefehler ausloesen (z. B. "Ungueltige Aktion" weil `$is_fresh`-Block nach dem Redirect erneut ausgefuehrt wird).
 - **`sanitize_input()` nur fuer Pflichtfelder:** Die Funktion ruft `&error()` wenn das Ergebnis leer ist. Optionale Parameter (z. B. `$in{'action'}` auf Uebersichtsseiten) immer manuell strippen: `$var = $in{'key'} // ''; $var =~ s/[^a-zA-Z0-9_\-]//g;`
 - **Live-Log Auto-Refresh-Schutz:** `auto_refresh` nur aktivieren wenn zusaetzlich ein expliziter Manual-Marker (`manual=1`) gesetzt ist; verhindert ungewolltes Auto-Refresh aus Browser-History/Bookmarks.
+- **Port-Fix-Form nur port/int/text:** `_show_config_fix_form` in `manage.cgi` rendert alle `get_game_fields()`-Eintraege; `bool`-Felder mit `next if $type eq 'bool'` ueberspringen, sonst erscheinen sie doppelt (Port-Fix-Form + Config-Editor).
 
 ### 7.4 Referenz-Recherche in Webmin
 - Bei Unsicherheit zuerst `webmin/webmin` auf GitHub durchsuchen.
@@ -138,6 +139,8 @@ Dieser Abschnitt dokumentiert zwingende Webmin-spezifische Details, die aus real
 - In Tests: `_reset_meta_cache()` zwischen verschiedenen Fixtures aufrufen
 - **Non-LGSM-Spiele (source=steamcmd):** `get_custom_game_list()` liefert Eintraege mit `source != 'lgsm'`. `get_game_source($script)` gibt den Installations-Source zurueck. Wizard-Registrierung mit `source=steamcmd` → Setup-Phase ueberspringt LGSM-Schritt, geht direkt zu `install_game` via `steamcmd_install.sh`.
 - **Lokale Verwaltung:** `save_local_game_meta($script, $entry_ref)` / `delete_local_game_meta($script)` schreiben in `games_meta_local.json`. `local_game_scripts()` gibt die dort definierten Script-Namen zurueck.
+- **`_merge_meta` Encoding-Gotcha:** `open` immer ohne `:encoding(UTF-8)` — `JSON::PP::decode_json` erwartet Bytes, kein Unicode. Umlaute in Labels fuehren sonst zu stummem Parse-Fehler (gibt `{}` zurueck, alle Meta-Tests brechen).
+- **Local-Override flacher Merge:** `games_meta_local.json` ersetzt das `fields`-Array eines Eintrags komplett. Neue Felder die Local-Overrides ueberleben sollen auf Game-Ebene ablegen (z.B. `field_hints`), nicht in `fields`.
 
 ### 8.4 GitHub-Referenzen
 - LGSM Config-Struktur: `GameServerManagers/LinuxGSM` (Repo)
