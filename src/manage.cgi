@@ -27,6 +27,8 @@ require './lib/jobs.pl';
 require './lib/logging.pl';
 require './lib/error_hints.pl';
 require './lib/provision.pl';
+require './lib/monitor.pl';
+require './lib/query.pl';
 
 our (%text, %config, %in, %gconfig);
 our ($module_root, $module_root_directory, $config_directory, $module_name);
@@ -716,13 +718,33 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
             write_job_meta($job_id, $instance_id, $action, $unix_user);
             &log_action('job_started', $job_id, {instance_id => $instance_id, action => $action});
             &system_logged("MODULE_ROOT='$module_root' setsid nohup bash '$module_root/scripts/steamcmd_control.sh' '$action' '$config_directory/jobs/$job_id' '$unix_user' '$server_dir' >/dev/null 2>&1 &");
+            if ($action eq 'stop') {
+                &set_monitor_paused($config_directory, $instance_id);
+            } else {
+                &set_monitor_running($config_directory, $instance_id);
+            }
             &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
             exit;
         } else {
             &run_server_action($unix_user, $action, $script_name, $server_dir);
+            if ($action eq 'stop') {
+                &set_monitor_paused($config_directory, $instance_id);
+            } else {
+                &set_monitor_running($config_directory, $instance_id);
+            }
             &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
             exit;
         }
+    }
+    elsif ($action eq 'monitor_reset') {
+        &set_monitor_running($config_directory, $instance_id);
+        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
+        exit;
+    }
+    elsif ($action eq 'monitor_disable') {
+        &set_monitor_disabled($config_directory, $instance_id);
+        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
+        exit;
     }
     else {
         my $script_name = (split('/', $inst->{'script'}))[-1];
@@ -947,6 +969,26 @@ if (@$info_ports == 1) {
     }
 }
 print &ui_table_row($text{'manage_status'}, _runtime_status_badge_html($runtime_status));
+my $mon_state = &read_monitor_state($config_directory, $instance_id);
+my $mon_status_key = 'monitor_status_' . ($mon_state->{'status'} // 'running');
+my $mon_label = $text{$mon_status_key} || $mon_state->{'status'};
+print &ui_table_row($text{'monitor_col'}, &html_escape($mon_label));
+
+if ($runtime_status eq 'online' || $runtime_status eq 'running') {
+    my $qfield = &get_game_query_port_field($script_name_for_cfg);
+    if ($qfield) {
+        my $qport = int($cfg{$qfield} // 0);
+        if ($qport > 0) {
+            my $qdata = &a2s_query('127.0.0.1', $qport, 2);
+            if ($qdata) {
+                print &ui_table_row(
+                    $text{'monitor_players'},
+                    &html_escape("$qdata->{players} / $qdata->{max}")
+                );
+            }
+        }
+    }
+}
 print &ui_table_row($text{'manage_script'}, &html_escape($inst->{'script'}));
 print &ui_table_end();
 
@@ -977,6 +1019,31 @@ print &ui_hidden("action", $fw_btn_action);
 print &ui_submit($fw_btn_label);
 print &ui_form_end();
 print "</p>\n";
+
+if (&is_admin()) {
+    my $mon_s = $mon_state->{'status'} // 'running';
+    if ($mon_s eq 'failed' || $mon_s eq 'paused') {
+        print &ui_form_start('manage.cgi', 'post');
+        print &ui_hidden('instance_id', $safe_id);
+        print &ui_hidden('action', 'monitor_reset');
+        print &ui_submit($text{'monitor_reset_btn'}, undef, undef, undef, 'btn-success');
+        print &ui_form_end();
+    }
+    if ($mon_s ne 'disabled') {
+        print &ui_form_start('manage.cgi', 'post');
+        print &ui_hidden('instance_id', $safe_id);
+        print &ui_hidden('action', 'monitor_disable');
+        print &ui_submit($text{'monitor_disable_btn'}, undef, undef, undef, 'btn-default');
+        print &ui_form_end();
+    }
+    if ($mon_s eq 'disabled') {
+        print &ui_form_start('manage.cgi', 'post');
+        print &ui_hidden('instance_id', $safe_id);
+        print &ui_hidden('action', 'monitor_reset');
+        print &ui_submit($text{'monitor_reset_btn'}, undef, undef, undef, 'btn-success');
+        print &ui_form_end();
+    }
+}
 
 # Control buttons
 print "<p>\n";
