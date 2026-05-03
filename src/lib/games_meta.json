@@ -60,6 +60,7 @@
   "vhserver": {
     "name": "Valheim",
     "steam_required": true,
+    "query_port_field": "queryport",
     "fields": [
       {"key": "port",       "type": "port",     "label_de": "Port",         "label_en": "Port",            "default": "2456"},
       {"key": "gamename",   "type": "text",     "label_de": "Spielname",    "label_en": "Game name",       "default": "Valheim"},
@@ -70,6 +71,7 @@
   "pwserver": {
     "name": "Palworld",
     "steam_required": true,
+    "query_port_field": "queryport",
     "fields": [
       {"key": "port",       "type": "port",   "label_de": "Port",         "label_en": "Port",          "default": "8211"},
       {"key": "gamename",   "type": "text",   "label_de": "Spielname",    "label_en": "Game name",     "default": "Palworld"},
@@ -79,6 +81,7 @@
   "csgoserver": {
     "name": "Counter-Strike: Global Offensive",
     "steam_required": true,
+    "query_port_field": "queryport",
     "source": "lgsm",
     "apt_deps": ["lib32gcc-s1", "lib32stdc++6", "libsdl2-2.0-0:i386"],
     "fields": [
@@ -91,6 +94,7 @@
   "rustserver": {
     "name": "Rust",
     "steam_required": true,
+    "query_port_field": "queryport",
     "fields": [
       {"key": "port",       "type": "port",   "label_de": "Port",         "label_en": "Port",          "default": "28015"},
       {"key": "gamename",   "type": "text",   "label_de": "Spielname",    "label_en": "Game name",     "default": "Rust"},
@@ -100,6 +104,7 @@
   "armaserver": {
     "name": "Arma 3",
     "steam_required": true,
+    "query_port_field": "queryport",
     "source": "lgsm",
     "fields": [
       {"key": "port",       "type": "port",   "label_de": "Port",         "label_en": "Port",          "default": "2302"},
@@ -110,6 +115,7 @@
   "windrose": {
     "name": "Windrose Dedicated Server",
     "steam_required": true,
+    "query_port_field": "queryport",
     "source": "steamcmd",
     "steam_app_id": 4129620,
     "runtime": "wine",

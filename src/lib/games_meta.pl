@@ -201,6 +201,16 @@ sub get_game_source {
     return 'lgsm';
 }
 
+# Returns the query port field name for A2S-capable games.
+# For games that support A2S UDP queries, returns the LGSM config key holding the query port
+# (typically 'queryport'). Returns empty string for non-A2S games (e.g. Minecraft).
+sub get_game_query_port_field {
+    my ($script) = @_;
+    my $db = _load_meta();
+    return '' unless defined $db->{$script};
+    return $db->{$script}{'query_port_field'} // '';
+}
+
 # Returns the set of script names that exist in games_meta_local.json.
 sub local_game_scripts {
     return () unless defined $config_directory;
