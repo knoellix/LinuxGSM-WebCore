@@ -49,13 +49,16 @@ fi
 
 if [[ "$INST_SOURCE" == "lgsm" ]]; then
     _log "LGSM: running ./$SCRIPT_NAME monitor"
-    su -s /bin/bash -c "cd \"$SERVER_DIR\" && ./$SCRIPT_NAME monitor" "$UNIX_USER" 2>&1 || true
-    lgsm_status=$(su -s /bin/bash -c "cd \"$SERVER_DIR\" && ./$SCRIPT_NAME status 2>/dev/null" "$UNIX_USER" 2>/dev/null | grep -ci 'ONLINE' || echo "0")
+    # Single-quote-escape SERVER_DIR per CLAUDE.md section 5.1
+    safe_dir="${SERVER_DIR//\'/\'\\\'\'}"
+    su -s /bin/bash -c "cd '$safe_dir' && ./$SCRIPT_NAME monitor" "$UNIX_USER" 2>&1 || true
+    lgsm_status=$(su -s /bin/bash -c "cd '$safe_dir' && ./$SCRIPT_NAME status 2>/dev/null" "$UNIX_USER" 2>/dev/null | grep -ci 'ONLINE' || echo "0")
     if [[ "$lgsm_status" -gt 0 ]]; then
         _write_state "running" "0" "$(date +%s)"
         _log "LGSM: server running"
     else
         _log "LGSM: server offline after monitor"
+        # 99 = sentinel meaning "LGSM-managed failure, not tracked by our counter"
         _write_state "failed" "99" "$(date +%s)"
     fi
     exit 0
