@@ -1213,6 +1213,8 @@ if (!$cfg{_has_instance_config}) {
     print &ui_hidden("action", "fix_config");
     print &ui_table_start($text{'manage_fix_config_btn'}, undef, 2);
     for my $f (@qf_fields) {
+        my $type = $f->{'type'} // 'text';
+        next if $type eq 'bool';
         my $key = $f->{'key'};
         my $label = $qf_lang eq 'de' ? ($f->{'label_de'} // $f->{'label_en'} // $key)
                                      : ($f->{'label_en'} // $f->{'label_de'} // $key);
