@@ -153,8 +153,18 @@
       {"key": "queryport",  "type": "port",    "label_de": "Query Port",   "label_en": "Query Port",   "default": "27015"},
       {"key": "beaconport", "type": "port",    "label_de": "Beacon Port",  "label_en": "Beacon Port",  "default": "15000"},
       {"key": "maxplayers", "type": "int",     "label_de": "Max. Spieler", "label_en": "Max players",  "default": "16"},
-      {"key": "winefsync",  "type": "bool",    "label_de": "WINEFSYNC aktivieren (stabiler bei Verbindungsabbrüchen)", "label_en": "Enable WINEFSYNC (stabler on disconnect)", "default": "0"},
-      {"key": "wineesync",  "type": "bool",    "label_de": "WINEESYNC aktivieren (Fallback wenn kein FSYNC)", "label_en": "Enable WINEESYNC (fallback if no FSYNC)", "default": "0"}
-    ]
+      {"key": "winefsync",  "type": "bool",    "label_de": "WINEFSYNC aktivieren", "label_en": "Enable WINEFSYNC", "default": "0"},
+      {"key": "wineesync",  "type": "bool",    "label_de": "WINEESYNC aktivieren", "label_en": "Enable WINEESYNC", "default": "0"}
+    ],
+    "field_hints": {
+      "winefsync": {
+        "de": "Futex-Synchronisation (schneller als Wine-Standard). Benoetigt Linux-Kernel 5.16+. Nicht zusammen mit WINEESYNC verwenden.",
+        "en": "Futex synchronisation (faster than Wine default). Needs Linux kernel 5.16+. Do not use together with WINEESYNC."
+      },
+      "wineesync": {
+        "de": "Eventfd-Synchronisation (kompatibel ab Kernel 4.x). Nicht zusammen mit WINEFSYNC verwenden.",
+        "en": "Eventfd synchronisation (compatible from kernel 4.x). Do not use together with WINEFSYNC."
+      }
+    }
   }
 }

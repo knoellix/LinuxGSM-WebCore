@@ -1369,11 +1369,20 @@ JS
     print "$text{'config_editor_raw_mode'}</label></p>\n";
     print "<div id='cfg_form_div_instance'>\n";
     print &ui_table_start($text{'config_editor_instance'}, "width=100%", 2);
+    my $inst_hints = &get_game_field_hints($script_name_for_cfg);
     for my $f (@$inst_editable) {
         my $key   = $f->{'key'};
         my $label = (($lang eq 'de') ? $f->{'label_de'} : $f->{'label_en'}) // $key;
         my $val   = exists $inst_vals->{$key} ? $inst_vals->{$key} : ($f->{'default'} // '');
         my $type  = $f->{'type'} // 'text';
+        my $hint  = $inst_hints->{$key};
+        if ($hint) {
+            my $tip = &html_escape(($lang eq 'de' ? $hint->{'de'} : $hint->{'en'}) // '');
+            $label = "<abbr title='$tip' style='cursor:help;text-decoration:underline dotted'>"
+                   . &html_escape($label) . "</abbr>";
+        } else {
+            $label = &html_escape($label);
+        }
         my $widget;
         if ($type eq 'bool') {
             my $yes = $text{'yes'} || 'Ja';
@@ -1384,7 +1393,7 @@ JS
             my $width = ($type eq 'port' || $type eq 'int') ? 10 : 40;
             $widget = &ui_textbox("field_$key", &html_escape($val), $width);
         }
-        print &ui_table_row(&html_escape($label), $widget);
+        print &ui_table_row($label, $widget);
     }
     if (@$inst_unknown) {
         print &ui_table_row("<b>$text{'config_editor_unknown_fields'}</b>", "");

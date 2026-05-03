@@ -201,6 +201,17 @@ sub get_game_source {
     return 'lgsm';
 }
 
+# Returns a hashref { field_key => { de => "...", en => "..." } } for a game's field hints.
+# Hints live at the game entry level (not inside the fields array) so local overrides
+# of `fields` do not erase them. Returns empty hashref for unknown games.
+sub get_game_field_hints {
+    my ($script) = @_;
+    my %meta = load_games_meta();
+    my $key  = _resolve_meta_key($script);
+    return {} unless defined $meta{$key};
+    return $meta{$key}{'field_hints'} // {};
+}
+
 # Returns the query port field name for A2S-capable games.
 # For games that support A2S UDP queries, returns the LGSM config key holding the query port
 # (typically 'queryport'). Returns empty string for non-A2S games (e.g. Minecraft).
