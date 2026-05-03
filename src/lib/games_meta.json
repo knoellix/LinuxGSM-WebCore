@@ -152,7 +152,9 @@
       {"key": "port",       "type": "port",    "label_de": "Game Port",    "label_en": "Game Port",    "default": "7777"},
       {"key": "queryport",  "type": "port",    "label_de": "Query Port",   "label_en": "Query Port",   "default": "27015"},
       {"key": "beaconport", "type": "port",    "label_de": "Beacon Port",  "label_en": "Beacon Port",  "default": "15000"},
-      {"key": "maxplayers", "type": "int",     "label_de": "Max. Spieler", "label_en": "Max players",  "default": "16"}
+      {"key": "maxplayers", "type": "int",     "label_de": "Max. Spieler", "label_en": "Max players",  "default": "16"},
+      {"key": "winefsync",  "type": "bool",    "label_de": "WINEFSYNC aktivieren (stabiler bei Verbindungsabbrüchen)", "label_en": "Enable WINEFSYNC (stabler on disconnect)", "default": "0"},
+      {"key": "wineesync",  "type": "bool",    "label_de": "WINEESYNC aktivieren (Fallback wenn kein FSYNC)", "label_en": "Enable WINEESYNC (fallback if no FSYNC)", "default": "0"}
     ]
   }
 }

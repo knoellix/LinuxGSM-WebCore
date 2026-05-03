@@ -122,7 +122,7 @@ sub game_requires_steam {
 
 sub _merge_meta {
     my ($meta_ref, $file) = @_;
-    open(my $fh, '<:encoding(UTF-8)', $file) or return;
+    open(my $fh, '<', $file) or return;
     local $/;
     my $json = <$fh>;
     close($fh);

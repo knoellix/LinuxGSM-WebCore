@@ -262,6 +262,19 @@ case "$ACTION" in
                 fi
             } >>"$DIAG_LOG" 2>&1
         fi
+
+        # Read Wine sync flags from instance LGSM config (set via WebUI config editor).
+        # Values are baked into the launcher heredoc at generation time (not at runtime).
+        WINE_FSYNC_VAL=0
+        WINE_ESYNC_VAL=0
+        if [ -n "$SCRIPT_NAME" ] && declare -f _read_lgsm_cfg_value >/dev/null 2>&1; then
+            _inst_cfg="$SERVER_DIR/lgsm/config-lgsm/$SCRIPT_NAME/$SCRIPT_NAME.cfg"
+            _v="$(_read_lgsm_cfg_value "$_inst_cfg" "winefsync" 2>/dev/null || true)"
+            [ "$_v" = "1" ] && WINE_FSYNC_VAL=1 || true
+            _v="$(_read_lgsm_cfg_value "$_inst_cfg" "wineesync" 2>/dev/null || true)"
+            [ "$_v" = "1" ] && WINE_ESYNC_VAL=1 || true
+        fi
+        echo "Wine sync flags: WINEFSYNC=$WINE_FSYNC_VAL WINEESYNC=$WINE_ESYNC_VAL" >>"$DIAG_LOG" 2>&1
         if [ -n "$WINDROSE_DIRECT_BIN" ]; then
             LOCK_FILE="$SERVER_DIR/.windrose_start.lock"
             touch "$LOCK_FILE" 2>/dev/null || true
@@ -338,6 +351,9 @@ export WINEARCH=win64
 # during a failing start. err+all is verbose but actionable; users can dial back later.
 export WINEDEBUG="\${WINEDEBUG:-err+all,fixme-all}"
 unset WINEDLLOVERRIDES
+# Wine sync primitives — values baked at launch-script generation time from instance cfg.
+[ $WINE_FSYNC_VAL -eq 1 ] && export WINEFSYNC=1 || true
+[ $WINE_ESYNC_VAL -eq 1 ] && export WINEESYNC=1 || true
 # pam_systemd usually sets XDG_RUNTIME_DIR for an interactive sudo session, but Webmin's
 # 'setsid nohup … su' chain can land here without it. Wine/Xvfb then fall back to /tmp and
 # behave inconsistently. Set it deterministically.

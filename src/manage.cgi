@@ -1371,9 +1371,18 @@ JS
         my $key   = $f->{'key'};
         my $label = (($lang eq 'de') ? $f->{'label_de'} : $f->{'label_en'}) // $key;
         my $val   = exists $inst_vals->{$key} ? $inst_vals->{$key} : ($f->{'default'} // '');
-        my $width = ($f->{'type'} eq 'port' || $f->{'type'} eq 'int') ? 10 : 40;
-        print &ui_table_row(&html_escape($label),
-                            &ui_textbox("field_$key", &html_escape($val), $width));
+        my $type  = $f->{'type'} // 'text';
+        my $widget;
+        if ($type eq 'bool') {
+            my $yes = $text{'yes'} || 'Ja';
+            my $no  = $text{'no'}  || 'Nein';
+            $widget = &ui_radio("field_$key", ($val && $val ne '0') ? 1 : 0,
+                                [[1, $yes], [0, $no]]);
+        } else {
+            my $width = ($type eq 'port' || $type eq 'int') ? 10 : 40;
+            $widget = &ui_textbox("field_$key", &html_escape($val), $width);
+        }
+        print &ui_table_row(&html_escape($label), $widget);
     }
     if (@$inst_unknown) {
         print &ui_table_row("<b>$text{'config_editor_unknown_fields'}</b>", "");
