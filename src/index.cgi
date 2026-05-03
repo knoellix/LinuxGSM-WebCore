@@ -10,8 +10,10 @@ require './lib/core.pl';
 require './lib/instance.pl';
 require './lib/firewall.pl';
 require './lib/acl.pl';
+require './lib/monitor.pl';
 
 our (%text, %config, %in, %access, %gconfig);
+our $config_directory;
 $main::gconfig{'charset'} = 'utf-8';
 &ReadParse(\%in);
 
@@ -48,6 +50,20 @@ sub _instance_status_badge {
         unknown    => '&#x1F7E1; Unbekannt',
     );
     return $map{$status} || ('&#x1F7E1; ' . &html_escape($status));
+}
+
+sub _monitor_status_badge {
+    my ($inst, $cfg_dir) = @_;
+    my $id = $inst->{'id'};
+    my $s = &read_monitor_state($cfg_dir, $id);
+    my %map = (
+        running    => '&#x1F7E2;',
+        restarting => '&#x1F7E1; ' . ($text{'jobs_status_running'} || '...'),
+        failed     => '&#x1F534; ' . ($text{'monitor_status_failed'}   || 'Fehlgeschlagen'),
+        paused     => '&#x26AB; '  . ($text{'monitor_status_paused'}   || 'Pausiert'),
+        disabled   => '&#x26AB; '  . ($text{'monitor_status_disabled'} || 'Deaktiviert'),
+    );
+    return $map{$s->{'status'}} // '&#x1F7E2;';
 }
 
 &header($text{'index_title'}, '');
@@ -104,6 +120,7 @@ if (!@instances) {
             &html_escape($inst->{'game'}),
             $port_str,
             _instance_status_badge($inst),
+            _monitor_status_badge($inst, $config_directory),
             (&user_is_readonly($id)
                 ? "<a href='$manage_url'>$text{'index_btn_manage'}</a> <small>(" . ($text{'acl_role_viewer'} || 'Viewer') . ")</small>"
                 : "<a href='$manage_url'>$text{'index_btn_manage'}</a>"),
@@ -116,6 +133,7 @@ if (!@instances) {
             $text{'index_col_game'},
             $text{'index_col_port'},
             ($text{'manage_status'} || 'Status'),
+            ($text{'monitor_col'}   || 'Monitor'),
             $text{'index_col_manage'},
         ],
         "100%",
