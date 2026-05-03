@@ -8,7 +8,7 @@ Dieses Dokument trennt verbindliche Projektregeln (Policy) von Webmin-spezifisch
 - Bei Konflikten gilt: User-Anweisung > Projektrichtlinie > Agent-Standardverhalten.
 
 ## 1. Agent-Workflow (verbindlich)
-- **Architect Mode:** Vor jeder Code-Aenderung muss ein `IMPLEMENTATION_PLAN.md` erstellt oder aktualisiert werden.
+- **Architect Mode:** Vor jeder Code-Aenderung einen Implementierungsplan erstellen (bei Superpowers-Workflow: `docs/superpowers/plans/`).
 - **Ressourcenpruefung:** Vor Provisionierungs- oder Service-Aenderungen Ports, User und Abhaengigkeiten pruefen.
 - **Executor Mode:** Shell-Aktionen nachvollziehbar ausfuehren und bei Perl-Dateien vor dem Speichern `perl -c` validieren.
 - **Verification:** Nach jeder Aenderung mindestens ein passender Test-Stub in `t/` oder ein Syntax-/Integritaetscheck.
@@ -41,7 +41,7 @@ Dieses Dokument trennt verbindliche Projektregeln (Policy) von Webmin-spezifisch
 - **poll_job/next_status-Pattern:** `poll_job` setzt `instance_status` via URL-Parameter `next_status` — bei `status=ok` ruft CGI `set_instance_status($id, $next_status)`. Worker schreiben finalen Status nur in `$JOB_DIR/status`, nie direkt in Registry.
 - **Game-Server-Operationen:** Ausnahmslos via `su -s /bin/bash -c "..." {unix_user}` aus dem Serververzeichnis. `apt-get` nur als root fuer System-Abhaengigkeiten; alle Server-Dateien gehoeren dem Unix-User.
 - **Live-Konsole:** Echtzeit-Log-Streaming per `tail`-Simulation im Webmin-Interface.
-- **Monitoring:** Integration ins Webmin-Status-Modul mit 3-Stufen-Eskalation (Restart -> Mail).
+- **Monitoring:** PID-Check + A2S-Query + Restart-Counter (max. 5/h); bei Limit → Status `failed`, manueller Reset noetig. Kein automatischer Mail-Versand implementiert.
 
 ### 4.1 Worker-Pattern (Background-Worker, manage.cgi-Aufrufe)
 - **Diagnose-Log zuerst:** Background-Worker (`steamcmd_control.sh`, `steamcmd_install.sh`) legen am Anfang der Action (vor Branch-Logik) ein dediziertes Debug-File im `SERVER_DIR` an und loggen Branch-Entscheidungen hinein. Verifikation: Nach Start/Install existiert das Debug-File auch bei fruehem Abbruch.
@@ -175,13 +175,13 @@ Dieser Abschnitt dokumentiert zwingende Webmin-spezifische Details, die aus real
 - Instanz-Registry: TSV mit `source`/`sftp_user`; Legacy-Format `id=user:script` weiter einlesen.
 - `ui_submit` immer mit expliziter CSS-Klasse aufrufen (5. Argument): `btn-danger` fuer destruktive Aktionen, `btn-default` fuer neutrale — verhindert Theme-Farb-Roulette bei mehreren Buttons in einer Zelle.
 
-### 8.12.0 Prozesspriorisierung (verbindlich)
+### 8.12 Prozesspriorisierung (verbindlich)
 - **Game-Server immer `$PRIO_HIGH`:** Der Game-Server-Tree (screen/tmux/systemd-run/nohup → bash → wine → EXE) wird ueber `$PRIO_HIGH` (`nice -n -5 ionice -c 2 -n 0`) gestartet. Negatives `nice` setzt der Worker als root **vor** dem `su`-Boundary; nicht-priviligierte Game-User koennen es nicht erhoehen, **erben** es aber problemlos (CAP_SYS_NICE wird nur fuer `setpriority()` benoetigt, nicht fuer Vererbung). Auch der `screen`/`tmux`-Daemon erbt den Wert via `fork()` und gibt ihn an den Game-Prozess weiter.
 - **Worker immer `$PRIO_LOW`:** SteamCMD-Downloads, LGSM-Installs/Updates, Wine-Runtime-Setup laufen ueber `$PRIO_LOW` (`nice -n 10 ionice -c 3`). Idle-IO-Klasse stellt sicher, dass ein laufender Game-Server auf demselben Host nicht durch einen parallelen Download stockt.
 - **Helper-Lib:** `src/scripts/lib/prio.sh` definiert `PRIO_HIGH` / `PRIO_LOW` als Praefix-Strings. Worker sourcen sie via `${MODULE_ROOT}/scripts/lib/prio.sh` (Hauptpfad) bzw. `$(dirname "$0")/lib/prio.sh` (Fallback). Fehlt `nice` oder `ionice`, wird der jeweilige Knopf still uebersprungen — der Befehl laeuft trotzdem.
 - **Dispatch passt MODULE_ROOT immer mit:** Jeder `setsid nohup`-Worker-Aufruf in `manage.cgi` setzt `MODULE_ROOT='$module_root'` als Env-Variable, damit das Skript die Lib unter dem Modulpfad findet (`/usr/share/webmin/linuxgsm-webcore/scripts/lib/prio.sh`).
 
-### 8.12 Non-LGSM Game-Server (SteamCMD / Wine)
+### 8.13 Non-LGSM Game-Server (SteamCMD / Wine)
 - **Detach via Session-Manager:** Wine-/UE-Server bevorzugt via `screen -dmS` oder `tmux new-session -d` starten. Reines `nohup setsid ... &` nur als Fallback verwenden.
 - **Pre-Start `wineserver -k`:** Vor jedem Wine-Start im Ziel-Prefix `WINEPREFIX=<prefix> wineserver -k` ausfuehren, um stale Prefix-Locks zu vermeiden.
 - **Launcher-Wrapper mit `exec`:** Wrapper-Skripte mit `exec xvfb-run -a /usr/bin/wine ...` beenden, damit kein transienter Bash-Parent die PID-Adoption verfaelscht.
