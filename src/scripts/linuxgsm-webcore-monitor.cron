@@ -1,0 +1,3 @@
+# LinuxGSM-WebCore monitor — runs every 2 minutes as root
+# Install: cp linuxgsm-webcore-monitor.cron /etc/cron.d/linuxgsm-webcore-monitor
+*/2 * * * * root /usr/share/webmin/linuxgsm-webcore/scripts/monitor_all.sh >> /var/log/linuxgsm-webcore-monitor.log 2>&1
