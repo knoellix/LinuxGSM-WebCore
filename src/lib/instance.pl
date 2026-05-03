@@ -14,9 +14,12 @@ use warnings;
 
 # Load firewall functions using the directory of this file (works in both
 # production and test environments regardless of CWD).
+# Skip if test stubs already define firewall_status to avoid "redefined" noise.
 BEGIN {
-    (my $dir = __FILE__) =~ s|/[^/]+$||;
-    require "$dir/firewall.pl";
+    unless (defined &firewall_status) {
+        (my $dir = __FILE__) =~ s|/[^/]+$||;
+        require "$dir/firewall.pl";
+    }
 }
 
 sub sanitize_input;
@@ -476,7 +479,8 @@ sub _detect_status {
     eval {
         local $SIG{ALRM} = sub { die "timeout\n" };
         alarm(10);
-        $out = `su -s /bin/bash -c "cd \Q$home\E && ./$script_name details" $user 2>/dev/null`;
+        (my $safe_home = $home) =~ s/'/'\\''/g;
+        $out = `su -s /bin/bash -c "cd '$safe_home' && ./$script_name details" $user 2>/dev/null`;
         alarm(0);
     };
     alarm(0);  # cancel alarm if eval died for another reason

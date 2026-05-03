@@ -29,7 +29,6 @@ sub sanitize_input {
     return $in;
 }
 my $port_busy = 0;
-sub port_in_use { return $port_busy }
 
 # getpwnam mock: controlled per-test via $mock_user_exists
 my $mock_user_exists = 0;

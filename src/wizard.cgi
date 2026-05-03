@@ -15,7 +15,7 @@ require './lib/games_meta.pl';
 require './lib/steam.pl';
 require './lib/logging.pl';
 
-our (%text, %in, %access, $config_directory);
+our (%text, %in, %access, %gconfig, $config_directory);
 $main::gconfig{'charset'} = 'utf-8';
 &ReadParse(\%in);
 

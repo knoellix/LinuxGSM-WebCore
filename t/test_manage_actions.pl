@@ -38,9 +38,8 @@ sub html_escape {
 sub foreign_require { return 1 }
 sub get_module_acl  { return () }
 sub save_module_acl { return 1 }
-sub list_webmin_users { return ('admin', 'user1') }
-
 require './src/lib/acl.pl';
+{ no warnings 'redefine'; *list_webmin_users = sub { return ('admin', 'user1') }; }
 
 # 1. can_create returns true for admin role
 {

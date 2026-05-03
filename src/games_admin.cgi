@@ -18,7 +18,7 @@ require './lib/core.pl';
 require './lib/acl.pl';
 require './lib/games_meta.pl';
 
-our (%text, %in, $config_directory, $module_name, $module_root);
+our (%text, %in, %gconfig, $config_directory, $module_name, $module_root);
 $main::gconfig{'charset'} = 'utf-8';
 &ReadParse(\%in);
 

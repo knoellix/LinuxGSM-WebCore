@@ -12,7 +12,7 @@ require './lib/steam.pl';
 require './lib/instance.pl';
 require './lib/logging.pl';
 
-our (%text, %config, %in);
+our (%text, %config, %in, %gconfig);
 our ($module_root, $module_root_directory, $config_directory, $module_name);
 our $current_lang;
 $module_root ||= $module_root_directory;

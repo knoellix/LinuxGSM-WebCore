@@ -2,6 +2,10 @@
 use strict;
 use warnings;
 
+# Guard against duplicate-load: test stubs or prior requires already defined
+# firewall_status → skip the whole file to avoid "redefined" warnings.
+return 1 if defined &firewall_status;
+
 # Open a UDP+TCP port for a game server.
 sub firewall_open_port {
     my ($port, $proto) = @_;

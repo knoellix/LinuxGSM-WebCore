@@ -25,13 +25,9 @@ sub sanitize_input {
 }
 
 my $port_busy = 0;
-sub port_in_use { return $port_busy; }
 
 require './src/lib/provision.pl';
-{
-    no warnings 'redefine';
-    *port_in_use = sub { return $port_busy; };
-}
+{ no warnings 'redefine'; *port_in_use = sub { return $port_busy; }; }
 
 is(validate_provision('mcuser', 'minecraft', 25565), undef, 'validate_provision accepts valid input');
 is(validate_provision('', 'minecraft', 25565), 'missing values', 'validate_provision rejects missing user');

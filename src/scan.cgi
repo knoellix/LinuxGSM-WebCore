@@ -13,7 +13,7 @@ require './lib/ftp_proftpd.pl';
 require './lib/logging.pl';
 require './lib/provision.pl';
 
-our (%text, %in, %access);
+our (%text, %in, %access, %gconfig);
 $main::gconfig{'charset'} = 'utf-8';
 &ReadParse(\%in);
 
