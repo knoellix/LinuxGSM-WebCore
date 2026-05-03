@@ -206,9 +206,9 @@ sub get_game_source {
 # (typically 'queryport'). Returns empty string for non-A2S games (e.g. Minecraft).
 sub get_game_query_port_field {
     my ($script) = @_;
-    my $db = _load_meta();
-    return '' unless defined $db->{$script};
-    return $db->{$script}{'query_port_field'} // '';
+    my %meta = load_games_meta();
+    my $key  = _resolve_meta_key($script);
+    return $meta{$key}{'query_port_field'} // '';
 }
 
 # Returns the set of script names that exist in games_meta_local.json.
