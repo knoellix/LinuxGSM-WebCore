@@ -2,7 +2,7 @@
 # t/test_config_editor.pl — Tests for src/lib/config_editor.pl
 use strict;
 use warnings;
-use Test::More tests => 24;
+use Test::More tests => 27;
 use File::Temp qw(tempdir tempfile);
 use FindBin qw($Bin);
 use lib "$Bin/..";
@@ -203,6 +203,40 @@ my $tmpdir = tempdir(CLEANUP => 1);
     my $path = &resolve_game_server_config_path('/home/kekks/palworld', 'pwserver', \%cfg);
     is($path, '/home/kekks/palworld/serverfiles/Pal/Saved/Config/LinuxServer/PalWorldSettings.ini',
         'resolve_game_server_config_path: falls back to servercfgdir + servercfg');
+}
+
+# Test 20a: static hint (relative) wins over LGSM config
+{
+    my %cfg = (
+        servercfgfullpath => '/should/be/ignored.ini',
+    );
+    my $path = &resolve_game_server_config_path(
+        '/home/gs_windrose/windrose_knoellix', 'windrose', \%cfg,
+        'serverfiles/R5/ServerDescription.json');
+    is($path, '/home/gs_windrose/windrose_knoellix/serverfiles/R5/ServerDescription.json',
+        'resolve_game_server_config_path: relative static hint resolves under script_dir');
+}
+
+# Test 20b: static hint (absolute) is returned verbatim
+{
+    my %cfg = ();
+    my $path = &resolve_game_server_config_path(
+        '/home/foo/bar', 'fooserver', \%cfg,
+        '/etc/fooserver/config.json');
+    is($path, '/etc/fooserver/config.json',
+        'resolve_game_server_config_path: absolute static hint preserved');
+}
+
+# Test 20c: empty hint falls through to LGSM resolution
+{
+    my %cfg = (
+        serverfiles       => '/home/kekks/palworld/serverfiles',
+        servercfgfullpath => '${serverfiles}/Pal/Saved/Config/LinuxServer/PalWorldSettings.ini',
+    );
+    my $path = &resolve_game_server_config_path(
+        '/home/kekks/palworld', 'pwserver', \%cfg, '');
+    is($path, '/home/kekks/palworld/serverfiles/Pal/Saved/Config/LinuxServer/PalWorldSettings.ini',
+        'resolve_game_server_config_path: empty static hint falls through to LGSM logic');
 }
 
 # Test 20: write_file_exact preserves content byte-by-byte

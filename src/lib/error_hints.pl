@@ -12,6 +12,10 @@ my @_PATTERNS = (
     [ qr/No space left on device/i,                                                    'hint_no_space' ],
     [ qr/curl: \(\d+\)|wget: unable to resolve/i,                                     'hint_network_error' ],
     [ qr/Login Failure|Invalid Password|steamcmd.*login.*fail/i,                      'hint_steamcmd_login' ],
+    [ qr/No server binary found|No executable server binary found/i,                   'hint_no_server_binary' ],
+    [ qr/exited shortly after start/i,                                                  'hint_server_process_exited' ],
+    [ qr/Wine runtime required|wine: command not found|wine64: command not found/i,   'hint_wine_required' ],
+    [ qr/msvcp140\.dll.*unimplemented|ntlm_auth was not found/i,                       'hint_wine_required' ],
 );
 
 sub get_hint {

@@ -112,12 +112,40 @@
     "steam_required": true,
     "source": "steamcmd",
     "steam_app_id": 4129620,
+    "runtime": "wine",
+    "launch_candidates": [
+      "R5/Binaries/Win64/WindroseServer-Win64-Shipping.exe",
+      "WindroseServer.exe",
+      "R5/Binaries/Win64/Windrose-Win64-Shipping.exe",
+      "Windrose/Binaries/Win64/WindroseServer-Win64-Shipping.exe",
+      "Windrose/Binaries/Win64/Windrose-Win64-Shipping.exe",
+      "Binaries/Win64/WindroseServer-Win64-Shipping.exe",
+      "Binaries/Win64/Windrose-Win64-Shipping.exe",
+      "*Server*.exe",
+      "*.exe"
+    ],
     "engine": "unreal",
     "login_required": false,
     "apt_deps": ["lib32gcc-s1", "libsdl2-2.0-0:i386"],
+    "game_config_path": "serverfiles/R5/ServerDescription.json",
+    "game_config_format": "json",
+    "game_config_fields": [
+      {"key": "ServerDescription_Persistent.ServerName",                    "type": "text",     "label_de": "Servername",          "label_en": "Server name"},
+      {"key": "ServerDescription_Persistent.MaxPlayerCount",                "type": "int",      "label_de": "Max. Spieler",        "label_en": "Max players"},
+      {"key": "ServerDescription_Persistent.IsPasswordProtected",           "type": "bool",     "label_de": "Passwortschutz",      "label_en": "Password protected"},
+      {"key": "ServerDescription_Persistent.Password",                      "type": "password", "label_de": "Passwort",            "label_en": "Password"},
+      {"key": "ServerDescription_Persistent.InviteCode",                    "type": "text",     "label_de": "Invite-Code",         "label_en": "Invite code"},
+      {"key": "ServerDescription_Persistent.UserSelectedRegion",            "type": "text",     "label_de": "Region",              "label_en": "Region"},
+      {"key": "ServerDescription_Persistent.UseDirectConnection",           "type": "bool",     "label_de": "Direktverbindung",    "label_en": "Direct connection"},
+      {"key": "ServerDescription_Persistent.DirectConnectionServerAddress", "type": "text",     "label_de": "Direkt-Adresse",      "label_en": "Direct address"},
+      {"key": "ServerDescription_Persistent.DirectConnectionServerPort",    "type": "int",      "label_de": "Direkt-Port",         "label_en": "Direct port"},
+      {"key": "ServerDescription_Persistent.DirectConnectionProxyAddress",  "type": "text",     "label_de": "Direkt-Proxy",        "label_en": "Direct proxy"},
+      {"key": "ServerDescription_Persistent.P2pProxyAddress",               "type": "text",     "label_de": "P2P-Proxy",           "label_en": "P2P proxy"}
+    ],
     "fields": [
       {"key": "port",       "type": "port",    "label_de": "Game Port",    "label_en": "Game Port",    "default": "7777"},
       {"key": "queryport",  "type": "port",    "label_de": "Query Port",   "label_en": "Query Port",   "default": "27015"},
+      {"key": "beaconport", "type": "port",    "label_de": "Beacon Port",  "label_en": "Beacon Port",  "default": "15000"},
       {"key": "maxplayers", "type": "int",     "label_de": "Max. Spieler", "label_en": "Max players",  "default": "16"}
     ]
   }

@@ -117,13 +117,19 @@ sub split_editor_fields {
 # ---------------------------------------------------------------------------
 
 # Detect the format of a game-server config file.
-# Returns 'ini_option_settings' (Palworld), 'properties', or 'unknown'.
+# Returns 'json' (Windrose & co.), 'ini_option_settings' (Palworld),
+# 'properties', or 'unknown'.
 sub detect_game_config_format {
     my ($path, $raw) = @_;
     return 'unknown' unless defined $raw && length $raw;
+    # Path-driven shortcuts beat content heuristics so empty/templated files
+    # still resolve to a sensible parser.
+    if (defined $path) {
+        return 'json'                if $path =~ /\.json$/i;
+        return 'properties'          if $path =~ /\.properties$/i;
+    }
+    return 'json'                if $raw =~ /\A\s*[\{\[]/;
     return 'ini_option_settings' if $raw =~ /OptionSettings\s*=\s*\(/;
-    return 'properties'          if defined $path && $path =~ /\.properties$/i;
-    # Heuristic: key-with-possible-hyphen=value lines → .properties style
     return 'properties' if $raw =~ /^[a-zA-Z][a-zA-Z0-9_\-\.]*\s*=/m;
     return 'unknown';
 }
@@ -180,11 +186,25 @@ sub _expand_lgsm_vars {
     return $out;
 }
 
-# Resolve game-server config path from LGSM variables.
-# Prefers servercfgfullpath, then servercfgdir + servercfg.
+# Resolve game-server config path.
+# Priority order:
+#   1. Explicit static path hint (4th arg) — used by SteamCMD/Wine games
+#      whose config sits at a known relative location inside serverfiles/.
+#      The CGI looks up `get_game_config_path($script)` from games_meta and
+#      passes the result here; we resolve relative paths against
+#      $script_dir.
+#   2. LGSM servercfgfullpath
+#   3. LGSM servercfgdir + servercfg
 sub resolve_game_server_config_path {
-    my ($script_dir, $script_name, $cfg_ref) = @_;
+    my ($script_dir, $script_name, $cfg_ref, $static_hint) = @_;
     my %cfg = %{$cfg_ref || {}};
+
+    if (defined $static_hint && length $static_hint) {
+        my $abs = ($static_hint =~ m|^/|) ? $static_hint : "$script_dir/$static_hint";
+        $abs =~ s|//+|/|g;
+        return $abs;
+    }
+
     $cfg{'rootdir'}     ||= $script_dir;
     $cfg{'serverfiles'} ||= "$script_dir/serverfiles";
     $cfg{'lgsmdir'}     ||= "$script_dir/lgsm";
@@ -268,6 +288,99 @@ sub _quote_option_value {
         return "\"$v\"";
     }
     return $v;
+}
+
+# ---------------------------------------------------------------------------
+# JSON game config support (Windrose ServerDescription.json and similar)
+#
+# Design rationale: like the INI byte-preservation rule (CLAUDE.md §8.6), we
+# keep JSON files byte-identical except for the values the user actually
+# changed. JSON::PP would re-serialize the entire document and lose key order
+# plus formatting, so we read with JSON::PP for the values and write via
+# targeted regex substitutions on the original raw string.
+#
+# Keys are flattened to dot notation, e.g.
+#   ServerDescription_Persistent.ServerName
+# Arrays are skipped (no game we support edits arrays via the UI).
+# ---------------------------------------------------------------------------
+
+sub _flatten_json_node {
+    my ($node, $prefix, $vals_ref, $order_ref) = @_;
+    if (ref $node eq 'HASH') {
+        for my $k (sort keys %$node) {
+            my $key = $prefix eq '' ? $k : "$prefix.$k";
+            _flatten_json_node($node->{$k}, $key, $vals_ref, $order_ref);
+        }
+    } elsif (ref $node eq 'ARRAY') {
+        return;
+    } else {
+        my $v = $node;
+        if (ref($v) eq 'JSON::PP::Boolean') {
+            $v = $v ? 'true' : 'false';
+        }
+        $v = '' unless defined $v;
+        push @$order_ref, $prefix unless exists $vals_ref->{$prefix};
+        $vals_ref->{$prefix} = $v;
+    }
+}
+
+# Parse a JSON game config and return ($vals_href, $order_aref) flattened.
+sub parse_json_config {
+    my ($raw) = @_;
+    my (%vals, @order);
+    return (\%vals, \@order) unless defined $raw && length $raw;
+    my $obj;
+    eval {
+        require JSON::PP;
+        $obj = JSON::PP::decode_json($raw);
+        1;
+    } or return (\%vals, \@order);
+    _flatten_json_node($obj, '', \%vals, \@order);
+    return (\%vals, \@order);
+}
+
+# Surgical in-place update of a JSON document.
+# - Only keys present in $vals_ref are touched.
+# - Whitespace, comments-as-strings, key order, and unknown keys are preserved.
+# - Booleans, ints, floats, strings, and JSON null are detected and rewritten
+#   with the matching JSON literal.
+sub update_json_config {
+    my ($raw, $vals_ref) = @_;
+    my %vals = %{$vals_ref || {}};
+    return $raw // '' unless %vals;
+    return $raw // '' unless defined $raw && length $raw;
+    for my $dotted (keys %vals) {
+        my @parts = split /\./, $dotted;
+        my $leaf  = $parts[-1];
+        my $val   = $vals{$dotted};
+        my $leaf_re = quotemeta($leaf);
+        # Iterate matches: type detection per occurrence.
+        # We only rewrite the FIRST occurrence of $leaf; if the same leaf name
+        # appears in multiple objects, the user must use raw mode.
+        if ($raw =~ /"$leaf_re"\s*:\s*"((?:[^"\\]|\\.)*)"/) {
+            my $escaped = defined $val ? $val : '';
+            $escaped =~ s/\\/\\\\/g;
+            $escaped =~ s/"/\\"/g;
+            $escaped =~ s/\r/\\r/g;
+            $escaped =~ s/\n/\\n/g;
+            $raw =~ s/"$leaf_re"(\s*:\s*)"(?:[^"\\]|\\.)*"/"$leaf"$1"$escaped"/;
+        }
+        elsif ($raw =~ /"$leaf_re"\s*:\s*(true|false)\b/) {
+            my $b = ($val =~ /^\s*(?:1|true|on|yes|ja)\s*$/i) ? 'true' : 'false';
+            $raw =~ s/"$leaf_re"(\s*:\s*)(?:true|false)\b/"$leaf"$1$b/;
+        }
+        elsif ($raw =~ /"$leaf_re"\s*:\s*null\b/) {
+            my $n = (defined $val && length $val) ? $val : 'null';
+            $raw =~ s/"$leaf_re"(\s*:\s*)null\b/"$leaf"$1$n/;
+        }
+        elsif ($raw =~ /"$leaf_re"\s*:\s*-?\d+(?:\.\d+)?/) {
+            (my $num = (defined $val ? $val : '')) =~ s/[^0-9.\-]//g;
+            $num = '0' if $num eq '' || $num eq '-' || $num eq '.';
+            $raw =~ s/"$leaf_re"(\s*:\s*)-?\d+(?:\.\d+)?/"$leaf"$1$num/;
+        }
+        # else: leaf not found, silently skip (user removed the key in raw mode)
+    }
+    return $raw;
 }
 
 # Update OptionSettings line while preserving surrounding INI content.

@@ -15,6 +15,41 @@ our (%text, %config, %in, %access, %gconfig);
 $main::gconfig{'charset'} = 'utf-8';
 &ReadParse(\%in);
 
+sub _effective_instance_source {
+    my ($inst) = @_;
+    my $src = $inst->{'source'} // '';
+    return $src if $src eq 'steamcmd';
+    my $script_path = $inst->{'script'} // '';
+    (my $server_dir = $script_path) =~ s|/[^/]+$||;
+    return 'steamcmd' if $server_dir && -f "$server_dir/.steam_app_id";
+    return $src || 'lgsm';
+}
+
+sub _instance_status_badge {
+    my ($inst) = @_;
+    my $status = 'unknown';
+    my $src = _effective_instance_source($inst);
+    if ($src eq 'steamcmd') {
+        my $script_path = $inst->{'script'} // '';
+        (my $server_dir = $script_path) =~ s|/[^/]+$||;
+        $status = &_detect_status_steamcmd($server_dir);
+    } elsif (($inst->{'instance_status'} // 'installed') ne 'installed') {
+        $status = $inst->{'instance_status'};
+    } else {
+        $status = $inst->{'status'} // 'unknown';
+    }
+    my %map = (
+        online     => '&#x1F7E2; L&auml;uft',
+        running    => '&#x1F7E2; L&auml;uft',
+        offline    => '&#x1F534; Nicht gestartet',
+        stopped    => '&#x1F534; Nicht gestartet',
+        fresh      => '&#x1F7E1; Bereitstellung offen',
+        lgsm_ready => '&#x1F7E1; Installation offen',
+        unknown    => '&#x1F7E1; Unbekannt',
+    );
+    return $map{$status} || ('&#x1F7E1; ' . &html_escape($status));
+}
+
 &header($text{'index_title'}, '');
 print "<p>$text{'index_desc'}</p>\n";
 
@@ -68,6 +103,7 @@ if (!@instances) {
             &html_escape($inst->{'user'}),
             &html_escape($inst->{'game'}),
             $port_str,
+            _instance_status_badge($inst),
             (&user_is_readonly($id)
                 ? "<a href='$manage_url'>$text{'index_btn_manage'}</a> <small>(" . ($text{'acl_role_viewer'} || 'Viewer') . ")</small>"
                 : "<a href='$manage_url'>$text{'index_btn_manage'}</a>"),
@@ -79,6 +115,7 @@ if (!@instances) {
             $text{'index_col_user'},
             $text{'index_col_game'},
             $text{'index_col_port'},
+            ($text{'manage_status'} || 'Status'),
             $text{'index_col_manage'},
         ],
         "100%",

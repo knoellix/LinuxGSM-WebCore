@@ -74,13 +74,26 @@ sub get_game_config_fields {
     return @{ $entry->{'game_config_fields'} // [] };
 }
 
-# Return game config format string ('properties', 'ini_option_settings', or '').
+# Return game config format string ('properties', 'ini_option_settings',
+# 'json', or '').
 sub get_game_config_format {
     my ($script_name) = @_;
     my %meta = load_games_meta();
     my $key   = _resolve_meta_key($script_name);
     my $entry = $meta{$key} or return '';
     return $entry->{'game_config_format'} // '';
+}
+
+# Return the path of the game-server's primary config file relative to the
+# instance's $script_dir. Used by non-LGSM games (steamcmd/wine) where there
+# is no LGSM cfg layer to drive servercfgfullpath.
+# Empty string means "no static hint, fall back to LGSM resolution".
+sub get_game_config_path {
+    my ($script_name) = @_;
+    my %meta = load_games_meta();
+    my $key   = _resolve_meta_key($script_name);
+    my $entry = $meta{$key} or return '';
+    return $entry->{'game_config_path'} // '';
 }
 
 # Return human-readable display name for the given script name.
@@ -115,8 +128,24 @@ sub _merge_meta {
     close($fh);
     my $data = _parse_json_object($json);
     return unless $data;
+    # Shallow merge per entry: a local override should refine specific fields
+    # (name, fields, default port, …) without erasing base attributes the
+    # admin UI doesn't even know about (game_config_path, game_config_format,
+    # launch_candidates, runtime, apt_deps, …). Without this, Wizard-saved
+    # custom games would silently lose the new editor metadata on every
+    # release that ships extra static fields.
     for my $key (keys %$data) {
-        $meta_ref->{$key} = $data->{$key};
+        my $local = $data->{$key};
+        if (ref($local) eq 'HASH'
+            && exists $meta_ref->{$key}
+            && ref($meta_ref->{$key}) eq 'HASH')
+        {
+            for my $field (keys %$local) {
+                $meta_ref->{$key}{$field} = $local->{$field};
+            }
+        } else {
+            $meta_ref->{$key} = $local;
+        }
     }
 }
 

@@ -2,7 +2,7 @@
 # t/test_games_meta.pl — Tests for src/lib/games_meta.pl
 use strict;
 use warnings;
-use Test::More tests => 9;
+use Test::More tests => 11;
 use File::Temp qw(tempdir);
 use FindBin qw($Bin);
 use lib "$Bin/..";
@@ -131,3 +131,41 @@ write_local_json('{"mcserver":{"name":"Minecraft PATCHED","fields":[]}}');
 &_reset_meta_cache();
 my $vh_name = &get_game_display_name('vhserver');
 is($vh_name, 'Valheim', 'base entries not in local override still accessible');
+
+# ------------------------------------------------------------------
+# Test 10/11: local override merges per-field with base entry —
+# local refines a few fields (name, port) but inherits everything
+# the admin UI doesn't know about (game_config_path, runtime, ...).
+# Otherwise wizard-registered games silently lose new editor meta on
+# every release that ships additional static fields.
+# ------------------------------------------------------------------
+write_base_json(<<'JSON');
+{
+  "windrose": {
+    "name": "Windrose Dedicated Server",
+    "source": "steamcmd",
+    "steam_app_id": 4129620,
+    "runtime": "wine",
+    "game_config_path": "serverfiles/R5/ServerDescription.json",
+    "game_config_format": "json",
+    "fields": [
+      {"key":"port","type":"port","label_de":"Port","label_en":"Port","default":"7777"}
+    ]
+  }
+}
+JSON
+write_local_json(<<'JSON');
+{
+  "windrose": {
+    "name": "Windrose (custom)",
+    "fields": [
+      {"key":"port","type":"port","label_de":"Port","label_en":"Port","default":"8888"}
+    ]
+  }
+}
+JSON
+&_reset_meta_cache();
+is(&get_game_display_name('windrose'), 'Windrose (custom)',
+    'local override wins for shared keys (name)');
+is(&get_game_config_path('windrose'), 'serverfiles/R5/ServerDescription.json',
+    'local override inherits base-only keys (game_config_path)');

@@ -11,19 +11,49 @@ SERVER_DIR="$4"
 echo $$ > "$JOB_DIR/pgid"
 exec >> "$JOB_DIR/output" 2>&1
 
+# Process priority helpers — game-server tree gets PRIO_HIGH on launch,
+# any in-worker maintenance gets PRIO_LOW. See lib/prio.sh for details.
+_PRIO_LIB_DIR="${MODULE_ROOT:-}/scripts/lib"
+if [ ! -f "$_PRIO_LIB_DIR/prio.sh" ]; then
+    _PRIO_LIB_DIR="$(cd "$(dirname "$0")"/lib && pwd)" 2>/dev/null || _PRIO_LIB_DIR=""
+fi
+if [ -n "$_PRIO_LIB_DIR" ] && [ -f "$_PRIO_LIB_DIR/prio.sh" ]; then
+    # shellcheck source=lib/prio.sh
+    . "$_PRIO_LIB_DIR/prio.sh"
+else
+    PRIO_HIGH=""
+    PRIO_LOW=""
+fi
+
 SERVERFILES="$SERVER_DIR/serverfiles"
 PIDFILE="$SERVER_DIR/run.pid"
 LOGFILE="$SERVER_DIR/server.log"
 LAUNCH_WRAPPER="$SERVER_DIR/steamcmd-start.sh"
 LAUNCH_CMD_FILE="$SERVER_DIR/.steam_launch_cmd"
 
+# Port resolver — see scripts/lib/ports.sh for layered cfg parsing logic.
+# Same loader pattern as prio.sh: prefer MODULE_ROOT, fall back to script-relative.
+if [ -n "$_PRIO_LIB_DIR" ] && [ -f "$_PRIO_LIB_DIR/ports.sh" ]; then
+    # shellcheck source=lib/ports.sh
+    . "$_PRIO_LIB_DIR/ports.sh"
+fi
+
 FINAL_STATUS_WRITTEN=0
+# jobs.pl calls _kill_job_processes($job_id) whenever status != running (including "ok"/"failed").
+# pgid must never point at this worker after we detach (screen/wine), or cleanup can kill the game.
+# Always unlink pgid before writing final status; on_exit covers abrupt exits.
 set_final_status() {
     local s="$1"
+    rm -f "$JOB_DIR/pgid" 2>/dev/null || true
     echo "$s" > "$JOB_DIR/status"
     FINAL_STATUS_WRITTEN=1
 }
+
+_finalize_detach_ok() {
+    set_final_status "ok"
+}
 on_exit() {
+    rm -f "$JOB_DIR/pgid" 2>/dev/null || true
     if [ "${FINAL_STATUS_WRITTEN:-0}" -eq 0 ]; then
         echo "failed" > "$JOB_DIR/status"
     fi
@@ -73,6 +103,7 @@ _running_pid_from_launch_cmd() {
     return 1
 }
 
+# True Windrose/Wine PID — never the xvfb-run shell (its argv contains the EXE path too and fooled adoption).
 _running_windrose_pid() {
     local pid cmd
     while IFS= read -r pid; do
@@ -80,6 +111,9 @@ _running_windrose_pid() {
         cmd="$(ps -o args= -p "$pid" 2>/dev/null || true)"
         [ -n "$cmd" ] || continue
         case "$cmd" in
+            *xvfb-run*|*Xvfb*)
+                continue
+                ;;
             *"WindroseServer-Win64-Shipping.exe"*|*"WindroseServer.exe"*)
                 if ! _is_transient_shell_pid "$pid"; then
                     printf "%s\n" "$pid"
@@ -87,7 +121,7 @@ _running_windrose_pid() {
                 fi
                 ;;
         esac
-    done < <(pgrep -u "$UNIX_USER" -f "WindroseServer-Win64-Shipping.exe|WindroseServer.exe|xvfb-run -a /usr/bin/wine" 2>/dev/null || true)
+    done < <(pgrep -u "$UNIX_USER" -f "WindroseServer-Win64-Shipping.exe|WindroseServer.exe" 2>/dev/null || true)
     return 1
 }
 
@@ -103,13 +137,16 @@ _list_windrose_pids() {
         cmd="$(ps -o args= -p "$pid" 2>/dev/null || true)"
         [ -n "$cmd" ] || continue
         case "$cmd" in
+            *xvfb-run*|*Xvfb*)
+                continue
+                ;;
             *"WindroseServer-Win64-Shipping.exe"*|*"WindroseServer.exe"*)
                 if ! _is_transient_shell_pid "$pid"; then
                     printf "%s\n" "$pid"
                 fi
                 ;;
         esac
-    done < <(pgrep -u "$UNIX_USER" -f "WindroseServer-Win64-Shipping.exe|WindroseServer.exe|xvfb-run -a /usr/bin/wine" 2>/dev/null || true)
+    done < <(pgrep -u "$UNIX_USER" -f "WindroseServer-Win64-Shipping.exe|WindroseServer.exe" 2>/dev/null || true)
     return 0
 }
 
@@ -139,6 +176,17 @@ _write_pidfile() {
     return 0
 }
 
+# Identify whether a pid belongs to THIS instance — only used for "is server already running?" checks.
+# We do NOT use this to mass-kill orphans anymore: orphan xvfb-run/Xvfb don't block a new start
+# (xvfb-run -a picks a fresh display number) and the user wants the cleanup noise gone.
+_pid_belongs_to_instance() {
+    local pid="$1" prefix="$2" env
+    [ -n "$pid" ] || return 1
+    [ -r "/proc/$pid/environ" ] || return 1
+    env="$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | awk -F= '$1=="WINEPREFIX"{print $2; exit}')"
+    [ "$env" = "$prefix" ]
+}
+
 case "$ACTION" in
     start)
         echo "steamcmd_control action=start"
@@ -148,7 +196,7 @@ case "$ACTION" in
         chown "$UNIX_USER":"$UNIX_USER" "$DIAG_LOG" 2>/dev/null || true
         chmod 0644 "$DIAG_LOG" 2>/dev/null || true
         {
-            echo "=== worker start $(date -Is) (rev: 2026-05-01-screen-v1) ==="
+            echo "=== worker start $(date -Is) (rev: 2026-05-02-ports-v16) ==="
             echo "ACTION=$ACTION"
             echo "JOB_DIR=$JOB_DIR"
             echo "UNIX_USER=$UNIX_USER"
@@ -171,6 +219,7 @@ case "$ACTION" in
 
         START_CMD=""
         WINDROSE_DIRECT_BIN=""
+        SCRIPT_NAME=""
         if [ -f "$LAUNCH_CMD_FILE" ]; then
             BINARY=$(cat "$LAUNCH_CMD_FILE" 2>/dev/null || true)
             BIN_BASE=$(basename "${BINARY:-}")
@@ -180,11 +229,39 @@ case "$ACTION" in
                 elif [ -f "$SERVERFILES/WindroseServer.exe" ]; then
                     WINDROSE_DIRECT_BIN="WindroseServer.exe"
                 fi
+                SCRIPT_NAME="windrose"
             fi
+        fi
+        # Fallback: derive script name from lgsm/config-lgsm/<name>/ if present.
+        if [ -z "$SCRIPT_NAME" ] && [ -d "$SERVER_DIR/lgsm/config-lgsm" ]; then
+            for _d in "$SERVER_DIR"/lgsm/config-lgsm/*/; do
+                [ -d "$_d" ] || continue
+                SCRIPT_NAME="$(basename "$_d")"
+                break
+            done
         fi
         {
             echo "WINDROSE_DIRECT_BIN resolved to: '${WINDROSE_DIRECT_BIN:-<none>}'"
+            echo "SCRIPT_NAME resolved to: '${SCRIPT_NAME:-<none>}'"
         } >>"$DIAG_LOG" 2>&1
+
+        # Resolve effective game/query/beacon ports BEFORE generating the launcher
+        # so they can be baked into the wine command line. Multiple Windrose instances
+        # on the same host depend on these being distinct per-instance.
+        INSTANCE_GAME_PORT=""
+        INSTANCE_QUERY_PORT=""
+        INSTANCE_BEACON_PORT=""
+        if [ -n "$SCRIPT_NAME" ]; then
+            _resolve_instance_ports "$SCRIPT_NAME"
+            {
+                echo "Resolved ports: game=$INSTANCE_GAME_PORT query=$INSTANCE_QUERY_PORT beacon=$INSTANCE_BEACON_PORT"
+                if [ "$INSTANCE_GAME_PORT" = "$DEFAULT_GAME_PORT" ] \
+                    || [ "$INSTANCE_QUERY_PORT" = "$DEFAULT_QUERY_PORT" ] \
+                    || [ "$INSTANCE_BEACON_PORT" = "$DEFAULT_BEACON_PORT" ]; then
+                    echo "WARN: at least one port is at UE5 default — multi-instance setups will collide."
+                fi
+            } >>"$DIAG_LOG" 2>&1
+        fi
         if [ -n "$WINDROSE_DIRECT_BIN" ]; then
             LOCK_FILE="$SERVER_DIR/.windrose_start.lock"
             touch "$LOCK_FILE" 2>/dev/null || true
@@ -198,40 +275,25 @@ case "$ACTION" in
                 exit 1
             fi
 
-            SCREEN_NAME="windrose-${UNIX_USER}"
-            # Kill leftover screen/tmux sessions from previous start attempts first.
-            su -s /bin/bash -c "screen -S '$SCREEN_NAME' -X quit 2>/dev/null || true" "$UNIX_USER" >>"$DIAG_LOG" 2>&1 || true
-            su -s /bin/bash -c "tmux kill-session -t '$SCREEN_NAME' 2>/dev/null || true" "$UNIX_USER" >>"$DIAG_LOG" 2>&1 || true
-            # Kill all xvfb-run+wine instances for this user unconditionally.
-            pkill -9 -u "$UNIX_USER" -f "xvfb-run -a /usr/bin/wine" 2>/dev/null || true
-            pkill -9 -u "$UNIX_USER" -f "WindroseServer-Win64-Shipping.exe|WindroseServer.exe" 2>/dev/null || true
-            su -s /bin/bash -c "WINEPREFIX='$SERVER_DIR/.wine-windrose' /usr/bin/wineserver -k 2>/dev/null || true" "$UNIX_USER" 2>/dev/null || true
-            sleep 2
+            SCREEN_NAME="windrose_server"
 
-            echo "Collecting existing Windrose PIDs..." >>"$DIAG_LOG" 2>&1
-            mapfile -t WINDROSE_PIDS < <(_list_windrose_pids) || true
-            echo "Found ${#WINDROSE_PIDS[@]} Windrose PID candidates" >>"$DIAG_LOG" 2>&1
-            if [ "${#WINDROSE_PIDS[@]}" -gt 0 ]; then
-                echo "Recycling existing Windrose processes before fresh start" >>"$DIAG_LOG" 2>&1
-                for old_pid in "${WINDROSE_PIDS[@]}"; do
-                    echo "Terminating existing PID: $old_pid" >>"$DIAG_LOG" 2>&1
-                    _terminate_pid "$old_pid"
-                done
-                # Hard fallback cleanup for stubborn wrappers/children under the same user.
-                pkill -9 -u "$UNIX_USER" -f "WindroseServer-Win64-Shipping.exe|WindroseServer.exe" 2>/dev/null || true
-                pkill -9 -u "$UNIX_USER" -f "xvfb-run -a /usr/bin/wine" 2>/dev/null || true
-                su -s /bin/bash -c "WINEPREFIX='$SERVER_DIR/.wine-windrose' /usr/bin/wineserver -k 2>/dev/null || true" "$UNIX_USER" 2>/dev/null || true
-                sleep 3
-                mapfile -t WINDROSE_LEFT < <(_list_windrose_pids) || true
-                echo "Remaining Windrose PIDs after cleanup: ${#WINDROSE_LEFT[@]}" >>"$DIAG_LOG" 2>&1
-                if [ "${#WINDROSE_LEFT[@]}" -gt 0 ]; then
-                    echo "WARNING: ${#WINDROSE_LEFT[@]} process(es) still alive after cleanup (D-state?), proceeding anyway" >>"$DIAG_LOG" 2>&1
-                    echo "WARNING: Could not fully clean old Windrose processes, starting anyway" >&2
-                    for leftpid in "${WINDROSE_LEFT[@]}"; do
-                        echo "  leftover PID $leftpid: $(ps -o args= -p "$leftpid" 2>/dev/null || echo 'gone')" >>"$DIAG_LOG" 2>&1
-                    done
-                fi
+            # No-op start: a healthy Windrose for this instance is already running.
+            EXISTING_PID="$(_running_windrose_pid 2>/dev/null || true)"
+            if [ -n "${EXISTING_PID:-}" ] && kill -0 "$EXISTING_PID" 2>/dev/null && _pid_belongs_to_instance "$EXISTING_PID" "$SERVER_DIR/.wine-windrose"; then
+                echo "Windrose already running (PID $EXISTING_PID); start is a no-op."
+                echo "start no-op: existing PID $EXISTING_PID matches WINEPREFIX" >>"$DIAG_LOG" 2>&1
+                _write_pidfile "$EXISTING_PID"
+                _finalize_detach_ok
+                exit 0
             fi
+
+            # Minimal session teardown: just our own screen/tmux session by name. No pkill, no wineserver -k.
+            # Orphan xvfb-run/Xvfb from previous attempts don't block anything (xvfb-run -a picks a free display).
+            su -s /bin/bash -c "screen -wipe >/dev/null 2>&1 || true" "$UNIX_USER" 2>/dev/null || true
+            su -s /bin/bash -c "screen -S '$SCREEN_NAME' -X quit 2>/dev/null || true" "$UNIX_USER" 2>/dev/null || true
+            su -s /bin/bash -c "tmux kill-session -t '$SCREEN_NAME' 2>/dev/null || true" "$UNIX_USER" 2>/dev/null || true
+            sleep 1
+
             echo "Using direct Windrose start path: $WINDROSE_DIRECT_BIN"
 
             {
@@ -242,14 +304,10 @@ case "$ACTION" in
                 echo "systemd cgroup of webmin (if any):"
                 systemctl show miniserv 2>/dev/null | grep -E '^(MemoryMax|CPUQuota|TasksMax|MemoryHigh)=' || true
                 systemctl show webmin 2>/dev/null | grep -E '^(MemoryMax|CPUQuota|TasksMax|MemoryHigh)=' || true
-                echo "stale wineserver/Xvfb for $UNIX_USER (before kill):"
+                echo "wine/Xvfb snapshot for $UNIX_USER (informational):"
                 pgrep -af -u "$UNIX_USER" '(wineserver|Xvfb|xvfb-run|wine)' || echo "none"
             } >>"$DIAG_LOG" 2>&1
 
-            su -s /bin/bash -c "WINEPREFIX='$SERVER_DIR/.wine-windrose' /usr/bin/wineserver -k 2>/dev/null || true; pkill -u $UNIX_USER -9 -f Xvfb 2>/dev/null || true; pkill -u $UNIX_USER -9 -f xvfb-run 2>/dev/null || true" "$UNIX_USER" >>"$DIAG_LOG" 2>&1 || true
-            sleep 1
-
-            SCREEN_NAME="windrose-${UNIX_USER}"
             touch "$LOGFILE" 2>/dev/null || true
             chown "$UNIX_USER":"$UNIX_USER" "$LOGFILE" 2>/dev/null || true
             chmod 0644 "$LOGFILE" 2>/dev/null || true
@@ -275,29 +333,108 @@ cd "$SERVERFILES" || { echo "FATAL: cd failed" >>"\$DIAG"; exit 90; }
 echo "pwd: \$(pwd)" >>"\$DIAG"
 export WINEPREFIX="$SERVER_DIR/.wine-windrose"
 export WINEARCH=win64
-unset WINEDEBUG
+# Wine prints a lot to stderr only via WINEDEBUG channels. Pump them up so the screen PTY
+# (which only sees wine stdout/stderr — all our other diag goes to files) is never silent
+# during a failing start. err+all is verbose but actionable; users can dial back later.
+export WINEDEBUG="\${WINEDEBUG:-err+all,fixme-all}"
 unset WINEDLLOVERRIDES
-echo "WINEPREFIX=\$WINEPREFIX" >>"\$DIAG"
-echo "WINEARCH=\$WINEARCH" >>"\$DIAG"
-echo "PATH=\$PATH" >>"\$DIAG"
+# pam_systemd usually sets XDG_RUNTIME_DIR for an interactive sudo session, but Webmin's
+# 'setsid nohup … su' chain can land here without it. Wine/Xvfb then fall back to /tmp and
+# behave inconsistently. Set it deterministically.
+if [ -z "\${XDG_RUNTIME_DIR:-}" ]; then
+  uid="\$(id -u)"
+  if [ -n "\$uid" ] && [ -d "/run/user/\$uid" ]; then
+    export XDG_RUNTIME_DIR="/run/user/\$uid"
+  fi
+fi
+echo "=== launcher env (relevant) ===" >>"\$DIAG"
+env | grep -E '^(HOME|USER|LOGNAME|SHELL|TERM|LANG|LC_|PATH|XDG_RUNTIME_DIR|XDG_SESSION_ID|XDG_SESSION_TYPE|DBUS_SESSION_BUS_ADDRESS|DISPLAY|XAUTHORITY|WINEPREFIX|WINEARCH|WINEDEBUG)=' | sort >>"\$DIAG" 2>&1 || true
 {
   echo "binary check:"
   ls -l /usr/bin/wine /usr/bin/xvfb-run
   echo "binary target check:"
   ls -l "$WINDROSE_DIRECT_BIN"
-  echo "HOME=\$HOME"
-  echo "USER=\$USER"
   echo "server.log status:"
   ls -l "\$LOGFILE" 2>&1
-  echo "=== run WINEPREFIX=\$WINEPREFIX WINEARCH=\$WINEARCH xvfb-run -a /usr/bin/wine $WINDROSE_DIRECT_BIN -log ==="
+  echo "=== run WINEPREFIX=\$WINEPREFIX WINEARCH=\$WINEARCH wine $WINDROSE_DIRECT_BIN -log (manual Xvfb) ==="
 } >>"\$DIAG" 2>&1
 if [ ! -w "\$LOGFILE" ]; then
   echo "FATAL: logfile not writable: \$LOGFILE" >>"\$DIAG"
   exit 91
 fi
-xvfb-run -a /usr/bin/wine "$WINDROSE_DIRECT_BIN" -log 2>>"\$DIAG"
-RC=\$?
-echo "wine launcher exited with rc=\$RC at \$(date -Is)" >>"\$DIAG"
+# Manual Xvfb dance — bypasses xvfb-run's SIGUSR1 ready notification, which hangs
+# under Webmin's setsid/nohup/su context (signal mask oddity). Inside this launcher
+# we own Xvfb directly and never block on a signal we may not receive.
+XVFB_PIDFILE="$SERVER_DIR/.xvfb.pid"
+# Reap our own previous Xvfb (recorded last start) before picking a new display.
+if [ -f "\$XVFB_PIDFILE" ]; then
+  OLD_XVFB=\$(cat "\$XVFB_PIDFILE" 2>/dev/null || true)
+  if [ -n "\$OLD_XVFB" ] && kill -0 "\$OLD_XVFB" 2>/dev/null; then
+    OLD_CMD=\$(ps -o args= -p "\$OLD_XVFB" 2>/dev/null || true)
+    case "\$OLD_CMD" in
+      Xvfb*)
+        echo "Reaping previous Xvfb pid \$OLD_XVFB (\$OLD_CMD)" >>"\$DIAG"
+        kill "\$OLD_XVFB" 2>/dev/null || true
+        sleep 1
+        kill -KILL "\$OLD_XVFB" 2>/dev/null || true
+        ;;
+    esac
+  fi
+  rm -f "\$XVFB_PIDFILE"
+fi
+DISPLAY_NUM=99
+while [ -e "/tmp/.X\${DISPLAY_NUM}-lock" ]; do
+  DISPLAY_NUM=\$((DISPLAY_NUM + 1))
+  if [ "\$DISPLAY_NUM" -gt 250 ]; then
+    echo "FATAL: no free Xvfb display below :250" >>"\$DIAG"
+    exit 92
+  fi
+done
+XVFB_LOG="$SERVER_DIR/xvfb.log"
+: > "\$XVFB_LOG" 2>/dev/null || true
+echo "Starting Xvfb :\$DISPLAY_NUM (manual, no xvfb-run)" >>"\$DIAG"
+Xvfb ":\$DISPLAY_NUM" -screen 0 1280x1024x24 -nolisten tcp >>"\$XVFB_LOG" 2>&1 &
+XVFB_PID=\$!
+echo "\$XVFB_PID" > "\$XVFB_PIDFILE" 2>/dev/null || true
+echo "Xvfb pid=\$XVFB_PID (recorded in \$XVFB_PIDFILE)" >>"\$DIAG"
+# Wait until Xvfb is actually listening, max 10s.
+for _i in 1 2 3 4 5 6 7 8 9 10; do
+  if [ -S "/tmp/.X11-unix/X\${DISPLAY_NUM}" ] || [ -e "/tmp/.X\${DISPLAY_NUM}-lock" ]; then
+    sleep 1
+    if kill -0 "\$XVFB_PID" 2>/dev/null; then
+      break
+    fi
+  fi
+  sleep 1
+done
+if ! kill -0 "\$XVFB_PID" 2>/dev/null; then
+  echo "FATAL: Xvfb did not stay alive (see \$XVFB_LOG)" >>"\$DIAG"
+  tail -n 40 "\$XVFB_LOG" >>"\$DIAG" 2>&1 || true
+  exit 93
+fi
+export DISPLAY=":\$DISPLAY_NUM"
+echo "DISPLAY=\$DISPLAY ready, launching wine" >>"\$DIAG"
+printf '%s\\n' "\$(date -Is) Windrose: starting wine on DISPLAY=\$DISPLAY (manual Xvfb pid=\$XVFB_PID), ports game=$INSTANCE_GAME_PORT query=$INSTANCE_QUERY_PORT beacon=$INSTANCE_BEACON_PORT." >>"\$LOGFILE"
+# Run wine directly. stdout+stderr → tee → server.log AND screen PTY.
+# UE5 dedicated server CLI args: -Port (game), -QueryPort (Steam A2S), -BeaconPort (UE beacon).
+# Without these, every instance binds the same UE5 defaults (7777/27015/15000) and the second one
+# fails silently — see CLAUDE.md §8.12 multi-instance isolation notes.
+if command -v stdbuf >/dev/null 2>&1; then
+  stdbuf -oL -eL /usr/bin/wine "$WINDROSE_DIRECT_BIN" -log -Port=$INSTANCE_GAME_PORT -QueryPort=$INSTANCE_QUERY_PORT -BeaconPort=$INSTANCE_BEACON_PORT 2>&1 | tee -a "\$LOGFILE"
+else
+  /usr/bin/wine "$WINDROSE_DIRECT_BIN" -log -Port=$INSTANCE_GAME_PORT -QueryPort=$INSTANCE_QUERY_PORT -BeaconPort=$INSTANCE_BEACON_PORT 2>&1 | tee -a "\$LOGFILE"
+fi
+RC=\${PIPESTATUS[0]}
+echo "wine exited with rc=\$RC at \$(date -Is)" >>"\$DIAG"
+kill "\$XVFB_PID" 2>/dev/null || true
+wait "\$XVFB_PID" 2>/dev/null || true
+rm -f "\$XVFB_PIDFILE" 2>/dev/null || true
+echo "--- server.log tail (last 120 lines) ---" >>"\$DIAG"
+tail -n 120 "\$LOGFILE" >>"\$DIAG" 2>&1 || true
+echo "--- end server.log tail ---" >>"\$DIAG"
+echo "Saved tree after exit:" >>"\$DIAG"
+ls -la "$SERVERFILES/R5/Saved" 2>>"\$DIAG" || echo "(no R5/Saved yet)" >>"\$DIAG"
+ls -la "$SERVERFILES/R5/Saved/Logs" 2>>"\$DIAG" || echo "(no R5/Saved/Logs yet)" >>"\$DIAG"
 echo "Post-exit process snapshot:" >>"\$DIAG"
 pgrep -af -u "$UNIX_USER" "WindroseServer-Win64-Shipping.exe|WindroseServer.exe|xvfb-run|Xvfb|wineserver|wine" >>"\$DIAG" 2>&1 || true
 exit \$RC
@@ -313,33 +450,37 @@ EOF
             # 3. systemd-run --scope (escapes webmin cgroup)
             # 4. nohup setsid (last-resort fallback)
             DETACH_METHOD=""
+            # PRIO_HIGH wraps the detach command so screen + bash + wine + EXE
+            # all inherit nice=-5 / ionice best-effort 0. Negative nice is set
+            # by root BEFORE su drops to the game user — inheriting low values
+            # across su(1) is unrestricted (only setpriority() is gated).
+            echo "Process priority: launching via [$PRIO_HIGH]" >>"$DIAG_LOG"
             if command -v screen >/dev/null 2>&1; then
                 DETACH_METHOD="screen"
-                echo "Detached via screen -DmS $SCREEN_NAME"
-                echo "(attach later: sudo -u $UNIX_USER screen -r $SCREEN_NAME)"
-                # Inline command — mirrors the working manual pattern exactly:
-                # runuser (no PAM session) → bash -c → screen -dmS → bash -c '...'
-                # No redirect on wine: wine must see screen PTY on stdout+stderr.
-                _WINE_INLINE="cd '$SERVERFILES' && export WINEPREFIX='$SERVER_DIR/.wine-windrose' && export WINEARCH=win64 && xvfb-run -a /usr/bin/wine '$WINDROSE_DIRECT_BIN' -log"
+                echo "Detached via $PRIO_HIGH screen -dmS $SCREEN_NAME bash $LAUNCH_SCRIPT"
+                echo "(attach: sudo -u $UNIX_USER screen -r $SCREEN_NAME)"
                 {
-                    echo "=== launching via screen -DmS $(date -Is) ==="
-                    echo "WINE_INLINE: $_WINE_INLINE"
+                    echo "=== launching via screen -dmS $(date -Is) ==="
+                    echo "screen cmd: $PRIO_HIGH screen -dmS $SCREEN_NAME bash $LAUNCH_SCRIPT"
                 } >>"$DIAG_LOG" 2>&1
-                runuser -u "$UNIX_USER" -- bash -c "screen -dmS '$SCREEN_NAME' bash -c '$_WINE_INLINE'" >>"$DIAG_LOG" 2>&1 || true
+                # Match manual: sudo -u <user> bash -c 'screen ...' — use su boundary (no runuser session quirks).
+                $PRIO_HIGH su -s /bin/bash -c "screen -dmS '$SCREEN_NAME' bash '$LAUNCH_SCRIPT'" "$UNIX_USER" >>"$DIAG_LOG" 2>&1 || true
             elif command -v tmux >/dev/null 2>&1; then
                 DETACH_METHOD="tmux"
-                echo "Detached via tmux new-session -d -s $SCREEN_NAME"
+                echo "Detached via $PRIO_HIGH tmux new-session -d -s $SCREEN_NAME"
                 {
                     echo "=== launching via tmux $(date -Is) ==="
                 } >>"$DIAG_LOG" 2>&1
-                su -s /bin/bash -c "tmux new-session -d -s '$SCREEN_NAME' 'bash $LAUNCH_SCRIPT'" "$UNIX_USER" >>"$DIAG_LOG" 2>&1 || true
+                $PRIO_HIGH su -s /bin/bash -c "tmux new-session -d -s '$SCREEN_NAME' 'bash $LAUNCH_SCRIPT'" "$UNIX_USER" >>"$DIAG_LOG" 2>&1 || true
             elif command -v systemd-run >/dev/null 2>&1; then
                 DETACH_METHOD="systemd-run"
-                echo "Detached via systemd-run --scope (escapes webmin cgroup)"
+                echo "Detached via systemd-run --scope (escapes webmin cgroup, prio inherited)"
                 {
                     echo "=== launching via systemd-run --scope $(date -Is) ==="
                 } >>"$DIAG_LOG" 2>&1
-                systemd-run --quiet --scope --slice=user.slice \
+                # systemd-run inherits nice from this shell — wrap in $PRIO_HIGH so
+                # the transient scope unit starts elevated.
+                $PRIO_HIGH systemd-run --quiet --scope --slice=user.slice \
                     --unit="windrose-${UNIX_USER}-$$" \
                     --uid="$UNIX_USER" --gid="$UNIX_USER" \
                     /bin/bash -c "$LAUNCH_SCRIPT" \
@@ -347,24 +488,30 @@ EOF
                 disown 2>/dev/null || true
             else
                 DETACH_METHOD="nohup-setsid"
-                echo "Detached via nohup setsid (no screen/tmux/systemd-run available)"
-                nohup setsid su -s /bin/bash -c "$LAUNCH_SCRIPT" "$UNIX_USER" \
+                echo "Detached via $PRIO_HIGH nohup setsid (no screen/tmux/systemd-run available)"
+                $PRIO_HIGH nohup setsid su -s /bin/bash -c "$LAUNCH_SCRIPT" "$UNIX_USER" \
                     </dev/null >>"$LOGFILE" 2>&1 &
                 disown 2>/dev/null || true
             fi
             echo "DETACH_METHOD=$DETACH_METHOD" >>"$DIAG_LOG" 2>&1
             sleep 4
             PID=""
-            for try in 1 2 3 4 5; do
+            for try in $(seq 1 20); do
                 CAND="$(_running_windrose_pid || true)"
                 if [ -n "${CAND:-}" ] && ! _is_transient_shell_pid "$CAND"; then
                     PID="$CAND"
                     break
                 fi
-                sleep 1
+                sleep 2
             done
             if [ -z "${PID:-}" ] || ! kill -0 "$PID" 2>/dev/null; then
-                echo "ERROR: Direct Windrose start did not yield a live server process. Check $LOGFILE" >&2
+                echo "ERROR: Direct Windrose start did not yield a live Wine/game PID (xvfb-run wrapper does not count)." >&2
+                echo "--- windrose-debug.log tail (last 80 lines) ---"
+                tail -n 80 "$DIAG_LOG" 2>/dev/null || true
+                echo "--- end windrose-debug.log tail ---"
+                echo "--- server.log tail (last 80 lines) ---"
+                tail -n 80 "$LOGFILE" 2>/dev/null || true
+                echo "--- end server.log tail ---"
                 echo "hint_server_process_exited" > "$JOB_DIR/error_hint"
                 set_final_status "failed"
                 exit 1
@@ -372,7 +519,13 @@ EOF
             _write_pidfile "$PID"
             sleep 8
             if ! kill -0 "$PID" 2>/dev/null; then
-                echo "ERROR: Windrose process PID $PID exited shortly after start. Check $LOGFILE" >&2
+                echo "ERROR: Windrose process PID $PID exited shortly after start." >&2
+                echo "--- windrose-debug.log tail (last 80 lines) ---"
+                tail -n 80 "$DIAG_LOG" 2>/dev/null || true
+                echo "--- end windrose-debug.log tail ---"
+                echo "--- server.log tail (last 80 lines) ---"
+                tail -n 80 "$LOGFILE" 2>/dev/null || true
+                echo "--- end server.log tail ---"
                 echo "hint_server_process_exited" > "$JOB_DIR/error_hint"
                 set_final_status "failed"
                 exit 1
@@ -395,7 +548,8 @@ EOF
                 fi
                 if [ "$((_try % 5))" -eq 0 ]; then
                     echo "Readiness wait: try=$_try, pid=$PID alive=$(kill -0 "$PID" 2>/dev/null && echo yes || echo no)" >>"$DIAG_LOG" 2>&1
-                    pgrep -af -u "$UNIX_USER" "WindroseServer-Win64-Shipping.exe|WindroseServer.exe|xvfb-run|Xvfb|wineserver|wine" >>"$DIAG_LOG" 2>&1 || true
+                    echo "process tree (wine/xvfb/game):" >>"$DIAG_LOG" 2>&1
+                    pgrep -af -u "$UNIX_USER" "WindroseServer-Win64-Shipping.exe|WindroseServer.exe|xvfb-run|Xvfb|wineserver|wine-preloader|wine64|\\.exe" >>"$DIAG_LOG" 2>&1 || true
                 fi
                 sleep 3
             done
@@ -408,7 +562,7 @@ EOF
                     ls -la "$SERVERFILES/R5/Saved" >>"$DIAG_LOG" 2>&1 || true
                     pgrep -af -u "$UNIX_USER" "WindroseServer-Win64-Shipping.exe|WindroseServer.exe|xvfb-run|Xvfb|wineserver|wine" >>"$DIAG_LOG" 2>&1 || true
                     echo "Server started (PID $PID, readiness files pending)"
-                    set_final_status "ok"
+                    _finalize_detach_ok
                     exit 0
                 fi
                 echo "ERROR: Windrose readiness check failed and process is no longer alive." >&2
@@ -416,12 +570,18 @@ EOF
                 echo "Readiness snapshot:" >>"$DIAG_LOG" 2>&1
                 ls -la "$SERVERFILES/R5" >>"$DIAG_LOG" 2>&1 || true
                 ls -la "$SERVERFILES/R5/Saved" >>"$DIAG_LOG" 2>&1 || true
+                echo "--- windrose-debug.log tail (last 120 lines) ---"
+                tail -n 120 "$DIAG_LOG" 2>/dev/null || true
+                echo "--- end windrose-debug.log tail ---"
+                echo "--- server.log tail (last 80 lines) ---"
+                tail -n 80 "$LOGFILE" 2>/dev/null || true
+                echo "--- end server.log tail ---"
                 echo "hint_server_process_exited" > "$JOB_DIR/error_hint"
                 set_final_status "failed"
                 exit 1
             fi
             echo "Server started (PID $PID)"
-            set_final_status "ok"
+            _finalize_detach_ok
             exit 0
         fi
         if [ -x "$LAUNCH_WRAPPER" ]; then
@@ -440,7 +600,7 @@ EOF
         fi
         if [ -z "$START_CMD" ]; then
             echo "ERROR: No server binary found in $SERVERFILES (missing .steam_launch_cmd / steamcmd-start.sh)" >&2
-            echo "failed" > "$JOB_DIR/status"
+            set_final_status "failed"
             exit 1
         fi
         echo "Using start command: $START_CMD"
@@ -472,19 +632,36 @@ EOF
             exit 1
         fi
         echo "Server started (PID $PID)"
-        set_final_status "ok"
+        _finalize_detach_ok
         ;;
 
     stop)
         echo "steamcmd_control action=stop"
         STOP_DONE=0
-        SCREEN_NAME="windrose-${UNIX_USER}"
+        SCREEN_NAME="windrose_server"
         # Kill detached screen/tmux sessions for this user (best-effort)
         if command -v screen >/dev/null 2>&1; then
-            su -s /bin/bash -c "screen -S '$SCREEN_NAME' -X quit 2>/dev/null || true" "$UNIX_USER" || true
+            su -s /bin/bash -c "screen -S '$SCREEN_NAME' -X quit 2>/dev/null || true" "$UNIX_USER" 2>/dev/null || true
         fi
         if command -v tmux >/dev/null 2>&1; then
             su -s /bin/bash -c "tmux kill-session -t '$SCREEN_NAME' 2>/dev/null || true" "$UNIX_USER" || true
+        fi
+        # Reap our manual Xvfb (recorded by the launcher), so it doesn't outlive the server.
+        XVFB_PIDFILE="$SERVER_DIR/.xvfb.pid"
+        if [ -f "$XVFB_PIDFILE" ]; then
+            XVFB_PID=$(cat "$XVFB_PIDFILE" 2>/dev/null || true)
+            if [ -n "$XVFB_PID" ] && kill -0 "$XVFB_PID" 2>/dev/null; then
+                XVFB_CMD=$(ps -o args= -p "$XVFB_PID" 2>/dev/null || true)
+                case "$XVFB_CMD" in
+                    Xvfb*)
+                        kill "$XVFB_PID" 2>/dev/null || true
+                        sleep 1
+                        kill -KILL "$XVFB_PID" 2>/dev/null || true
+                        echo "Reaped Xvfb pid $XVFB_PID"
+                        ;;
+                esac
+            fi
+            rm -f "$XVFB_PIDFILE"
         fi
         if [ -f "$PIDFILE" ]; then
             PID=$(cat "$PIDFILE")
@@ -521,7 +698,7 @@ EOF
         APP_ID_FILE="$SERVER_DIR/.steam_app_id"
         if [ ! -f "$APP_ID_FILE" ]; then
             echo "ERROR: .steam_app_id not found in $SERVER_DIR" >&2
-            echo "failed" > "$JOB_DIR/status"
+            set_final_status "failed"
             exit 1
         fi
         STEAM_APP_ID=$(cat "$APP_ID_FILE")

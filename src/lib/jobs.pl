@@ -106,6 +106,59 @@ sub _write_error_hint {
     close($fh);
 }
 
+sub _read_job_pgid {
+    my ($job_id) = @_;
+    my $file = _job_dir($job_id) . "/pgid";
+    return undef unless -f $file;
+    open(my $fh, '<', $file) or return undef;
+    my $pgid = <$fh>;
+    close($fh);
+    chomp($pgid //= '');
+    return ($pgid =~ /^\d+$/) ? int($pgid) : undef;
+}
+
+sub _kill_job_processes {
+    my ($job_id) = @_;
+    my $pgid = _read_job_pgid($job_id);
+    return 0 unless $pgid;
+
+    my $killed_any = 0;
+
+    # Phase 1: terminate process group gracefully.
+    if (kill(0, -$pgid)) {
+        kill('TERM', -$pgid);
+        $killed_any = 1;
+    }
+
+    # Also try parent-child based cleanup in case descendants escaped the group.
+    system("pkill -TERM -P $pgid >/dev/null 2>&1");
+    select(undef, undef, undef, 1.0);
+
+    # Phase 2: hard-kill remaining processes.
+    if (kill(0, -$pgid)) {
+        kill('KILL', -$pgid);
+        $killed_any = 1;
+    }
+    system("pkill -KILL -P $pgid >/dev/null 2>&1");
+    select(undef, undef, undef, 0.3);
+
+    # Phase 3: fallback by full process tree query.
+    system("pkill -TERM -g $pgid >/dev/null 2>&1");
+    select(undef, undef, undef, 0.3);
+    system("pkill -KILL -g $pgid >/dev/null 2>&1");
+
+    return $killed_any ? 1 : 0;
+}
+
+sub _cleanup_terminal_job_processes {
+    my ($job_id, $status) = @_;
+    return unless defined $status;
+    return if $status eq 'running';
+    _kill_job_processes($job_id);
+    my $pgid_file = _job_dir($job_id) . "/pgid";
+    unlink $pgid_file if -f $pgid_file;
+}
+
 sub get_all_jobs {
     my $jobs_dir = _jobs_dir();
     return () unless -d $jobs_dir;
@@ -135,6 +188,7 @@ sub get_all_jobs {
                 }
             }
         }
+        _cleanup_terminal_job_processes($jid, $status);
 
         push @jobs, {
             job_id      => $jid,
@@ -161,21 +215,15 @@ sub timeout_check_job {
     return unless (time() - ($meta{started_at} // time())) > 30;
     finish_job($job_id, 'failed');
     _write_error_hint($job_id, 'hint_worker_never_started');
+    _cleanup_terminal_job_processes($job_id, 'failed');
     &log_debug("Job $job_id: running → failed (worker never started)") if defined &log_debug;
 }
 
 sub abort_job {
     my ($job_id) = @_;
-    my $jdir = _job_dir($job_id);
-    if (-f "$jdir/pgid") {
-        open(my $fh, '<', "$jdir/pgid") or do { finish_job($job_id, 'aborted'); return; };
-        my $pgid = <$fh>; close($fh);
-        chomp $pgid if defined $pgid;
-        if (defined $pgid && $pgid =~ /^\d+$/) {
-            kill(9, -$pgid);   # SIGKILL entire process group
-        }
-    }
+    _kill_job_processes($job_id);
     finish_job($job_id, 'aborted');
+    _cleanup_terminal_job_processes($job_id, 'aborted');
 }
 
 sub delete_job {

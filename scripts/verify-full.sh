@@ -17,6 +17,11 @@ for test_file in t/test_*.pl; do
   perl "$test_file"
 done
 
+if [ -f "t/test_port_resolver.sh" ]; then
+  echo "[verify-full] bash port resolver test"
+  bash "t/test_port_resolver.sh"
+fi
+
 if [ -f "t/test_build.sh" ]; then
   echo "[verify-full] build smoke test"
   bash "t/test_build.sh"

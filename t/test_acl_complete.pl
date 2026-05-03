@@ -12,7 +12,8 @@ sub error { die "error: $_[0]\n" }
 
 require 't/stubs.pl';
 
-our ($module_name, $remote_user, $config_directory, $_effective_role_cache);
+our ($module_name, $remote_user, $config_directory,
+     $_effective_role_cache, $_module_acl_cache);
 our %access;
 $module_name = 'linuxgsm-webcore';
 $remote_user = 'testuser';
@@ -29,53 +30,69 @@ require 'src/lib/acl.pl';
 
 print "1..7\n";
 
-# Test 1: user-Datei ohne role-Feld → role aus defaultacl (admin)
+# Test 1: user-Datei ohne role-Feld → role aus defaultacl (admin).
+# Per-user ACLs go through Webmin's get_module_acl() — the test stub
+# stores them at $stub_acl_dir/$module/$user. The defaultacl is read
+# from $module_root/defaultacl as last-resort fallback.
 {
-    my $tmp = tempdir(CLEANUP => 1);
-    mkdir "$tmp/linuxgsm-webcore";
-    open(my $fh, '>', "$tmp/linuxgsm-webcore/testuser") or die $!;
+    my $tmp_acl = tempdir(CLEANUP => 1);
+    mkdir "$tmp_acl/$module_name";
+    open(my $fh, '>', "$tmp_acl/$module_name/testuser") or die $!;
     print $fh "can_manage_ftp=1\n";   # hat Felder aber KEIN role
     close $fh;
-    open(my $df, '>', "$tmp/linuxgsm-webcore/defaultacl") or die $!;
+    our $stub_acl_dir;
+    $stub_acl_dir = $tmp_acl;
+
+    my $tmp_root = tempdir(CLEANUP => 1);
+    open(my $df, '>', "$tmp_root/defaultacl") or die $!;
     print $df "role=admin\n";
     close $df;
+    our $module_root;
+    $module_root = $tmp_root;
 
     $_effective_role_cache = undef;
+    $_module_acl_cache     = undef;
     %access = ();
-    $config_directory = $tmp;
 
     effective_role() eq 'admin'
         ? pass('_compute_role merge: user-Datei ohne role → admin von defaultacl')
         : fail('_compute_role merge: user-Datei ohne role → admin von defaultacl (got: ' . (effective_role()//'undef') . ')');
-
-    $config_directory = '/nonexistent';
+    $module_root      = undef;
+    $stub_acl_dir     = '/nonexistent';
 }
 
 # Test 2: user-Datei MIT role=operator hat Vorrang vor defaultacl
 {
-    my $tmp = tempdir(CLEANUP => 1);
-    mkdir "$tmp/linuxgsm-webcore";
-    open(my $fh, '>', "$tmp/linuxgsm-webcore/testuser") or die $!;
+    my $tmp_acl = tempdir(CLEANUP => 1);
+    mkdir "$tmp_acl/$module_name";
+    open(my $fh, '>', "$tmp_acl/$module_name/testuser") or die $!;
     print $fh "role=operator\ncan_manage_ftp=0\n";
     close $fh;
-    open(my $df, '>', "$tmp/linuxgsm-webcore/defaultacl") or die $!;
+    our $stub_acl_dir;
+    $stub_acl_dir = $tmp_acl;
+
+    my $tmp_root = tempdir(CLEANUP => 1);
+    open(my $df, '>', "$tmp_root/defaultacl") or die $!;
     print $df "role=admin\n";
     close $df;
+    our $module_root;
+    $module_root = $tmp_root;
 
     $_effective_role_cache = undef;
+    $_module_acl_cache     = undef;
     %access = ();
-    $config_directory = $tmp;
 
     effective_role() eq 'operator'
         ? pass('_compute_role: user-Datei mit role=operator hat Vorrang vor defaultacl')
         : fail('_compute_role: user-Datei mit role=operator hat Vorrang (got: ' . (effective_role()//'undef') . ')');
-
-    $config_directory = '/nonexistent';
+    $module_root      = undef;
+    $stub_acl_dir     = '/nonexistent';
 }
 
 # Test 3: Admin sieht alle FTP-User
 {
     $_effective_role_cache = undef;
+    $_module_acl_cache     = undef;
     %access = (role => 'admin');
     my @r = allowed_ftp_users('mc-ftp', 'other-ftp', 'third-ftp');
     scalar(@r) == 3
@@ -86,6 +103,7 @@ print "1..7\n";
 # Test 4: Operator mit Server mc1 (sftp_user=mc-ftp) → nur mc-ftp
 {
     $_effective_role_cache = undef;
+    $_module_acl_cache     = undef;
     %access = (role => 'operator', servers => 'mc1');
     my @r = allowed_ftp_users('mc-ftp', 'other-ftp');
     (scalar(@r) == 1 && $r[0] eq 'mc-ftp')
@@ -96,6 +114,7 @@ print "1..7\n";
 # Test 5: Operator mit Server tf1 (sftp_user='') → leere Liste
 {
     $_effective_role_cache = undef;
+    $_module_acl_cache     = undef;
     %access = (role => 'operator', servers => 'tf1');
     my @r = allowed_ftp_users('mc-ftp', 'other-ftp');
     scalar(@r) == 0
@@ -106,6 +125,7 @@ print "1..7\n";
 # Test 6: Leerer Input → leere Liste
 {
     $_effective_role_cache = undef;
+    $_module_acl_cache     = undef;
     %access = (role => 'operator', servers => 'mc1');
     my @r = allowed_ftp_users();
     scalar(@r) == 0
@@ -116,6 +136,7 @@ print "1..7\n";
 # Test 7: Operator mit wildcard servers ('*') → alle FTP-User
 {
     $_effective_role_cache = undef;
+    $_module_acl_cache     = undef;
     %access = (role => 'operator', servers => '*');
     my @r = allowed_ftp_users('mc-ftp', 'other-ftp');
     scalar(@r) == 2

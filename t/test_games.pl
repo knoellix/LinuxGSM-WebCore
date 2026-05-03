@@ -23,7 +23,7 @@ sub error { die "error: $_[0]\n" }
 
 require 'src/lib/games.pl';
 
-print "1..5\n";
+print "1..6\n";
 
 # 1. _parse_csv parses 3 games correctly
 {
@@ -87,4 +87,18 @@ print "1..5\n";
     $path =~ m{/data/serverlist\.csv$}
         ? pass('_cache_path correct suffix')
         : fail("_cache_path correct suffix (got $path)");
+}
+
+# 6. _cache_path should not warn when module_root is unset
+{
+    our $module_root_directory;
+    local $module_root = undef;
+    local $module_root_directory = $tmpdir;
+    my @warnings;
+    local $SIG{__WARN__} = sub { push @warnings, @_ };
+    my $path = &_cache_path();
+    my $ok = (@warnings == 0) && ($path =~ m{^\Q$tmpdir\E/data/serverlist\.csv$});
+    $ok
+        ? pass('_cache_path falls back without warnings')
+        : fail('_cache_path falls back without warnings');
 }

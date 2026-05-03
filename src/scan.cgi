@@ -11,6 +11,7 @@ require './lib/acl.pl';
 require './lib/instance.pl';
 require './lib/ftp_proftpd.pl';
 require './lib/logging.pl';
+require './lib/provision.pl';
 
 our (%text, %in, %access);
 $main::gconfig{'charset'} = 'utf-8';
@@ -168,8 +169,12 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
         }
 
         if (($delete_opt eq 'user' || $delete_opt eq 'user_ftp') && !@other_for_user && $unix_user) {
-            (my $safe_user = $unix_user) =~ s/[^a-zA-Z0-9_\-]//g;
-            &system_logged("userdel -r $safe_user") if $safe_user;
+            my $res = &decommission_unix_user($unix_user);
+            &log_debug("scan decommission: " . join(' | ', @{ $res->{'log'} }));
+            if (!$res->{'ok'}) {
+                &error(($text{'err_delete_incomplete'} || 'Löschen unvollständig') . ': '
+                    . join(', ', @{ $res->{'leftovers'} }));
+            }
         }
 
         &log_action('server_deleted', $instance_id, {unix_user => $unix_user, scope => $delete_opt});

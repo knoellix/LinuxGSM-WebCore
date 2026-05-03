@@ -2,7 +2,7 @@
 use strict;
 use warnings;
 
-our ($module_root, %text);
+our ($module_root, $module_root_directory, %text);
 
 my $GAMES_URL = 'https://raw.githubusercontent.com/GameServerManagers/LinuxGSM/master/lgsm/data/serverlist.csv';
 my $CACHE_TTL = 86400; # 24 hours in seconds
@@ -67,7 +67,11 @@ sub _parse_csv {
 }
 
 sub _cache_path {
-    my $dir = "$module_root/data";
+    my $base = $module_root || $module_root_directory;
+    if (!$base) {
+        ($base = __FILE__) =~ s{/lib/games\.pl$}{};
+    }
+    my $dir = "$base/data";
     mkdir $dir unless -d $dir;
     return "$dir/serverlist.csv";
 }

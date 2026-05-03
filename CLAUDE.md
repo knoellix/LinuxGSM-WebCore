@@ -43,6 +43,11 @@ Dieses Dokument trennt verbindliche Projektregeln (Policy) von Webmin-spezifisch
 - **Live-Konsole:** Echtzeit-Log-Streaming per `tail`-Simulation im Webmin-Interface.
 - **Monitoring:** Integration ins Webmin-Status-Modul mit 3-Stufen-Eskalation (Restart -> Mail).
 
+### 4.1 Worker-Pattern (Background-Worker, manage.cgi-Aufrufe)
+- **Diagnose-Log zuerst:** Background-Worker (`steamcmd_control.sh`, `steamcmd_install.sh`) legen am Anfang der Action (vor Branch-Logik) ein dediziertes Debug-File im `SERVER_DIR` an und loggen Branch-Entscheidungen hinein. Verifikation: Nach Start/Install existiert das Debug-File auch bei fruehem Abbruch.
+- **PID-File-Ownership:** Worker laufen als root. PID-Files immer ueber Helper schreiben und auf `<user>:<user>` chownen (`chmod 0644`), damit der Ziel-User seine PID-Datei lesen kann.
+- **Start-Lock gegen Click-Spam:** Manuell triggerbare Aktionen (Start/Stop) per `flock` auf serverlokaler Lock-Datei serialisieren, um Doppelstarts und Prozess-Storms zu verhindern.
+
 ## 5. Test-, Build- und Release-Regeln
 - **Webmin-Stubs:** `t/stubs.pl` stellt notwendige Funktionen fuer Standalone-Tests bereit.
 - **Tests:** TAP-kompatibel, Ausfuehrung z. B. via `perl t/test_<name>.pl`.
@@ -57,6 +62,7 @@ Dieses Dokument trennt verbindliche Projektregeln (Policy) von Webmin-spezifisch
 - **`CORE::GLOBAL`-Mocks** muessen im `BEGIN`-Block stehen, nicht per `local *` nach `require`: `BEGIN { my $x = 0; *CORE::GLOBAL::getpwnam = sub { $x ? ('y') : () } }`
 - **`\Q...\E` nur fuer echte Untrusted-Input** — escaped `/` in Pfadstrings, bricht Shell-Ausfuehrung und Test-Regex; bei bereits whitelist-sanitizierten Variablen weglassen.
 - **Single-Quote-Escape in Shell-Pfaden:** Wenn `\Q...\E` nicht verwendbar ist (bricht Pfade), Pfad mit `$p =~ s/'/'\\''/g;` absichern und dann als `'cmd "$p"'` einbetten — sicher fuer Pfade mit Leerzeichen und Sonderzeichen.
+- **Heredoc + `set -u` Gotcha:** In generierten Shellskripten (`cat <<EOF`) alle Child-Script-Variablen als `\$var` escapen, sonst `unbound variable` durch Vorab-Expansion.
 - **`%text` in Test-Stubs vollstaendig halten** — fehlt ein Fehlerschluessel, gibt `validate_*` `undef` statt Fehlerstring zurueck; Test besteht dann faelschlicherweise.
 - **STDERR-Capture in Tests:** `open(STDERR, '>>', \$scalar)` funktioniert nicht auf allen Perl-Versionen — stattdessen `File::Temp` nutzen: `my ($fh, $fname) = tempfile(UNLINK => 1); open(STDERR, '>&', $fh); ... seek $fh, 0, 0; my $out = do { local $/; <$fh> };`
 - **Lib-Tests mit CGI-geladenen Funktionen:** Wenn eine Lib (`jobs.pl`, `acl.pl`) Funktionen aufruft die nur von CGIs per `require` geladen werden (z.B. `log_error`), muessen leere Stubs dieser Funktionen in `t/stubs.pl` stehen — sonst `Undefined subroutine`-Fehler in Standalone-Lib-Tests.
@@ -104,6 +110,7 @@ Dieser Abschnitt dokumentiert zwingende Webmin-spezifische Details, die aus real
 - **`save_module_config` kein Return-Check noetig:** Webmin-Core-Funktion ohne sinnvollen Rueckgabewert — kein Error-Handling implementieren, bestehende CGIs im Projekt machen das auch nicht.
 - **`&redirect()` immer mit `exit` abschliessen:** Nach jedem `&redirect(...)` muss ein `exit;` folgen. Ohne `exit` laeuft der CGI weiter, kann eine zweite HTTP-Response rendern und Folgefehler ausloesen (z. B. "Ungueltige Aktion" weil `$is_fresh`-Block nach dem Redirect erneut ausgefuehrt wird).
 - **`sanitize_input()` nur fuer Pflichtfelder:** Die Funktion ruft `&error()` wenn das Ergebnis leer ist. Optionale Parameter (z. B. `$in{'action'}` auf Uebersichtsseiten) immer manuell strippen: `$var = $in{'key'} // ''; $var =~ s/[^a-zA-Z0-9_\-]//g;`
+- **Live-Log Auto-Refresh-Schutz:** `auto_refresh` nur aktivieren wenn zusaetzlich ein expliziter Manual-Marker (`manual=1`) gesetzt ist; verhindert ungewolltes Auto-Refresh aus Browser-History/Bookmarks.
 
 ### 7.4 Referenz-Recherche in Webmin
 - Bei Unsicherheit zuerst `webmin/webmin` auf GitHub durchsuchen.
@@ -165,7 +172,27 @@ Dieser Abschnitt dokumentiert zwingende Webmin-spezifische Details, die aus real
 - Instanz-Registry: TSV mit `source`/`sftp_user`; Legacy-Format `id=user:script` weiter einlesen.
 - `ui_submit` immer mit expliziter CSS-Klasse aufrufen (5. Argument): `btn-danger` fuer destruktive Aktionen, `btn-default` fuer neutrale — verhindert Theme-Farb-Roulette bei mehreren Buttons in einer Zelle.
 
+### 8.12.0 Prozesspriorisierung (verbindlich)
+- **Game-Server immer `$PRIO_HIGH`:** Der Game-Server-Tree (screen/tmux/systemd-run/nohup → bash → wine → EXE) wird ueber `$PRIO_HIGH` (`nice -n -5 ionice -c 2 -n 0`) gestartet. Negatives `nice` setzt der Worker als root **vor** dem `su`-Boundary; nicht-priviligierte Game-User koennen es nicht erhoehen, **erben** es aber problemlos (CAP_SYS_NICE wird nur fuer `setpriority()` benoetigt, nicht fuer Vererbung). Auch der `screen`/`tmux`-Daemon erbt den Wert via `fork()` und gibt ihn an den Game-Prozess weiter.
+- **Worker immer `$PRIO_LOW`:** SteamCMD-Downloads, LGSM-Installs/Updates, Wine-Runtime-Setup laufen ueber `$PRIO_LOW` (`nice -n 10 ionice -c 3`). Idle-IO-Klasse stellt sicher, dass ein laufender Game-Server auf demselben Host nicht durch einen parallelen Download stockt.
+- **Helper-Lib:** `src/scripts/lib/prio.sh` definiert `PRIO_HIGH` / `PRIO_LOW` als Praefix-Strings. Worker sourcen sie via `${MODULE_ROOT}/scripts/lib/prio.sh` (Hauptpfad) bzw. `$(dirname "$0")/lib/prio.sh` (Fallback). Fehlt `nice` oder `ionice`, wird der jeweilige Knopf still uebersprungen — der Befehl laeuft trotzdem.
+- **Dispatch passt MODULE_ROOT immer mit:** Jeder `setsid nohup`-Worker-Aufruf in `manage.cgi` setzt `MODULE_ROOT='$module_root'` als Env-Variable, damit das Skript die Lib unter dem Modulpfad findet (`/usr/share/webmin/linuxgsm-webcore/scripts/lib/prio.sh`).
+
+### 8.12 Non-LGSM Game-Server (SteamCMD / Wine)
+- **Detach via Session-Manager:** Wine-/UE-Server bevorzugt via `screen -dmS` oder `tmux new-session -d` starten. Reines `nohup setsid ... &` nur als Fallback verwenden.
+- **Pre-Start `wineserver -k`:** Vor jedem Wine-Start im Ziel-Prefix `WINEPREFIX=<prefix> wineserver -k` ausfuehren, um stale Prefix-Locks zu vermeiden.
+- **Launcher-Wrapper mit `exec`:** Wrapper-Skripte mit `exec xvfb-run -a /usr/bin/wine ...` beenden, damit kein transienter Bash-Parent die PID-Adoption verfaelscht.
+- **PID-Adoption robust:** PIDs nicht ueber `$!` aus `su -c "... &"` uebernehmen; stattdessen `pgrep`-basierte Erkennung mit Retry-Loop und Filter fuer transient `bash -c`-Wrapper.
+- **UE5-Logpfade:** Bei SteamCMD/UE5 Logs unter `<serverfiles>/R5/Saved/Logs/` suchen (`R5.log`, projektspezifische Namen) und bei variablen Dateinamen auf die neueste `*.log` per `mtime` fallen.
+- **Multi-Instanz Port-Isolation:** UE5-Server (Windrose etc.) hoeren ohne explizite CLI-Args auf hardcoded Defaults (Game 7777, Query 27015, Beacon 15000). Zwei Instanzen auf demselben Host kollidieren beim Bind silent — die zweite ist unsichtbar nicht erreichbar. `games_meta.json` muss alle drei Ports als `"type": "port"`-Felder fuehren; der Worker (`steamcmd_control.sh`) liest sie ueber `scripts/lib/ports.sh::_resolve_instance_ports` aus der LGSM-Instance-Cfg und reicht `-Port=<n> -QueryPort=<n> -BeaconPort=<n>` an die Wine-Binary durch. Firewall-Open/Close in `manage.cgi` muss alle port-typed Felder durchlaufen, nicht nur `$inst->{port}`.
+- **`./<scriptname> <action>` NIE bei `source=steamcmd`:** Der SteamCMD-Wrapper wird nach `$SERVER_DIR/$script_name` kopiert und ignoriert sein Argument vollstaendig — `./<name> details` startet damit `xvfb-run wine ...`. Folge: jeder `_detect_status`-Call (Page-Reload, Listing, AJAX) forkt eine neue Wine-Instanz im selben `WINEPREFIX`, bis `wineserver` verklemmt und der echte Start endlos haengt. Status-Detection fuer Non-LGSM nur ueber `run.pid` + `kill(0, $pid)` (`_detect_status_steamcmd` in `src/lib/instance.pl`). Wrapper hat zusaetzlich `case "$1" in details|monitor|status)` als Defense-in-Depth.
+- **`xvfb-run` haengt unter Webmin in `setsid + nohup + su` Kontext:** Das `wait`-fuer-`SIGUSR1`-Ready-Signal von Xvfb wird wegen geerbter Signal-Mask nicht zugestellt — `xvfb-run` sitzt fuer immer in `sigsuspend`, Wine wird nie ge-`exec`'t, Screen bleibt stumm trotz `WINEDEBUG=err+all`. **Loesung:** `Xvfb` direkt starten (`Xvfb :N -screen 0 1280x1024x24 -nolisten tcp &`), auf Socket `/tmp/.X11-unix/XN` warten, `export DISPLAY=:N`, dann `wine ...` starten. PID in `$SERVER_DIR/.xvfb.pid` mitschreiben und im naechsten Start/Stop wieder reapen.
+- **`pgid`-Datei vor Status-Schreiben entfernen:** `jobs.pl` `_cleanup_terminal_job_processes` ruft `_kill_job_processes` bei JEDEM Endstatus (auch `ok`). Liegt `jobs/$id/pgid` (= Worker-PID), kann `kill -TERM -pgid` Screen+Wine treffen. `set_final_status` in Workern muss `pgid` IMMER zuerst unlinken, plus `trap EXIT`-Handler als Fallback.
+
 ## 9. Deployment
 - **Install auf Server:** `.wbm` nach `/tmp/` kopieren, dann `/usr/share/webmin/install-module.pl /tmp/linuxgsm-webcore-0.1.0.wbm`
+- **Webmin-CLI-Pfade robust:** `install-module(.pl)` / `uninstall-module(.pl)` per `command -v` oder Fallback-Pfaden (`/usr/share|/usr/libexec|/usr/lib/webmin`) aufloesen, nicht hart annehmen.
+- **WBM-Archivpfad pruefen:** Inhalte liegen unter `linuxgsm-webcore/...`; bei Artefakt-Checks immer `tar -xOf dist/*.wbm linuxgsm-webcore/<pfad>` verwenden.
+- **Wine-Worker-Exklusivlauf:** Vor Wine-Runtime-Setup stale `wine/xvfb` Prozesse bereinigen und per `flock` locken, damit nie mehrere Runtime-Setups parallel laufen.
 - Kein Symlink/Auto-Sync — jede Aenderung erfordert expliziten Rebuild und Reinstall.
 

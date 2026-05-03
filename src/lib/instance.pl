@@ -293,7 +293,16 @@ sub get_instance {
     $script_dir =~ s|/[^/]+$||;
 
     my %cfg     = _parse_lgsm_config($script_dir, $script_name);
-    my $status  = _detect_status($script_dir, $user, $script_name);
+    # Non-LGSM SteamCMD/Wine instances must NOT shell out to './<script> details'.
+    # That wrapper ignores its arguments and would launch a fresh wine on every status check,
+    # piling up zombie wine/Xvfb pairs in the same WINEPREFIX until the real start hangs.
+    my $reg_source = $reg{$id}{'source'} // 'lgsm';
+    my $status;
+    if ($reg_source eq 'steamcmd') {
+        $status = _detect_status_steamcmd($script_dir);
+    } else {
+        $status = _detect_status($script_dir, $user, $script_name);
+    }
     my $port    = $cfg{port} // 0;
     $port       = _read_port_from_game_config($script_dir, \%cfg) unless $port;
     my $fw_open = &firewall_status($port);
@@ -473,6 +482,20 @@ sub _detect_status {
     alarm(0);  # cancel alarm if eval died for another reason
     return 'unknown' unless defined $out && length $out;
     return $out =~ /Online/ ? 'online' : 'offline';
+}
+
+# Lightweight status check for non-LGSM SteamCMD/Wine instances.
+# Reads $server_dir/run.pid and verifies the process exists. No subshells, no scripts.
+sub _detect_status_steamcmd {
+    my ($server_dir) = @_;
+    my $pidfile = "$server_dir/run.pid";
+    return 'offline' unless -f $pidfile;
+    open(my $fh, '<', $pidfile) or return 'offline';
+    my $pid = <$fh>;
+    close($fh);
+    chomp($pid //= '');
+    return 'offline' unless $pid =~ /^\d+$/;
+    return kill(0, int($pid)) ? 'online' : 'offline';
 }
 
 sub set_instance_status {

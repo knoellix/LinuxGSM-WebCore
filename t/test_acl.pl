@@ -19,8 +19,15 @@ require 't/stubs.pl';
 
 our $stub_acl_dir = tempdir(CLEANUP => 1);
 our $module_name  = 'linuxgsm-webcore';
-our (%access, $remote_user);
+our (%access, $remote_user, $config_directory,
+     $_effective_role_cache, $_module_acl_cache);
 $remote_user = 'testuser';
+# Point ACL fallback at a non-existent dir so tests run purely from %access.
+$config_directory = '/nonexistent';
+
+# Reset all per-request caches between blocks. Without this each test
+# sees the cached _module_acl from the previous block and cross-contaminates.
+sub _r { $_effective_role_cache = undef; $_module_acl_cache = undef; }
 
 sub list_instances {
     return (
@@ -35,6 +42,7 @@ print "1..14\n";
 
 # 1. can_create: false for operator (no role key = operator default)
 {
+    _r();
     %access = ();
     !can_create()
         ? pass('can_create false for operator (no role key)')
@@ -43,6 +51,7 @@ print "1..14\n";
 
 # 2. can_create: true for explicit admin role
 {
+    _r();
     %access = (role => 'admin');
     can_create()
         ? pass('can_create true for admin role')
@@ -51,6 +60,7 @@ print "1..14\n";
 
 # 3. can_scan: false for operator
 {
+    _r();
     %access = (role => 'operator');
     !can_scan()
         ? pass('can_scan false for operator')
@@ -59,6 +69,7 @@ print "1..14\n";
 
 # 4. can_scan: true for admin
 {
+    _r();
     %access = (role => 'admin');
     can_scan()
         ? pass('can_scan true for admin')
@@ -67,6 +78,7 @@ print "1..14\n";
 
 # 5. allowed_servers: admin → returns ('*')
 {
+    _r();
     %access = (role => 'admin');
     my @s = allowed_servers();
     ($s[0] // '') eq '*'
@@ -76,6 +88,7 @@ print "1..14\n";
 
 # 6. allowed_servers: operator, parses space-separated list
 {
+    _r();
     %access = (role => 'operator', servers => 'mc-test tf2-test');
     my @s = allowed_servers();
     (scalar(@s) == 2 && $s[0] eq 'mc-test' && $s[1] eq 'tf2-test')
@@ -85,6 +98,7 @@ print "1..14\n";
 
 # 7. user_can_manage: admin can manage any server
 {
+    _r();
     %access = (role => 'admin');
     user_can_manage('any-server')
         ? pass('user_can_manage true for admin')
@@ -93,6 +107,7 @@ print "1..14\n";
 
 # 8. user_can_manage: operator with listed server
 {
+    _r();
     %access = (role => 'operator', servers => 'mc-test');
     user_can_manage('mc-test')
         ? pass('user_can_manage true for listed server')
@@ -101,6 +116,7 @@ print "1..14\n";
 
 # 9. user_can_manage: operator, unlisted server denied
 {
+    _r();
     %access = (role => 'operator', servers => 'mc-test');
     !user_can_manage('tf2-test')
         ? pass('user_can_manage false for unlisted server')
@@ -109,6 +125,7 @@ print "1..14\n";
 
 # 10. list_managed_instances: operator filtered by servers
 {
+    _r();
     %access = (role => 'operator', servers => 'mc-test');
     my @inst = list_managed_instances();
     (scalar(@inst) == 1 && $inst[0]{'id'} eq 'mc-test')
@@ -118,6 +135,7 @@ print "1..14\n";
 
 # 11. list_managed_instances: admin gets all
 {
+    _r();
     %access = (role => 'admin');
     my @inst = list_managed_instances();
     scalar(@inst) == 2
@@ -139,6 +157,7 @@ print "1..14\n";
 
 # 13. Legacy: servers=* without role → effective_role = admin
 {
+    _r();
     %access = (servers => '*');
     effective_role() eq 'admin'
         ? pass('legacy servers=* → effective_role admin')
@@ -147,6 +166,7 @@ print "1..14\n";
 
 # 14. is_admin: legacy servers=* → true
 {
+    _r();
     %access = (servers => '*');
     is_admin()
         ? pass('is_admin true for legacy servers=*')

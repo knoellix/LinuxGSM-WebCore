@@ -29,10 +29,12 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
     if ($action eq 'patch_repos') {
         &patch_apt_sources('/etc/apt/sources.list');
         &redirect('steam_settings.cgi');
+        exit;
 
     } elsif ($action eq 'install_steamcmd') {
         &install_steamcmd();
         &redirect('steam_settings.cgi');
+        exit;
 
     } elsif ($action eq 'add_account') {
         my $username     = $in{'steam_username'}     // '';
@@ -47,6 +49,7 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
         &add_steam_account($username, $display_name);
         my $token = &start_login_session($username, $password);
         &redirect("steam_settings.cgi?action=poll&session=" . &html_escape($token) . "&username=" . &html_escape($username));
+        exit;
 
     } elsif ($action eq 'remove_account') {
         my $username = $in{'steam_username'} // '';
@@ -54,6 +57,7 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
         $username or &error($text{'err_invalid_input'});
         &remove_steam_account($username);
         &redirect('steam_settings.cgi');
+        exit;
 
     } elsif ($action eq 'submit_guard') {
         my $token    = $in{'session'}    // '';
@@ -67,6 +71,7 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
         $code  or &error($text{'err_invalid_input'});
         &submit_guard_code($token, $code);
         &redirect("steam_settings.cgi?action=poll&session=" . &html_escape($token) . "&username=" . &html_escape($username));
+        exit;
 
     } elsif ($action eq 'save_settings') {
         &is_admin() or &error($text{'err_acl_admin_only'} || 'Access denied');
@@ -84,6 +89,7 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
         &update_steam_account_status($username, 'guard_pending');
         my $token = &start_login_session($username, $password);
         &redirect("steam_settings.cgi?action=poll&session=" . &html_escape($token) . "&username=" . &html_escape($username));
+        exit;
     }
 }
 
@@ -116,6 +122,12 @@ if ($get_action eq 'poll') {
 
     &header($text{'steam_login_title'}, '');
     my $status = &read_session_status($token) // 'connecting';
+    my $out    = &read_session_output($token);
+    my $mobile_confirm_hint = ($out =~ /please confirm the login in the steam mobile app|waiting for confirmation/i) ? 1 : 0;
+    my $guard_code_hint = ($out =~ /enter\W*(?:the\s+)?(?:current\s+)?code|steam\W*guard\W*code|email\W*code|invalid\W*(?:steam\W*guard\W*)?code|two-factor\W*code/i) ? 1 : 0;
+    my @out_lines = split(/\n/, $out // '');
+    @out_lines = @out_lines > 20 ? @out_lines[-20 .. -1] : @out_lines;
+    my $out_tail = join("\n", @out_lines);
 
     if ($status eq 'ok') {
         &update_steam_account_status($username, 'ok');
@@ -132,7 +144,7 @@ if ($get_action eq 'poll') {
         &cleanup_session($token);
         print "<div class='alert alert-warning'>" . &html_escape($text{'steam_login_timeout'}) . "</div>\n";
         print "<p><a href='steam_settings.cgi'>" . &html_escape($text{'steam_title'}) . "</a></p>\n";
-    } elsif ($status eq 'guard_required') {
+    } elsif ($status eq 'guard_required' || ($status eq 'connecting' && $guard_code_hint && !$mobile_confirm_hint)) {
         print "<p>" . &html_escape($text{'steam_guard_prompt'}) . "</p>\n";
         print &ui_form_start('steam_settings.cgi', 'post');
         print &ui_hidden('action',   'submit_guard');
@@ -147,6 +159,16 @@ if ($get_action eq 'poll') {
     } else {
         print "<meta http-equiv='refresh' content='3'>\n";
         print "<p>" . &html_escape($text{'steam_login_connecting'}) . "</p>\n";
+        if ($mobile_confirm_hint) {
+            print "<div class='alert alert-info'>Bestätige den Login in der Steam-App. Kein 5-stelliger Code erforderlich.</div>\n";
+        } elsif ($guard_code_hint) {
+            print "<div class='alert alert-warning'>Steam erwartet einen 5-stelligen Guard-Code. Das Eingabefeld erscheint automatisch.</div>\n";
+        }
+    }
+
+    if (length $out_tail) {
+        print "<h4>" . &html_escape($text{'jobs_output_title'} || 'Ausgabe') . "</h4>\n";
+        print "<pre>" . &html_escape($out_tail) . "</pre>\n";
     }
 
     &footer('', '');

@@ -9,6 +9,7 @@
 # -------------------------------------------------------------------------
 use strict;
 use warnings;
+use File::Find ();
 
 do '../web-lib.pl';
 do '../ui-lib.pl';
@@ -25,6 +26,7 @@ require './lib/steam.pl';
 require './lib/jobs.pl';
 require './lib/logging.pl';
 require './lib/error_hints.pl';
+require './lib/provision.pl';
 
 our (%text, %config, %in, %gconfig);
 our ($module_root, $module_root_directory, $config_directory, $module_name);
@@ -44,9 +46,130 @@ sub _parse_script_info {
     return ($script_path, $script_name, $server_dir);
 }
 
+sub _effective_instance_source {
+    my ($inst) = @_;
+    my $src = $inst->{'source'} // '';
+    return $src if $src eq 'steamcmd';
+    my (undef, undef, $server_dir) = _parse_script_info($inst);
+    return 'steamcmd' if $server_dir && -f "$server_dir/.steam_app_id";
+    my $game_key = $inst->{'cached_game'} || $inst->{'game'} || '';
+    return 'steamcmd' if $game_key && (&get_game_source($game_key) // '') eq 'steamcmd';
+    return $src || 'lgsm';
+}
+
+sub _steamcmd_server_binary_exists {
+    my ($server_dir) = @_;
+    return 1 if -f "$server_dir/.steam_launch_cmd";
+    return 1 if -x "$server_dir/steamcmd-start.sh";
+    my $serverfiles = "$server_dir/serverfiles";
+    return 0 unless -d $serverfiles;
+    my $found = 0;
+    File::Find::find(
+        sub {
+            return if $found;
+            return unless -f $_;
+            return unless -x _ || $_ =~ /\.exe$/i;
+            if ($_ =~ /\.x86_64$/ || $_ =~ /Server\.sh$/ || $_ =~ /\.exe$/i) {
+                $found = 1;
+            }
+        },
+        $serverfiles
+    );
+    return $found;
+}
+
+# Collect every port-typed field for the instance from cfg+meta defaults.
+# Returns an arrayref of { key, port, label } in field declaration order.
+# Used for firewall open/close and the info table so multi-port games like
+# Windrose (game/query/beacon) get treated as a port group, not a single value.
+sub _collect_instance_ports {
+    my ($script_name, $cfg_ref) = @_;
+    my @out;
+    my @fields = &get_game_fields($script_name);
+    my $lang   = $current_lang // 'en';
+    for my $f (@fields) {
+        my $type = $f->{'type'} // '';
+        next unless $type eq 'port';
+        my $key = $f->{'key'};
+        my $val = $cfg_ref->{$key};
+        if (!defined $val || $val eq '') {
+            $val = $f->{'default'};
+        }
+        my $port = int($val // 0);
+        next unless $port > 0;
+        my $label = $lang eq 'de' ? ($f->{'label_de'} // $f->{'label_en'} // $key)
+                                  : ($f->{'label_en'} // $f->{'label_de'} // $key);
+        push @out, { key => $key, port => $port, label => $label };
+    }
+    # Legacy fallback for games without `port`-typed fields in games_meta:
+    # use the registry/cfg "port" we already have.
+    if (!@out) {
+        my $val = $cfg_ref->{'port'};
+        my $port = int($val // 0);
+        push @out, { key => 'port', port => $port, label => $text{'manage_port'} } if $port > 0;
+    }
+    return \@out;
+}
+
+sub _runtime_status_badge_html {
+    my ($status) = @_;
+    # Vocabulary union: 'online'/'offline' from _detect_status* (instance.pl),
+    # plus legacy 'running'/'stopped' callers, plus provisioning states.
+    my %map = (
+        online     => '&#x1F7E2; L&auml;uft',
+        running    => '&#x1F7E2; L&auml;uft',
+        offline    => '&#x1F534; Nicht gestartet',
+        stopped    => '&#x1F534; Nicht gestartet',
+        fresh      => '&#x1F7E1; Bereitstellung offen',
+        lgsm_ready => '&#x1F7E1; Installation offen',
+        unknown    => '&#x1F7E1; Unbekannt',
+    );
+    return $map{$status} || ('&#x1F7E1; ' . &html_escape($status));
+}
+
+sub _enqueue_install_game_job {
+    my ($instance_id, $reg, $unix_user, $opts_ref) = @_;
+    my %opts = %{ $opts_ref || {} };
+    my $job_action = $opts{'job_action'} || 'install_game';
+    my $preclean = $opts{'preclean'} ? 1 : 0;
+    my $source = _effective_instance_source($reg);
+    my (undef, $script_name, $server_dir) = _parse_script_info($reg);
+    if ($source eq 'steamcmd' && ($reg->{'source'} // '') ne 'steamcmd') {
+        &register_instance($instance_id, $reg->{'user'}, $reg->{'script'}, {
+            source => 'steamcmd',
+        });
+    }
+    my $job_id = &create_job();
+    write_job_meta($job_id, $instance_id, $job_action, $unix_user);
+    &log_action('job_started', $job_id, {instance_id => $instance_id, action => $job_action});
+
+    if ($source eq 'steamcmd') {
+        my $app_id = $reg->{'steam_app_id'} // '';
+        if (!$app_id) {
+            my %gmeta = load_games_meta();
+            my $game_key = $reg->{'cached_game'} || $script_name;
+            $app_id = $gmeta{$game_key}{'steam_app_id'} // '';
+        }
+        $app_id =~ s/[^0-9]//g;
+        my $steamcmd_path = &detect_steamcmd() // 'steamcmd';
+        my $prefix = $preclean ? "rm -rf '$server_dir/serverfiles' && " : '';
+        my $cmd = "MODULE_ROOT='$module_root' STEAMCMD_PATH='$steamcmd_path' setsid nohup bash -lc \"$prefix" .
+                  "bash '$module_root/scripts/steamcmd_install.sh' '$config_directory/jobs/$job_id' '$unix_user' '$server_dir' '$app_id' '' '$script_name'\" >/dev/null 2>&1 &";
+        &log_debug("$job_action steamcmd: module_root=$module_root steamcmd=$steamcmd_path server_dir=$server_dir app_id=$app_id preclean=$preclean cmd=$cmd");
+        &system_logged($cmd);
+    } else {
+        my $cmd2 = "MODULE_ROOT='$module_root' setsid nohup bash '$module_root/scripts/game_action.sh' '$config_directory/jobs/$job_id' '$unix_user' '$server_dir' '$script_name' install >/dev/null 2>&1 &";
+        &log_debug("$job_action lgsm: module_root=$module_root server_dir=$server_dir cmd=$cmd2");
+        &system_logged($cmd2);
+    }
+
+    return $job_id;
+}
+
 my $instance_id = &sanitize_input($in{'instance_id'} || $in{'user'} || '');
 my $inst = &get_instance_flexible($instance_id) or &error($text{'err_not_found'});
 my $unix_user = $inst->{'user'};
+my $effective_source = _effective_instance_source($inst);
 my $is_fresh  = ($inst->{'instance_status'} // 'installed') ne 'installed';
 
 &user_can_manage($instance_id)
@@ -60,16 +183,25 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
     }
 
     if ($action eq 'fw_open') {
-        my $port = int($inst->{'port'});
-        &firewall_open_port($port, 'tcp');
-        &firewall_open_port($port, 'udp');
+        # Open every port-typed field (game/query/beacon for UE5).
+        my (undef, $sn_fw, $sd_fw) = _parse_script_info($inst);
+        my %cfg_fw = $sn_fw && $sd_fw ? &_parse_lgsm_config($sd_fw, $sn_fw) : ();
+        my $ports = _collect_instance_ports($sn_fw, \%cfg_fw);
+        for my $p (@$ports) {
+            &firewall_open_port($p->{port}, 'tcp');
+            &firewall_open_port($p->{port}, 'udp');
+        }
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
         exit;
     }
     elsif ($action eq 'fw_close') {
-        my $port = int($inst->{'port'});
-        &firewall_close_port($port, 'tcp');
-        &firewall_close_port($port, 'udp');
+        my (undef, $sn_fw, $sd_fw) = _parse_script_info($inst);
+        my %cfg_fw = $sn_fw && $sd_fw ? &_parse_lgsm_config($sd_fw, $sn_fw) : ();
+        my $ports = _collect_instance_ports($sn_fw, \%cfg_fw);
+        for my $p (@$ports) {
+            &firewall_close_port($p->{port}, 'tcp');
+            &firewall_close_port($p->{port}, 'udp');
+        }
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
         exit;
     }
@@ -87,17 +219,44 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         &error("Invalid default path") unless
             $default_cfg =~ m|^/[a-zA-Z0-9_./()\-]+/lgsm/config-default/config-lgsm/[a-zA-Z0-9_-]+/_default\.cfg$|;
 
-        # Form values always win for port/gamename
-        my $safe_port = int($in{'port'} || $inst->{'port'} || 0);
-        my $safe_game = $in{'gamename'} // $inst->{'game'} // '';
-        $safe_game =~ s/[^a-zA-Z0-9 _-]//g;
-        $safe_port > 0     or &error($text{'err_invalid_input'});
-        length($safe_game) or &error($text{'err_invalid_input'});
+        # Build form overrides from all games_meta fields.
+        # Each field type drives validation; missing values fall back to games_meta defaults.
+        my @fields_def  = &get_game_fields($script_name);
+        unless (@fields_def) {
+            # Legacy fallback: minimal port/gamename set.
+            @fields_def = (
+                {key => 'port',     type => 'port'},
+                {key => 'gamename', type => 'text'},
+            );
+        }
+        my %form_overrides;
+        for my $f (@fields_def) {
+            my $k   = $f->{'key'};
+            my $raw = defined $in{$k} ? $in{$k} : ($f->{'default'} // '');
+            my $t   = $f->{'type'} // 'text';
+            if ($t eq 'port' || $t eq 'int') {
+                my $n = int($raw || 0);
+                # port/queryport/beaconport must be > 0; other ints can be 0.
+                if ($t eq 'port') {
+                    $n > 0 or &error($text{'err_invalid_input'});
+                }
+                $form_overrides{$k} = $n;
+            } elsif ($t eq 'bool') {
+                $form_overrides{$k} = $raw ? 1 : 0;
+            } else {
+                my $v = $raw // '';
+                $v =~ s/[^a-zA-Z0-9 ._\-:\/]//g;
+                $form_overrides{$k} = $v;
+            }
+        }
+        # gamename always required (LGSM convention) when present in form.
+        if (exists $form_overrides{'gamename'}) {
+            length($form_overrides{'gamename'}) or &error($text{'err_invalid_input'});
+        }
 
         # Read _default.cfg preserving section comments and all assignments.
-        # Form values (port, gamename) override whatever was in the file.
+        # Form values override whatever was in the file.
         my @output_lines;
-        my %form_overrides = (port => $safe_port, gamename => $safe_game);
         my %seen;
         if (-f $default_cfg) {
             open(my $src, '<', $default_cfg) or &error("Cannot read default config: $!");
@@ -117,7 +276,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
             close($src);
         }
         # Append any form values not found in _default.cfg
-        for my $k (qw(port gamename)) {
+        for my $k (sort keys %form_overrides) {
             push @output_lines, "$k=\"$form_overrides{$k}\"" unless $seen{$k};
         }
 
@@ -206,7 +365,8 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
             $cfg_path = "$script_dir/lgsm/config-lgsm/$script_name/$script_name.cfg";
         } elsif ($cfg_file_key eq 'game') {
             my %cfg_ctx = &_parse_lgsm_config($script_dir, $script_name);
-            $cfg_path = &resolve_game_server_config_path($script_dir, $script_name, \%cfg_ctx);
+            my $hint    = &get_game_config_path($script_name);
+            $cfg_path = &resolve_game_server_config_path($script_dir, $script_name, \%cfg_ctx, $hint);
             &error("Invalid game config path") unless $cfg_path =~ m|^\Q$script_dir\E/|;
         } else {
             $cfg_path = "$script_dir/lgsm/config-lgsm/common.cfg";
@@ -219,6 +379,14 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
 
         if ($cfg_file_key eq 'game') {
             unless (-f $cfg_path) {
+                # LGSM games can be bootstrapped via a quick start/stop cycle.
+                # Non-LGSM (steamcmd/wine) MUST NOT — that would launch wine in
+                # the CGI foreground without a job/screen. The user gets a
+                # clear error instead and starts the server normally.
+                if ($effective_source eq 'steamcmd') {
+                    &error($text{'config_editor_game_missing_steamcmd'}
+                        || $text{'config_editor_game_missing'});
+                }
                 &run_server_action($unix_user, 'start', $script_name, $script_dir);
                 sleep 2;
                 &run_server_action($unix_user, 'stop', $script_name, $script_dir);
@@ -230,7 +398,22 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
             } else {
                 my $raw_base = $in{'game_config_original'} // '';
                 my $fmt = &detect_game_config_format($cfg_path, $raw_base);
-                if ($fmt eq 'properties') {
+                if ($fmt eq 'json') {
+                    my ($jvals, $jorder) = &parse_json_config($raw_base);
+                    my %updates;
+                    for my $param (keys %in) {
+                        next unless $param =~ /^field_(.+)$/;
+                        my $key = $1;
+                        my $val = $in{$param};
+                        $val = '' unless defined $val;
+                        # Browsers don't submit unchecked checkboxes; we rely
+                        # on the server's existing JSON value type — anything
+                        # present here is an updated value.
+                        $updates{$key} = $val;
+                    }
+                    $new_content = &update_json_config($raw_base, \%updates);
+                }
+                elsif ($fmt eq 'properties') {
                     my ($prop_vals, $prop_order) = &parse_properties_file($raw_base);
                     for my $key (@$prop_order) {
                         $prop_vals->{$key} = $in{"field_$key"}
@@ -238,7 +421,6 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
                     }
                     $new_content = &update_properties_file($raw_base, $prop_vals);
                 } else {
-                    # Default: Palworld-style OptionSettings INI
                     my ($opt_vals, $opt_order) = &parse_option_settings_from_ini($raw_base);
                     for my $param (keys %in) {
                         next unless $param =~ /^field_(\w+)$/;
@@ -295,6 +477,11 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         my $script_dir  = $inst->{'script'};
         $script_dir =~ s|/[^/]+$||;
         my $game_user = $inst->{'user'};
+        my $safe_game_user = $game_user // '';
+        $safe_game_user =~ s/[^a-zA-Z0-9_.-]//g;
+        my @game_pw_before = $safe_game_user ne '' ? getpwnam($safe_game_user) : ();
+        my $game_home_before = @game_pw_before ? ($game_pw_before[7] // '') : '';
+        $game_home_before ||= "/home/$safe_game_user" if $safe_game_user ne '';
 
         my @all_before = &list_instances();
         my @other_for_user = grep {
@@ -303,13 +490,20 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
 
         my $sftp_user = &resolve_instance_sftp_user($instance_id, $game_user);
 
-        # Always remove instance directory
-        &system_logged("rm -rf \"\Q$script_dir\E\"");
+        # Always remove instance directory; keep guardrails for destructive paths.
+        if ($script_dir =~ m|^/| && $script_dir ne '/' && $script_dir =~ m|^/home/|) {
+            my $safe_script_dir = _shell_sq($script_dir);
+            &system_logged("rm -rf $safe_script_dir");
+        }
 
         # Remove panel registration entry (if tracked)
         &unregister_instance($instance_id);
 
-        # FTP/SFTP cleanup is mandatory for instance deletion
+        # FTP/SFTP cleanup is mandatory for instance deletion.
+        # Virtual ftpasswd users have no /etc/passwd entry — try that first.
+        # Only fall back to a real Unix-account decommission if ftpasswd
+        # didn't own the user.
+        my @sftp_leftovers;
         if ($sftp_user && $sftp_user ne $game_user) {
             my %ftp_state = &discover_ftp_state();
             my $auth_file = $ftp_state{'auth_user_file'} || '/etc/proftpd/ftpd.passwd';
@@ -318,14 +512,28 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
                 name => $sftp_user,
             );
             if ($rc != 0) {
-                # Fallback for classic system users
-                &system_logged("userdel -r $sftp_user");
+                my $sftp_res = &decommission_unix_user($sftp_user);
+                push @sftp_leftovers, @{ $sftp_res->{'leftovers'} } if !$sftp_res->{'ok'};
+                &log_debug("sftp decommission: " . join(' | ', @{ $sftp_res->{'log'} }));
             }
         }
 
         # Remove game unix user only if this was the last instance for that user
-        if (!@other_for_user) {
-            &system_logged("userdel -r $game_user");
+        my @user_leftovers;
+        if (!@other_for_user && $safe_game_user ne '') {
+            my $game_res = &decommission_unix_user($safe_game_user);
+            push @user_leftovers, @{ $game_res->{'leftovers'} } if !$game_res->{'ok'};
+            &log_debug("game decommission: " . join(' | ', @{ $game_res->{'log'} }));
+        }
+
+        # Verify hard-delete actually removed artifacts.
+        my @leftovers;
+        push @leftovers, $script_dir
+            if $script_dir =~ m|^/| && -d $script_dir;
+        push @leftovers, @user_leftovers, @sftp_leftovers;
+        if (@leftovers) {
+            my $msg = join(', ', @leftovers);
+            &error(($text{'err_delete_incomplete'} || 'Löschen unvollständig') . ": $msg");
         }
 
         &redirect("index.cgi?xnavigation=1");
@@ -400,37 +608,14 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
     elsif ($action eq 'install_game') {
         &can_create() or &error($text{'err_acl_admin_only'} || 'Access denied');
         my $reg = &get_registered_instance($instance_id) or &error($text{'err_not_found'});
-        my $source = $reg->{'source'} // 'lgsm';
-        my ($script_path, $script_name, $server_dir) = _parse_script_info($reg);
-
-        my $job_id = &create_job();
-        write_job_meta($job_id, $instance_id, 'install_game', $unix_user);
-        &log_action('job_started', $job_id, {instance_id => $instance_id, action => 'install_game'});
-
-        if ($source eq 'steamcmd') {
-            my $app_id = $reg->{'steam_app_id'} // '';
-            if (!$app_id) {
-                my %gmeta = load_games_meta();
-                my $game_key = $reg->{'cached_game'} || $script_name;
-                $app_id = $gmeta{$game_key}{'steam_app_id'} // '';
-            }
-            $app_id =~ s/[^0-9]//g;
-            my $steamcmd_path = &detect_steamcmd() // 'steamcmd';
-            my $cmd = "MODULE_ROOT='$module_root' STEAMCMD_PATH='$steamcmd_path' setsid nohup bash '$module_root/scripts/steamcmd_install.sh' '$config_directory/jobs/$job_id' '$unix_user' '$server_dir' '$app_id' >/dev/null 2>&1 &";
-            &log_debug("install_game steamcmd: module_root=$module_root steamcmd=$steamcmd_path server_dir=$server_dir app_id=$app_id cmd=$cmd");
-            &system_logged($cmd);
-        } else {
-            my $cmd2 = "setsid nohup bash '$module_root/scripts/game_action.sh' '$config_directory/jobs/$job_id' '$unix_user' '$server_dir' '$script_name' install >/dev/null 2>&1 &";
-            &log_debug("install_game lgsm: module_root=$module_root server_dir=$server_dir cmd=$cmd2");
-            &system_logged($cmd2);
-        }
+        my $job_id = _enqueue_install_game_job($instance_id, $reg, $unix_user);
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id)
             . "&action=poll_job&job=" . &html_escape($job_id)
             . "&next_status=installed&xnavigation=1");
         exit;
     }
     elsif ($action eq 'update') {
-        my $source = $inst->{'source'} // 'lgsm';
+        my $source = $effective_source;
         my ($script_path, $script_name, $server_dir) = _parse_script_info($inst);
 
         my $job_id = &create_job();
@@ -440,7 +625,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         if ($source eq 'steamcmd') {
             &system_logged("MODULE_ROOT='$module_root' setsid nohup bash '$module_root/scripts/steamcmd_control.sh' update '$config_directory/jobs/$job_id' '$unix_user' '$server_dir' >/dev/null 2>&1 &");
         } else {
-            &system_logged("setsid nohup bash '$module_root/scripts/game_action.sh' '$config_directory/jobs/$job_id' '$unix_user' '$server_dir' '$script_name' update >/dev/null 2>&1 &");
+            &system_logged("MODULE_ROOT='$module_root' setsid nohup bash '$module_root/scripts/game_action.sh' '$config_directory/jobs/$job_id' '$unix_user' '$server_dir' '$script_name' update >/dev/null 2>&1 &");
         }
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&action=poll_job&job=" . &html_escape($job_id) . "&xnavigation=1");
         exit;
@@ -454,20 +639,28 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         write_job_meta($job_id, $instance_id, 'validate', $unix_user);
         &log_action('job_started', $job_id, {instance_id => $instance_id, action => 'validate'});
         my $worker = "$module_root/scripts/game_action.sh";
-        &system_logged("setsid nohup bash '$worker' '$config_directory/jobs/$job_id' '$unix_user' '$server_dir' '$script_name' validate >/dev/null 2>&1 &");
+        &system_logged("MODULE_ROOT='$module_root' setsid nohup bash '$worker' '$config_directory/jobs/$job_id' '$unix_user' '$server_dir' '$script_name' validate >/dev/null 2>&1 &");
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&action=poll_job&job=" . &html_escape($job_id) . "&xnavigation=1");
         exit;
     }
     elsif ($action eq 'reinstall') {
-        my $script_name = (split('/', $inst->{'script'}))[-1];
-        (my $server_dir = $inst->{'script'}) =~ s|/[^/]+$||;
-        $script_name =~ s/[^a-zA-Z0-9_-]//g;
-
-        my $job_id = &create_job();
-        write_job_meta($job_id, $instance_id, 'reinstall', $unix_user);
-        &log_action('job_started', $job_id, {instance_id => $instance_id, action => 'reinstall'});
-        my $worker = "$module_root/scripts/game_action.sh";
-        &system_logged("setsid nohup bash '$worker' '$config_directory/jobs/$job_id' '$unix_user' '$server_dir' '$script_name' reinstall >/dev/null 2>&1 &");
+        my $source = $effective_source;
+        my $job_id;
+        if ($source eq 'steamcmd') {
+            $job_id = _enqueue_install_game_job($instance_id, $inst, $unix_user, {
+                job_action => 'reinstall',
+                preclean   => 1,
+            });
+        } else {
+            my $script_name = (split('/', $inst->{'script'}))[-1];
+            (my $server_dir = $inst->{'script'}) =~ s|/[^/]+$||;
+            $script_name =~ s/[^a-zA-Z0-9_-]//g;
+            $job_id = &create_job();
+            write_job_meta($job_id, $instance_id, 'reinstall', $unix_user);
+            &log_action('job_started', $job_id, {instance_id => $instance_id, action => 'reinstall'});
+            my $worker = "$module_root/scripts/game_action.sh";
+            &system_logged("MODULE_ROOT='$module_root' setsid nohup bash '$worker' '$config_directory/jobs/$job_id' '$unix_user' '$server_dir' '$script_name' reinstall >/dev/null 2>&1 &");
+        }
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&action=poll_job&job=" . &html_escape($job_id) . "&xnavigation=1");
         exit;
     }
@@ -484,8 +677,18 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         my $script_name = (split('/', $inst->{'script'}))[-1];
         my $script_dir  = $inst->{'script'};
         $script_dir =~ s|/[^/]+$||;
-        my %cfg_ctx = &_parse_lgsm_config($script_dir, $script_name);
-        my $cfg_path = &resolve_game_server_config_path($script_dir, $script_name, \%cfg_ctx);
+        my %cfg_ctx  = &_parse_lgsm_config($script_dir, $script_name);
+        my $hint     = &get_game_config_path($script_name);
+        my $cfg_path = &resolve_game_server_config_path($script_dir, $script_name, \%cfg_ctx, $hint);
+
+        # Bootstrap is only safe for LGSM scripts (which return immediately).
+        # For SteamCMD/Wine games './<script> start' would launch wine in the
+        # CGI foreground without monitoring — refuse and tell the user to use
+        # the normal Start button (which dispatches via steamcmd_control.sh).
+        if ($effective_source eq 'steamcmd') {
+            &error($text{'config_editor_game_missing_steamcmd'}
+                || $text{'config_editor_game_missing'});
+        }
 
         unless (-f $cfg_path) {
             &run_server_action($unix_user, 'start', $script_name, $script_dir);
@@ -498,16 +701,22 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         exit;
     }
     elsif ($action eq 'start' || $action eq 'stop') {
-        my $source = $inst->{'source'} // 'lgsm';
+        my $source = $effective_source;
         my ($script_path, $script_name, $server_dir) = _parse_script_info($inst);
 
         if ($source eq 'steamcmd') {
+            if ($action eq 'start' && !_steamcmd_server_binary_exists($server_dir)) {
+                my $job_id = _enqueue_install_game_job($instance_id, $inst, $unix_user);
+                &redirect("manage.cgi?instance_id=" . &html_escape($instance_id)
+                    . "&action=poll_job&job=" . &html_escape($job_id)
+                    . "&next_status=installed&next_action=start&xnavigation=1");
+                exit;
+            }
             my $job_id = &create_job();
             write_job_meta($job_id, $instance_id, $action, $unix_user);
             &log_action('job_started', $job_id, {instance_id => $instance_id, action => $action});
             &system_logged("MODULE_ROOT='$module_root' setsid nohup bash '$module_root/scripts/steamcmd_control.sh' '$action' '$config_directory/jobs/$job_id' '$unix_user' '$server_dir' >/dev/null 2>&1 &");
-            &redirect("manage.cgi?instance_id=" . &html_escape($instance_id)
-                . "&action=poll_job&job=" . &html_escape($job_id) . "&xnavigation=1");
+            &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
             exit;
         } else {
             &run_server_action($unix_user, $action, $script_name, $server_dir);
@@ -519,6 +728,13 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         my $script_name = (split('/', $inst->{'script'}))[-1];
         my $script_dir  = $inst->{'script'};
         $script_dir =~ s|/[^/]+$||;
+        # SteamCMD/Wine games: any action that would shell './<script> $action'
+        # is forbidden. The wrapper would launch wine in the CGI foreground and
+        # never escape the request lifetime cleanly. Force users through the
+        # explicit start/stop dispatch (which uses steamcmd_control.sh).
+        if ($effective_source eq 'steamcmd') {
+            &error($text{'err_invalid_action'} . " ($action)");
+        }
         &run_server_action($unix_user, $action, $script_name, $script_dir);
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
         exit;
@@ -532,6 +748,8 @@ if (($in{'action'} // '') eq 'poll_job') {
     $job_id = substr($job_id, 0, 16);
     my $next_status = $in{'next_status'} // '';
     $next_status =~ s/[^a-z_]//g;
+    my $next_action = $in{'next_action'} // '';
+    $next_action =~ s/[^a-z_]//g;
 
     &timeout_check_job($job_id);
     my $status = &get_job_status($job_id) // 'unknown';
@@ -539,6 +757,22 @@ if (($in{'action'} // '') eq 'poll_job') {
 
     if ($status eq 'ok' && $next_status) {
         &set_instance_status($instance_id, $next_status);
+    }
+    if ($status eq 'ok' && $next_action eq 'start') {
+        my $inst_now = &get_instance_flexible($instance_id) || $inst;
+        my $source = _effective_instance_source($inst_now);
+        my (undef, $script_name, $server_dir) = _parse_script_info($inst_now);
+        if ($source eq 'steamcmd') {
+            my $start_job = &create_job();
+            write_job_meta($start_job, $instance_id, 'start', $unix_user);
+            &log_action('job_started', $start_job, {instance_id => $instance_id, action => 'start'});
+            &system_logged("MODULE_ROOT='$module_root' setsid nohup bash '$module_root/scripts/steamcmd_control.sh' start '$config_directory/jobs/$start_job' '$unix_user' '$server_dir' >/dev/null 2>&1 &");
+            &redirect("manage.cgi?instance_id=" . &html_escape($instance_id)
+                . "&action=poll_job&job=" . &html_escape($start_job) . "&xnavigation=1");
+            exit;
+        } else {
+            &run_server_action($unix_user, 'start', $script_name, $server_dir);
+        }
     }
 
     &header($text{'job_output_title'}, '');
@@ -548,6 +782,7 @@ if (($in{'action'} // '') eq 'poll_job') {
         my $poll_url = "manage.cgi?instance_id=" . &html_escape($instance_id)
             . "&action=poll_job&job=" . &html_escape($job_id)
             . "&next_status=" . &html_escape($next_status)
+            . "&next_action=" . &html_escape($next_action)
             . "&xnavigation=1";
         print "<meta http-equiv=\"refresh\" content=\"3;url=$poll_url\">\n";
         print "<p>" . &html_escape($text{'job_running'}) . "</p>\n";
@@ -587,16 +822,47 @@ if (($in{'action'} // '') eq 'poll_job') {
 if (($in{'action'} // '') eq 'monitor') {
     my $script_name = (split('/', $inst->{'script'}))[-1] // '';
     (my $script_dir = $inst->{'script'}) =~ s|/[^/]+$||;
+    my $source = _effective_instance_source($inst);
 
     my @log_candidates = (
         "$script_dir/log/console/${script_name}-console.log",
         "$script_dir/log/script/${script_name}.log",
         "$script_dir/log/${script_name}.log",
     );
+    if ($source eq 'steamcmd') {
+        push @log_candidates,
+            "$script_dir/windrose-debug.log",
+            "$script_dir/server.log",
+            "$script_dir/serverfiles/server.log",
+            "$script_dir/serverfiles/R5/Saved/Logs/R5.log",
+            "$script_dir/serverfiles/R5/Saved/Logs/WindroseServer.log",
+            "$script_dir/serverfiles/R5/Saved/Logs/Windrose.log";
+        # Fallback: pick the most recently modified .log under R5/Saved/Logs.
+        my $logs_dir = "$script_dir/serverfiles/R5/Saved/Logs";
+        if (-d $logs_dir && opendir(my $dh, $logs_dir)) {
+            my @logs = grep { /\.log$/i } readdir($dh);
+            closedir($dh);
+            if (@logs) {
+                my @sorted = sort { (stat("$logs_dir/$b"))[9] <=> (stat("$logs_dir/$a"))[9] }
+                             map  { "$logs_dir/$_" } @logs;
+                push @log_candidates, $sorted[0];
+            }
+        }
+    }
     my ($log_file) = grep { -f $_ } @log_candidates;
+    my $auto_refresh = (($in{'auto_refresh'} // '') eq '1' && ($in{'manual'} // '') eq '1') ? 1 : 0;
 
     &header($text{'manage_monitor_title'}, '');
     print "<h3>" . &html_escape($text{'manage_monitor_title'}) . "</h3>\n";
+    print &ui_form_start('manage.cgi', 'get');
+    print &ui_hidden('instance_id', &html_escape($instance_id));
+    print &ui_hidden('action', 'monitor');
+    print &ui_hidden('xnavigation', '1');
+    print &ui_hidden('manual', '1');
+    print &ui_checkbox('auto_refresh', 1, $text{'manage_monitor_auto_label'}, $auto_refresh);
+    print " ";
+    print &ui_submit($text{'manage_monitor_refresh_btn'}, undef, undef, undef, 'btn-default');
+    print &ui_form_end();
 
     if (!$log_file) {
         print "<p>" . &html_escape($text{'manage_monitor_no_log'}) . "</p>\n";
@@ -607,8 +873,11 @@ if (($in{'action'} // '') eq 'monitor') {
         $content //= '';
         my $len  = length($content);
         my $tail = $len > 8192 ? substr($content, $len - 8192) : $content;
-        my $refresh_url = "manage.cgi?instance_id=" . &html_escape($instance_id) . "&action=monitor&xnavigation=1";
-        print "<meta http-equiv=\"refresh\" content=\"2;url=$refresh_url\">\n";
+        my $refresh_url = "manage.cgi?instance_id=" . &html_escape($instance_id)
+            . "&action=monitor&xnavigation=1&auto_refresh=1&manual=1";
+        if ($auto_refresh) {
+            print "<meta http-equiv=\"refresh\" content=\"2;url=$refresh_url\">\n";
+        }
         print "<pre style='background:#111;color:#eee;padding:8px;height:500px;overflow:auto'>"
             . &html_escape($tail) . "</pre>\n";
     }
@@ -619,7 +888,7 @@ if (($in{'action'} // '') eq 'monitor') {
 # Setup-Phase for fresh/lgsm_ready instances
 if ($is_fresh) {
     my $istatus = $inst->{'instance_status'} // 'fresh';
-    my $source  = $inst->{'source'} // 'provisioned';
+    my $source  = _effective_instance_source($inst);
     &header($text{'setup_phase_title'}, '');
     print "<h3>" . &html_escape($text{'setup_phase_title'}) . "</h3>\n";
 
@@ -657,18 +926,39 @@ my $script_dir_for_cfg = $inst->{'script'};
 $script_dir_for_cfg =~ s|/[^/]+$||;
 my $script_name_for_cfg = (split('/', $inst->{'script'}))[-1];
 my %cfg = &_parse_lgsm_config($script_dir_for_cfg, $script_name_for_cfg);
+my $source_for_status = $effective_source;
+my $runtime_status = $source_for_status eq 'steamcmd'
+    ? &_detect_status_steamcmd($script_dir_for_cfg)
+    : (($inst->{'instance_status'} && $inst->{'instance_status'} ne 'installed')
+        ? $inst->{'instance_status'}
+        : ($inst->{'status'} // 'unknown'));
 
 # Server-Info table
 print &ui_table_start($text{'manage_title'}, "width=100%", 2);
 print &ui_table_row($text{'manage_game'},   &html_escape($inst->{'game'}));
-print &ui_table_row($text{'manage_port'},   int($inst->{'port'}));
-print &ui_table_row($text{'manage_status'}, &html_escape($inst->{'status'}));
+# Show every port-typed field so the user sees the full game/query/beacon set
+# for multi-port games (UE5). Single-port games still render as one row.
+my $info_ports = _collect_instance_ports($script_name_for_cfg, \%cfg);
+if (@$info_ports == 1) {
+    print &ui_table_row($text{'manage_port'}, $info_ports->[0]{port});
+} else {
+    for my $p (@$info_ports) {
+        print &ui_table_row(&html_escape($p->{label}), $p->{port});
+    }
+}
+print &ui_table_row($text{'manage_status'}, _runtime_status_badge_html($runtime_status));
 print &ui_table_row($text{'manage_script'}, &html_escape($inst->{'script'}));
 print &ui_table_end();
 
-# Firewall section
-my $port = int($inst->{'port'});
-my $fw_open = &firewall_status($port);
+# Firewall section — show open/closed status per port. Use AND semantics:
+# the toggle button reflects "are *all* ports open?" so a single click can re-open
+# a partially closed set.
+my $all_open = 1;
+for my $p (@$info_ports) {
+    $all_open = 0 unless &firewall_status($p->{port});
+}
+my $fw_open = $all_open;
+my $port = $info_ports->[0]{port}; # legacy compat for downstream code paths
 my ($fw_status_icon, $fw_btn_action, $fw_btn_label);
 if ($fw_open) {
     $fw_status_icon = "&#x2705; offen";
@@ -838,16 +1128,36 @@ if ($has_misplaced) {
     print &ui_form_end();
 }
 
-# Quick-Fix form (only if no real instance config)
+# Quick-Fix form (only if no real instance config).
+# Renders all fields from games_meta.json so multi-port games (UE: port/queryport/beaconport)
+# are configurable from a single form. Defaults come from games_meta; user-edited values win.
 if (!$cfg{_has_instance_config}) {
-    my $cur_port = int($inst->{'port'}) || '';
-    my $cur_game = ($inst->{'game'} // 'unknown') eq 'unknown' ? '' : &html_escape($inst->{'game'});
+    my @qf_fields = &get_game_fields($script_name_for_cfg);
+    # Fallback minimal set when no fields are defined (legacy/unknown scripts).
+    unless (@qf_fields) {
+        @qf_fields = (
+            {key => 'port',     type => 'port', label_de => $text{'manage_port'}, label_en => $text{'manage_port'}, default => ''},
+            {key => 'gamename', type => 'text', label_de => $text{'manage_game'}, label_en => $text{'manage_game'}, default => ''},
+        );
+    }
+    my $qf_lang = $current_lang // 'en';
     print &ui_form_start("manage.cgi", "post");
     print &ui_hidden("instance_id", $safe_id);
     print &ui_hidden("action", "fix_config");
     print &ui_table_start($text{'manage_fix_config_btn'}, undef, 2);
-    print &ui_table_row($text{'manage_port'}, &ui_textbox('port',     $cur_port, 10));
-    print &ui_table_row($text{'manage_game'}, &ui_textbox('gamename', $cur_game, 30));
+    for my $f (@qf_fields) {
+        my $key = $f->{'key'};
+        my $label = $qf_lang eq 'de' ? ($f->{'label_de'} // $f->{'label_en'} // $key)
+                                     : ($f->{'label_en'} // $f->{'label_de'} // $key);
+        # Prefill priority: existing cfg value > inst struct (for port/game) > games_meta default.
+        my $val = $cfg{$key};
+        if (!defined $val || $val eq '') {
+            if ($key eq 'port')          { $val = int($inst->{'port'}) || ($f->{'default'} // ''); }
+            elsif ($key eq 'gamename')   { $val = (($inst->{'game'} // 'unknown') eq 'unknown') ? ($f->{'default'} // '') : $inst->{'game'}; }
+            else                         { $val = $f->{'default'} // ''; }
+        }
+        print &ui_table_row(&html_escape($label), &ui_textbox($key, $val, 30));
+    }
     print &ui_table_end();
     print &ui_submit($text{'manage_fix_config_btn'});
     print &ui_form_end();
@@ -864,7 +1174,9 @@ if (!$cfg{_has_instance_config}) {
     }
     my $common_path   = "$script_dir_for_cfg/lgsm/config-lgsm/common.cfg";
     my $instance_path = "$script_dir_for_cfg/lgsm/config-lgsm/$script_name_for_cfg/$script_name_for_cfg.cfg";
-    my $game_cfg_path = &resolve_game_server_config_path($script_dir_for_cfg, $script_name_for_cfg, \%cfg);
+    my $game_cfg_hint = &get_game_config_path($script_name_for_cfg);
+    my $game_cfg_path = &resolve_game_server_config_path(
+        $script_dir_for_cfg, $script_name_for_cfg, \%cfg, $game_cfg_hint);
     my $server_root_path = $script_dir_for_cfg;
     my $fileman_path = $server_root_path;
     $fileman_path =~ s/([^A-Za-z0-9\-_.~\/])/sprintf("%%%02X", ord($1))/ge;
@@ -1016,18 +1328,29 @@ JS
     # Game server config panel (game-specific fields on instance config)
     print "<div id='cfg_panel_game' style='display:none'>\n";
     if (!$game_cfg_exists) {
-        print "<p><b>" . &html_escape($text{'config_editor_game_missing'}) . "</b></p>\n";
-        print &ui_form_start("manage.cgi", "post");
-        print &ui_hidden("instance_id", $safe_id);
-        print &ui_hidden("action", "init_game_config");
-        print &ui_submit($text{'config_editor_game_create_btn'});
-        print &ui_form_end();
+        my $missing_text = ($effective_source eq 'steamcmd'
+            ? ($text{'config_editor_game_missing_steamcmd'} || $text{'config_editor_game_missing'})
+            : $text{'config_editor_game_missing'});
+        print "<p><b>" . &html_escape($missing_text) . "</b></p>\n";
+        if ($effective_source ne 'steamcmd') {
+            print &ui_form_start("manage.cgi", "post");
+            print &ui_hidden("instance_id", $safe_id);
+            print &ui_hidden("action", "init_game_config");
+            print &ui_submit($text{'config_editor_game_create_btn'});
+            print &ui_form_end();
+        }
     } else {
-        # Choose parser based on file format
-        my $game_fmt = &detect_game_config_format($game_cfg_path, $game_raw)
-                    || &get_game_config_format($script_name_for_cfg);
+        # Choose parser based on file format. Prefer the explicit games_meta
+        # hint over content sniffing — the JSON heuristic in particular needs
+        # to win over the .properties fallback for files that legitimately
+        # contain "key=value" lines elsewhere.
+        my $game_fmt = &get_game_config_format($script_name_for_cfg)
+                    || &detect_game_config_format($game_cfg_path, $game_raw);
         my ($game_vals, $game_order);
-        if ($game_fmt eq 'properties') {
+        if ($game_fmt eq 'json') {
+            ($game_vals, $game_order) = &parse_json_config($game_raw);
+        }
+        elsif ($game_fmt eq 'properties') {
             ($game_vals, $game_order) = &parse_properties_file($game_raw);
         } else {
             ($game_vals, $game_order) = &parse_option_settings_from_ini($game_raw);
@@ -1058,10 +1381,25 @@ JS
             for my $f (@known_shown) {
                 my $key   = $f->{'key'};
                 my $label = (($lang eq 'de') ? $f->{'label_de'} : $f->{'label_en'}) // $key;
+                my $type  = $f->{'type'} // 'text';
                 my $val   = exists $game_vals->{$key} ? $game_vals->{$key} : '';
-                my $width = ($f->{'type'} eq 'port' || $f->{'type'} eq 'int') ? 10 : 40;
-                print &ui_table_row(&html_escape($label),
-                                    &ui_textbox("field_$key", &html_escape($val), $width));
+                my $width = ($type eq 'port' || $type eq 'int') ? 10 : 40;
+                my $widget;
+                if ($type eq 'bool') {
+                    # Hidden zero-marker so an unchecked box still submits a value
+                    # (browsers omit unchecked checkboxes entirely otherwise).
+                    my $is_true = ($val =~ /^\s*(?:1|true|on|yes|ja)\s*$/i) ? 1 : 0;
+                    $widget = "<input type='hidden' name='field_$key' value='false'>"
+                            . "<input type='checkbox' name='field_$key' value='true'"
+                            . ($is_true ? " checked='checked'" : '') . ">";
+                }
+                elsif ($type eq 'password') {
+                    $widget = &ui_password("field_$key", &html_escape($val), $width);
+                }
+                else {
+                    $widget = &ui_textbox("field_$key", &html_escape($val), $width);
+                }
+                print &ui_table_row(&html_escape($label), $widget);
             }
             # Remaining / unlabelled keys
             if (@extra_keys) {
