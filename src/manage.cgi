@@ -625,7 +625,8 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         &log_action('job_started', $job_id, {instance_id => $instance_id, action => 'update'});
 
         if ($source eq 'steamcmd') {
-            &system_logged("MODULE_ROOT='$module_root' setsid nohup bash '$module_root/scripts/steamcmd_control.sh' update '$config_directory/jobs/$job_id' '$unix_user' '$server_dir' >/dev/null 2>&1 &");
+            my $steamcmd_path = &detect_steamcmd() // 'steamcmd';
+            &system_logged("MODULE_ROOT='$module_root' STEAMCMD_PATH='$steamcmd_path' setsid nohup bash '$module_root/scripts/steamcmd_control.sh' update '$config_directory/jobs/$job_id' '$unix_user' '$server_dir' >/dev/null 2>&1 &");
         } else {
             &system_logged("MODULE_ROOT='$module_root' setsid nohup bash '$module_root/scripts/game_action.sh' '$config_directory/jobs/$job_id' '$unix_user' '$server_dir' '$script_name' update >/dev/null 2>&1 &");
         }
