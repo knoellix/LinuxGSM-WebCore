@@ -60,7 +60,13 @@ _monitor_one() {
                 "$CONFIG_DIR" "$inst_id" "$unix_user" 2>/dev/null || true)"
             _jid="$(printf '%s' "$_jid_out" | tr -cd '0-9a-f')"
             if [[ "${#_jid}" -eq 16 ]]; then
-                job_dir="$CONFIG_DIR/jobs/$_jid"
+                local _ptr="$CONFIG_DIR/jobs/$_jid"
+                if [[ -f "$_ptr" ]]; then
+                    job_dir="$(tr -d '\r\n' < "$_ptr" 2>/dev/null || true)"
+                    [[ -d "$job_dir" ]] || job_dir="$_ptr"
+                else
+                    job_dir="$_ptr"
+                fi
                 monitor_job_recorded=1
             fi
         fi
