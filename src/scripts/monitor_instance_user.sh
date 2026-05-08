@@ -105,9 +105,26 @@ if [[ "${server_pid:-0}" -gt 0 ]] && kill -0 "$server_pid" 2>/dev/null; then
     pid_alive=1
 fi
 
-# 2. A2S query — only if PID alive and query port known
+# Detect Wine/UE5 game (Epic networking — A2S not supported, pgrep fallback needed)
+IS_WINE_GAME=0
+if [ -d "$SERVER_DIR/.wine-windrose" ] || [ -d "$SERVER_DIR/.wine" ]; then
+    IS_WINE_GAME=1
+fi
+
+# Fallback for Wine games: run.pid may be stale (Wine preloader exits, game moves to new PID)
+if [[ "$pid_alive" -eq 0 && "$IS_WINE_GAME" -eq 1 ]]; then
+    _fb_pid=$(pgrep -u "$(id -un)" -f "WindroseServer-Win64-Shipping.exe|WindroseServer.exe" 2>/dev/null | head -1 || true)
+    if [ -n "${_fb_pid:-}" ] && kill -0 "$_fb_pid" 2>/dev/null; then
+        _log "run.pid stale (was $server_pid) — adopting active Wine process $_fb_pid"
+        printf "%s\n" "$_fb_pid" > "$PIDFILE" 2>/dev/null || true
+        server_pid="$_fb_pid"
+        pid_alive=1
+    fi
+fi
+
+# 2. A2S query — skipped for Wine/UE5 games (Epic networking, not Valve A2S protocol)
 freeze=0
-if [[ "$pid_alive" -eq 1 && "${INSTANCE_QUERY_PORT:-0}" -gt 0 ]]; then
+if [[ "$pid_alive" -eq 1 && "${INSTANCE_QUERY_PORT:-0}" -gt 0 && "$IS_WINE_GAME" -eq 0 ]]; then
     if ! perl "$MODULE_ROOT/scripts/query_a2s.pl" "127.0.0.1" "$INSTANCE_QUERY_PORT" > /dev/null 2>&1; then
         _log "A2S timeout on port $INSTANCE_QUERY_PORT — freeze detected"
         freeze=1
