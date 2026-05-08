@@ -115,7 +115,6 @@
   "windrose": {
     "name": "Windrose Dedicated Server",
     "steam_required": true,
-    "query_port_field": "queryport",
     "source": "steamcmd",
     "steam_app_id": 4129620,
     "runtime": "wine",
@@ -133,6 +132,13 @@
     "engine": "unreal",
     "login_required": false,
     "apt_deps": ["lib32gcc-s1", "libsdl2-2.0-0:i386"],
+    "live_log_path": "serverfiles/R5/Saved/Logs/R5.log",
+    "unreal_saved_logs_dir": "serverfiles/R5/Saved/Logs",
+    "diagnostic_log_paths": [
+      "server.log",
+      "windrose-debug.log",
+      "serverfiles/server.log"
+    ],
     "game_config_path": "serverfiles/R5/ServerDescription.json",
     "game_config_format": "json",
     "game_config_fields": [
