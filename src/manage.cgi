@@ -9,6 +9,7 @@
 # -------------------------------------------------------------------------
 use strict;
 use warnings;
+use File::Basename qw(dirname basename);
 use File::Find ();
 
 do '../web-lib.pl';
@@ -37,6 +38,13 @@ $module_root ||= $module_root_directory;
 $module_root ||= do { (my $d = __FILE__) =~ s{/[^/]+$}{}; $d };
 $main::gconfig{'charset'} = 'utf-8';
 &ReadParse(\%in);
+
+# Percent-encode path for filemin query strings (same rules as config editor).
+sub _filemin_path_urlencode {
+    my ($s) = @_;
+    $s =~ s/([^A-Za-z0-9\-_.~\/])/sprintf("%%%02X", ord($1))/ge;
+    return $s;
+}
 
 sub _parse_script_info {
     my ($inst) = @_;
@@ -84,6 +92,17 @@ sub _steamcmd_server_binary_exists {
 # Returns an arrayref of { key, port, label } in field declaration order.
 # Used for firewall open/close and the info table so multi-port games like
 # Windrose (game/query/beacon) get treated as a port group, not a single value.
+# Installs the monitor cron job if not already present.
+# Called whenever monitoring is activated (server start / monitor reset).
+sub _ensure_monitor_cron {
+    my $cron_src  = "$module_root/scripts/linuxgsm-webcore-monitor.cron";
+    my $cron_dest = "/etc/cron.d/linuxgsm-webcore-monitor";
+    return if -f $cron_dest;
+    return unless -f $cron_src;
+    system("cp", $cron_src, $cron_dest);
+    chmod(0644, $cron_dest);
+}
+
 sub _collect_instance_ports {
     my ($script_name, $cfg_ref) = @_;
     my @out;
@@ -703,6 +722,27 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
                   "&config_file=game&config_view=game&xnavigation=1");
         exit;
     }
+    elsif ($action eq 'restart' && $effective_source eq 'steamcmd') {
+        # Restart must not fork stop+start in parallel — RocksDB/Wine need a clean teardown first.
+        # steamcmd_control.sh has no combined restart action; run stop synchronously, then start detached.
+        my (undef, undef, $server_dir) = _parse_script_info($inst);
+        unless (_steamcmd_server_binary_exists($server_dir)) {
+            &error($text{'err_invalid_action'});
+        }
+        my $jid_stop = &create_job();
+        write_job_meta($jid_stop, $instance_id, 'stop', $unix_user);
+        &log_action('job_started', $jid_stop, {instance_id => $instance_id, action => 'stop'});
+        &system_logged("MODULE_ROOT='$module_root' bash '$module_root/scripts/steamcmd_control.sh' stop '$config_directory/jobs/$jid_stop' '$unix_user' '$server_dir' >/dev/null 2>&1");
+        sleep 5;
+        my $jid_start = &create_job();
+        write_job_meta($jid_start, $instance_id, 'start', $unix_user);
+        &log_action('job_started', $jid_start, {instance_id => $instance_id, action => 'start'});
+        &system_logged("MODULE_ROOT='$module_root' setsid nohup bash '$module_root/scripts/steamcmd_control.sh' start '$config_directory/jobs/$jid_start' '$unix_user' '$server_dir' >/dev/null 2>&1 &");
+        &_ensure_monitor_cron();
+        &set_monitor_running($config_directory, $instance_id);
+        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
+        exit;
+    }
     elsif ($action eq 'start' || $action eq 'stop') {
         my $source = $effective_source;
         my ($script_path, $script_name, $server_dir) = _parse_script_info($inst);
@@ -722,6 +762,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
             if ($action eq 'stop') {
                 &set_monitor_paused($config_directory, $instance_id);
             } else {
+                &_ensure_monitor_cron();
                 &set_monitor_running($config_directory, $instance_id);
             }
             &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
@@ -731,6 +772,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
             if ($action eq 'stop') {
                 &set_monitor_paused($config_directory, $instance_id);
             } else {
+                &_ensure_monitor_cron();
                 &set_monitor_running($config_directory, $instance_id);
             }
             &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
@@ -738,6 +780,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         }
     }
     elsif ($action eq 'monitor_reset') {
+        &_ensure_monitor_cron();
         &set_monitor_running($config_directory, $instance_id);
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
         exit;
@@ -847,30 +890,47 @@ if (($in{'action'} // '') eq 'monitor') {
     (my $script_dir = $inst->{'script'}) =~ s|/[^/]+$||;
     my $source = _effective_instance_source($inst);
 
-    my @log_candidates = (
-        "$script_dir/log/console/${script_name}-console.log",
-        "$script_dir/log/script/${script_name}.log",
-        "$script_dir/log/${script_name}.log",
-    );
+    # SteamCMD/Wine: games_meta `live_log_path` first (Windrose: R5.log), then
+    # wrapper/UE fallbacks; LGSM log/console paths last (often stale for steamcmd).
+    my @log_candidates;
     if ($source eq 'steamcmd') {
-        push @log_candidates,
-            "$script_dir/windrose-debug.log",
-            "$script_dir/server.log",
-            "$script_dir/serverfiles/server.log",
-            "$script_dir/serverfiles/R5/Saved/Logs/R5.log",
-            "$script_dir/serverfiles/R5/Saved/Logs/WindroseServer.log",
-            "$script_dir/serverfiles/R5/Saved/Logs/Windrose.log";
-        # Fallback: pick the most recently modified .log under R5/Saved/Logs.
+        my @raw;
+        my $rel_live = &get_game_live_log_path($script_name);
+        if ($rel_live ne '') {
+            (my $abs_live = "$script_dir/$rel_live") =~ s{//+}{/}g;
+            push @raw, $abs_live;
+        }
         my $logs_dir = "$script_dir/serverfiles/R5/Saved/Logs";
+        my $newest_ue = '';
         if (-d $logs_dir && opendir(my $dh, $logs_dir)) {
             my @logs = grep { /\.log$/i } readdir($dh);
             closedir($dh);
             if (@logs) {
                 my @sorted = sort { (stat("$logs_dir/$b"))[9] <=> (stat("$logs_dir/$a"))[9] }
                              map  { "$logs_dir/$_" } @logs;
-                push @log_candidates, $sorted[0];
+                $newest_ue = $sorted[0];
             }
         }
+        push @raw,
+            "$script_dir/server.log",
+            "$script_dir/windrose-debug.log",
+            "$script_dir/serverfiles/server.log",
+            "$script_dir/serverfiles/R5/Saved/Logs/R5.log",
+            "$script_dir/serverfiles/R5/Saved/Logs/WindroseServer.log",
+            "$script_dir/serverfiles/R5/Saved/Logs/Windrose.log";
+        push @raw, $newest_ue if $newest_ue;
+        push @raw,
+            "$script_dir/log/console/${script_name}-console.log",
+            "$script_dir/log/script/${script_name}.log",
+            "$script_dir/log/${script_name}.log";
+        my %seen;
+        @log_candidates = grep { !$seen{$_}++ } @raw;
+    } else {
+        @log_candidates = (
+            "$script_dir/log/console/${script_name}-console.log",
+            "$script_dir/log/script/${script_name}.log",
+            "$script_dir/log/${script_name}.log",
+        );
     }
     my ($log_file) = grep { -f $_ } @log_candidates;
     my $auto_refresh = (($in{'auto_refresh'} // '') eq '1' && ($in{'manual'} // '') eq '1') ? 1 : 0;
@@ -890,6 +950,31 @@ if (($in{'action'} // '') eq 'monitor') {
     if (!$log_file) {
         print "<p>" . &html_escape($text{'manage_monitor_no_log'}) . "</p>\n";
     } else {
+        # filemin index.cgi expects path = directory only; use edit_file / download for files.
+        my $log_dir  = dirname($log_file);
+        my $log_base = basename($log_file);
+        my $enc_dir  = _filemin_path_urlencode($log_dir);
+        my $enc_file = _filemin_path_urlencode($log_base);
+        my $href_edit = "/filemin/edit_file.cgi?path=$enc_dir&file=$enc_file";
+        my $href_dl   = "/filemin/download.cgi?path=$enc_dir&file=$enc_file";
+        my $href_dir  = "/filemin/?path=$enc_dir";
+        my $hint = $text{'manage_monitor_filemin_hint'}
+            || 'Open folder lists the log directory; use Download for very large files.';
+        print "<p><small>" . &html_escape($text{'manage_monitor_shown_file'} || 'Logdatei')
+            . ": <code>" . &html_escape($log_file) . "</code><br>\n";
+        print "<a href=\"" . &html_escape($href_edit)
+            . "\" target=\"_blank\" rel=\"noopener noreferrer\">"
+            . &html_escape($text{'manage_monitor_log_edit'} || 'View in file manager')
+            . "</a> \x{b7} ";
+        print "<a href=\"" . &html_escape($href_dl)
+            . "\" target=\"_blank\" rel=\"noopener noreferrer\">"
+            . &html_escape($text{'manage_monitor_log_download'} || 'Download full log')
+            . "</a> \x{b7} ";
+        print "<a href=\"" . &html_escape($href_dir)
+            . "\" target=\"_blank\" rel=\"noopener noreferrer\">"
+            . &html_escape($text{'manage_monitor_log_folder'} || 'Open log folder')
+            . "</a><br>\n";
+        print &html_escape($hint) . "</small></p>\n";
         open(my $f, '<', $log_file) or do { print "<p>Logdatei nicht lesbar.</p>\n"; &footer('',''); exit; };
         my $content = do { local $/; <$f> };
         close($f);
@@ -1020,6 +1105,9 @@ print &ui_hidden("action", $fw_btn_action);
 print &ui_submit($fw_btn_label);
 print &ui_form_end();
 print "</p>\n";
+if ($effective_source eq 'steamcmd' && $script_name_for_cfg eq 'windrose') {
+    print "<p><small>" . &html_escape($text{'manage_fw_windrose_ephemeral_hint'}) . "</small></p>\n";
+}
 
 if (&is_admin()) {
     my $mon_s = $mon_state->{'status'} // 'running';
@@ -1525,6 +1613,16 @@ unless (&user_is_readonly($instance_id)) {
 
     if (@inst_jobs) {
         print "<h3>" . &html_escape($text{'jobs_title'} || 'Jobs') . "</h3>\n";
+        my %job_action_labels = (
+            install_game    => $text{'jobs_action_install_game'}    || 'Spiel installieren',
+            setup_lgsm      => $text{'jobs_action_setup_lgsm'}      || 'LGSM einrichten',
+            update          => $text{'jobs_action_update'}         || 'Update',
+            validate        => $text{'jobs_action_validate'}       || 'Dateien prüfen',
+            reinstall       => $text{'jobs_action_reinstall'}      || 'Neu installieren',
+            start           => $text{'jobs_action_start'}         || 'Starten',
+            stop            => $text{'jobs_action_stop'}          || 'Stoppen',
+            monitor_restart => $text{'jobs_action_monitor_restart'} || 'Neustart (Monitoring)',
+        );
         my %status_icons = (
             running => '&#x23F3;',
             ok      => '&#x2705;',
@@ -1543,12 +1641,16 @@ unless (&user_is_readonly($instance_id)) {
             if ($status eq 'running') {
                 $out_cell = "<a href='manage.cgi?instance_id=" . &html_escape($instance_id)
                     . "&amp;action=poll_job&amp;job=" . &html_escape($jid) . "'>Live</a>";
-            } elsif ($status eq 'failed' || $status eq 'aborted') {
+            } elsif ($status eq 'ok' || $status eq 'failed' || $status eq 'aborted') {
+                # Successful jobs used to show only "—" here, so fast SteamCMD updates
+                # looked like they produced no log. output/ is kept until auto-cleanup.
                 $out_cell = "<a href='jobs.cgi?action=view_output&amp;job_id="
                     . &html_escape($jid) . "'>Log</a>";
             }
+            my $act_label = $job_action_labels{ $job->{action} // '' }
+                // $job->{action} // '—';
             push @rows, [
-                &html_escape($job->{action} || '—'),
+                &html_escape($act_label),
                 $ts_str,
                 "$st_icon " . &html_escape($status),
                 $out_cell,
