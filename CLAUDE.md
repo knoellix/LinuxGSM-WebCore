@@ -42,6 +42,7 @@ Dieses Dokument trennt verbindliche Projektregeln (Policy) von Webmin-spezifisch
 - **Game-Server-Operationen:** Ausnahmslos via `su -s /bin/bash -c "..." {unix_user}` aus dem Serververzeichnis. `apt-get` nur als root fuer System-Abhaengigkeiten; alle Server-Dateien gehoeren dem Unix-User.
 - **Live-Konsole:** Echtzeit-Log-Streaming per `tail`-Simulation im Webmin-Interface.
 - **Monitoring:** PID-Check + A2S-Query + Restart-Counter (max. 5/h); bei Limit → Status `failed`, manueller Reset noetig. Kein automatischer Mail-Versand implementiert.
+- **Job-Pointer-File-Pattern:** `$config_directory/jobs/$job_id` ist seit dem User-Home-Refactor eine **regulaere Datei** (kein Verzeichnis), die den echten Pfad `/home/$unix_user/jobs/$job_id/` enthaelt. Beim Lesen: `-f $ptr`-Check + `tr -d '\r\n'` zum Einlesen. In Shell-Strings immer `_shell_safe_job_dir($job_id)` statt `_job_dir($job_id)` verwenden — enthaelt bereits Single-Quote-Escaping. Tests ueberschreiben `$_jobs_home_base = $fake_home` statt echte `/home`-Verzeichnisse anzulegen.
 
 ### 4.1 Worker-Pattern (Background-Worker, manage.cgi-Aufrufe)
 - **Diagnose-Log zuerst:** Background-Worker (`steamcmd_control.sh`, `steamcmd_install.sh`) legen am Anfang der Action (vor Branch-Logik) ein dediziertes Debug-File im `SERVER_DIR` an und loggen Branch-Entscheidungen hinein. Verifikation: Nach Start/Install existiert das Debug-File auch bei fruehem Abbruch.
@@ -73,7 +74,7 @@ Dieses Dokument trennt verbindliche Projektregeln (Policy) von Webmin-spezifisch
 - **Shell-Hilfsskripte:** `src/scripts/` — `install_lgsm.sh`, `server_control.sh`, `engine_switch.sh`; werden via `su` als Game-User ausgefuehrt.
 - **Sprachdateien:** `src/lang/de` und `src/lang/en` — einfaches `key=value`-Format; neue Fehlertexte in beiden Dateien pflegen.
 - **ACL-Defaults:** `src/defaultacl` — Fallback-ACL wenn noch keine Webmin-ACL fuer einen User existiert.
-- **Funktions-Lokationen:** `list_webmin_users()` → `src/lib/acl.pl`; `get_game_list()` → `src/lib/games.pl` (nicht `games_meta.pl`); `get_game_fields/display_name/default_port()` → `src/lib/games_meta.pl`.
+- **Funktions-Lokationen:** `list_webmin_users()` → `src/lib/acl.pl`; `get_game_list()` → `src/lib/games.pl` (nicht `games_meta.pl`); `get_game_fields/display_name/default_port/get_game_config_path/get_game_live_log_path()` → `src/lib/games_meta.pl`.
 
 ## 7. Webmin-CGI und ACL Lessons Learned (implementierungsnah)
 Dieser Abschnitt dokumentiert zwingende Webmin-spezifische Details, die aus realen Fehlerbildern entstanden sind.
@@ -191,6 +192,7 @@ Dieser Abschnitt dokumentiert zwingende Webmin-spezifische Details, die aus real
 - **`./<scriptname> <action>` NIE bei `source=steamcmd`:** Der SteamCMD-Wrapper wird nach `$SERVER_DIR/$script_name` kopiert und ignoriert sein Argument vollstaendig — `./<name> details` startet damit `xvfb-run wine ...`. Folge: jeder `_detect_status`-Call (Page-Reload, Listing, AJAX) forkt eine neue Wine-Instanz im selben `WINEPREFIX`, bis `wineserver` verklemmt und der echte Start endlos haengt. Status-Detection fuer Non-LGSM nur ueber `run.pid` + `kill(0, $pid)` (`_detect_status_steamcmd` in `src/lib/instance.pl`). Wrapper hat zusaetzlich `case "$1" in details|monitor|status)` als Defense-in-Depth.
 - **`xvfb-run` haengt unter Webmin in `setsid + nohup + su` Kontext:** Das `wait`-fuer-`SIGUSR1`-Ready-Signal von Xvfb wird wegen geerbter Signal-Mask nicht zugestellt — `xvfb-run` sitzt fuer immer in `sigsuspend`, Wine wird nie ge-`exec`'t, Screen bleibt stumm trotz `WINEDEBUG=err+all`. **Loesung:** `Xvfb` direkt starten (`Xvfb :N -screen 0 1280x1024x24 -nolisten tcp &`), auf Socket `/tmp/.X11-unix/XN` warten, `export DISPLAY=:N`, dann `wine ...` starten. PID in `$SERVER_DIR/.xvfb.pid` mitschreiben und im naechsten Start/Stop wieder reapen.
 - **`pgid`-Datei vor Status-Schreiben entfernen:** `jobs.pl` `_cleanup_terminal_job_processes` ruft `_kill_job_processes` bei JEDEM Endstatus (auch `ok`). Liegt `jobs/$id/pgid` (= Worker-PID), kann `kill -TERM -pgid` Screen+Wine treffen. `set_final_status` in Workern muss `pgid` IMMER zuerst unlinken, plus `trap EXIT`-Handler als Fallback.
+- **A2S-False-Positives bei Wine/UE5:** Windrose/UE5-Server nutzen Epic-Networking — Valve A2S-Protokoll wird **nicht** unterstuetzt. A2S-Query laeuft immer in Timeout → Monitor erkennt faelschlich Freeze → staendige Restarts. Erkennung: `[ -d "$SERVER_DIR/.wine-windrose" ] || [ -d "$SERVER_DIR/.wine" ]`. Bei Wine-Game: A2S-Check komplett ueberspringen. `run.pid` kann veraltet sein (Wine-Preloader beendet sich, Game laeuft unter neuer PID) → `pgrep -u $user -f "WindroseServer*.exe"` als Fallback und PID-Datei aktualisieren.
 
 ## 9. Deployment
 - **Install auf Server:** `.wbm` nach `/tmp/` kopieren, dann `/usr/share/webmin/install-module.pl /tmp/linuxgsm-webcore-0.1.0.wbm`
