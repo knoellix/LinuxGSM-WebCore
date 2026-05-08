@@ -11,8 +11,9 @@ SCRIPT_NAME="${5:?missing script_name}"
 CONFIG_DIR="${6:?missing config_dir}"
 MODULE_ROOT="${7:?missing module_root}"
 
-STATE_DIR="$CONFIG_DIR/monitor/$INSTANCE_ID"
+STATE_DIR="$SERVER_DIR/.monitor"
 STATE_FILE="$STATE_DIR/state"
+LEGACY_STATE_FILE="$CONFIG_DIR/monitor/$INSTANCE_ID/state"
 MAX_RESTARTS=5
 WINDOW_SECS=3600
 
@@ -20,9 +21,16 @@ WINDOW_SECS=3600
 
 _read_state_key() {
     local key="$1" default="${2:-}"
+    # Try new state file first
     if [ -f "$STATE_FILE" ]; then
         local v
         v=$(grep "^${key}=" "$STATE_FILE" 2>/dev/null | cut -d= -f2- | head -1) || true
+        [ -n "$v" ] && echo "$v" && return
+    fi
+    # Fallback to legacy path
+    if [ -f "$LEGACY_STATE_FILE" ]; then
+        local v
+        v=$(grep "^${key}=" "$LEGACY_STATE_FILE" 2>/dev/null | cut -d= -f2- | head -1) || true
         [ -n "$v" ] && echo "$v" && return
     fi
     echo "$default"
@@ -31,8 +39,11 @@ _read_state_key() {
 _write_state() {
     local status="$1" count="$2" window="$3"
     mkdir -p "$STATE_DIR"
+    local tmp_file
+    tmp_file="$(mktemp "$STATE_DIR/.state.XXXXXX")" || return 1
     printf 'status=%s\nrestart_count=%s\nwindow_start=%s\n' \
-        "$status" "$count" "$window" > "$STATE_FILE"
+        "$status" "$count" "$window" > "$tmp_file"
+    mv "$tmp_file" "$STATE_FILE"
 }
 
 _log() { echo "[$(date '+%Y-%m-%d %T')] [$INSTANCE_ID] $*"; }
@@ -131,16 +142,33 @@ if [[ "${server_pid:-0}" -gt 0 ]]; then
     sleep 2
     kill -KILL "$server_pid" 2>/dev/null || true
 fi
-WINEPREFIX="$SERVER_DIR/.wine"
-if [ -d "$WINEPREFIX" ]; then
-    WINEPREFIX="$WINEPREFIX" wineserver -k 2>/dev/null || true
+# Wine prefixes: Windrose uses .wine-windrose (see steamcmd_install.sh / steamcmd_control.sh).
+# Older SteamCMD layouts may use .wine — reap locks from both so RocksDB does not stall on restart.
+for _pfx in "$SERVER_DIR/.wine-windrose" "$SERVER_DIR/.wine"; do
+    [ -d "$_pfx" ] || continue
+    su -s /bin/bash -c "WINEPREFIX='$_pfx' /usr/bin/wineserver -k 2>/dev/null || true" "$UNIX_USER" 2>/dev/null || true
+done
+
+# Restart via steamcmd_control.sh — use real job dir so output appears in Job-Übersicht
+JOB_DIR=""
+MONITOR_JOB_RECORDED=0
+if command -v perl >/dev/null 2>&1; then
+    _jid_out="$(MODULE_ROOT="$MODULE_ROOT" perl "$MODULE_ROOT/scripts/monitor_create_job.pl" \
+        "$CONFIG_DIR" "$INSTANCE_ID" "$UNIX_USER" 2>/dev/null || true)"
+    _jid="$(echo -n "$_jid_out" | tr -cd '0-9a-f')"
+    if [[ "${#_jid}" -eq 16 ]]; then
+        JOB_DIR="$CONFIG_DIR/jobs/$_jid"
+        MONITOR_JOB_RECORDED=1
+    fi
+fi
+if [[ -z "$JOB_DIR" ]]; then
+    JOB_DIR="$(mktemp -d)"
+    chmod 755 "$JOB_DIR"
+    _log "WARN: could not create jobs/ record (perl/helper failed) — using temp job dir"
 fi
 
-# Restart via steamcmd_control.sh
-JOB_TMP=$(mktemp -d)
-chmod 755 "$JOB_TMP"
-MODULE_ROOT="$MODULE_ROOT" bash "$MODULE_ROOT/scripts/steamcmd_control.sh" \
-    start "$JOB_TMP" "$UNIX_USER" "$SERVER_DIR" >/dev/null 2>&1 &
+MODULE_ROOT="$MODULE_ROOT" setsid nohup bash "$MODULE_ROOT/scripts/steamcmd_control.sh" \
+    start "$JOB_DIR" "$UNIX_USER" "$SERVER_DIR" >/dev/null 2>&1 &
 sleep 30
 
 # Verify restart
@@ -156,5 +184,16 @@ else
     _write_state "restarting" "$RESTART_COUNT" "$WINDOW_START"
 fi
 
-rm -rf "$JOB_TMP"
+if [[ "$MONITOR_JOB_RECORDED" -eq 1 ]] && [[ -d "$JOB_DIR" ]]; then
+    {
+        echo ""
+        echo "=== monitor_instance.sh post-check ($(date -Is)) ==="
+        echo "instance=$INSTANCE_ID server_dir=$SERVER_DIR"
+        echo "run.pid new_pid=${new_pid:-0} (live game log: $SERVER_DIR/server.log)"
+    } >>"$JOB_DIR/output" 2>/dev/null || true
+fi
+
+if [[ "$MONITOR_JOB_RECORDED" -eq 0 ]] && [[ -n "$JOB_DIR" ]]; then
+    rm -rf "$JOB_DIR"
+fi
 exit 0
