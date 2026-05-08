@@ -20,6 +20,13 @@ sub _job_dir {
     return $ptr;
 }
 
+sub _shell_safe_job_dir {
+    my ($job_id) = @_;
+    my $dir = _job_dir($job_id);
+    $dir =~ s/'/'\\''/g;
+    return $dir;
+}
+
 sub create_job {
     my ($unix_user) = @_;
     my $raw;
@@ -36,7 +43,7 @@ sub create_job {
         my $user_home_jobs = "$_jobs_home_base/$unix_user/jobs";
         unless (-d $user_home_jobs) {
             mkdir("$_jobs_home_base/$unix_user", 0750) unless -d "$_jobs_home_base/$unix_user";
-            mkdir($user_home_jobs, 0750);
+            mkdir($user_home_jobs, 0750) or die "Cannot create jobs dir for $unix_user: $!\n";
         }
         system('chown', "$unix_user:$unix_user", $user_home_jobs) if -d $user_home_jobs;
         $job_dir = "$user_home_jobs/$job_id";
