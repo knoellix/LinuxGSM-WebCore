@@ -739,7 +739,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         &log_action('job_started', $jid_start, {instance_id => $instance_id, action => 'start'});
         &system_logged("MODULE_ROOT='$module_root' setsid nohup bash '$module_root/scripts/steamcmd_control.sh' start '$config_directory/jobs/$jid_start' '$unix_user' '$server_dir' >/dev/null 2>&1 &");
         &_ensure_monitor_cron();
-        &set_monitor_running($config_directory, $instance_id);
+        &set_monitor_running($server_dir, $config_directory, $instance_id);
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
         exit;
     }
@@ -760,33 +760,35 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
             &log_action('job_started', $job_id, {instance_id => $instance_id, action => $action});
             &system_logged("MODULE_ROOT='$module_root' setsid nohup bash '$module_root/scripts/steamcmd_control.sh' '$action' '$config_directory/jobs/$job_id' '$unix_user' '$server_dir' >/dev/null 2>&1 &");
             if ($action eq 'stop') {
-                &set_monitor_paused($config_directory, $instance_id);
+                &set_monitor_paused($server_dir, $config_directory, $instance_id);
             } else {
                 &_ensure_monitor_cron();
-                &set_monitor_running($config_directory, $instance_id);
+                &set_monitor_running($server_dir, $config_directory, $instance_id);
             }
             &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
             exit;
         } else {
             &run_server_action($unix_user, $action, $script_name, $server_dir);
             if ($action eq 'stop') {
-                &set_monitor_paused($config_directory, $instance_id);
+                &set_monitor_paused($server_dir, $config_directory, $instance_id);
             } else {
                 &_ensure_monitor_cron();
-                &set_monitor_running($config_directory, $instance_id);
+                &set_monitor_running($server_dir, $config_directory, $instance_id);
             }
             &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
             exit;
         }
     }
     elsif ($action eq 'monitor_reset') {
+        my (undef, undef, $server_dir) = _parse_script_info($inst);
         &_ensure_monitor_cron();
-        &set_monitor_running($config_directory, $instance_id);
+        &set_monitor_running($server_dir, $config_directory, $instance_id);
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
         exit;
     }
     elsif ($action eq 'monitor_disable') {
-        &set_monitor_disabled($config_directory, $instance_id);
+        my (undef, undef, $server_dir) = _parse_script_info($inst);
+        &set_monitor_disabled($server_dir, $config_directory, $instance_id);
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
         exit;
     }
@@ -1055,7 +1057,7 @@ if (@$info_ports == 1) {
     }
 }
 print &ui_table_row($text{'manage_status'}, _runtime_status_badge_html($runtime_status));
-my $mon_state = &read_monitor_state($config_directory, $instance_id);
+my $mon_state = &read_monitor_state($script_dir_for_cfg, $config_directory, $instance_id);
 my $mon_status_key = 'monitor_status_' . ($mon_state->{'status'} // 'running');
 my $mon_label = $text{$mon_status_key} || $mon_state->{'status'};
 print &ui_table_row($text{'monitor_col'}, &html_escape($mon_label));
