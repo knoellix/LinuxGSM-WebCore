@@ -1,39 +1,38 @@
 #!/bin/bash
-# monitor_instance.sh — check and optionally restart one game server instance
-# Args: <instance_id> <user> <source> <server_dir> <script_name> <config_dir> <module_root>
-#
-# DEPRECATED: No longer called by monitor_all.sh (as of the Task-2 refactor).
-# Responsibilities have been split: game-user-side work moved to
-# monitor_instance_user.sh (PID check, A2S query, state write, wineserver cleanup)
-# and root-side restart dispatch moved to monitor_all.sh.
-# This script is retained for manual execution and testing only.
+# monitor_instance_user.sh — game-user-side monitoring
+# Runs as the game-user via 'su' from monitor_all.sh.
+# Responsibilities: PID check, A2S query, state write, wineserver cleanup.
+# Restart is signaled via restart-requested file; root wrapper handles dispatch.
+# Args: <instance_id> <source> <server_dir> <script_name> <config_dir> <module_root>
 set -euo pipefail
 
 INSTANCE_ID="${1:?missing instance_id}"
-UNIX_USER="${2:?missing user}"
-INST_SOURCE="${3:?missing source}"     # lgsm or steamcmd
-SERVER_DIR="${4:?missing server_dir}"
-SCRIPT_NAME="${5:?missing script_name}"
-CONFIG_DIR="${6:?missing config_dir}"
-MODULE_ROOT="${7:?missing module_root}"
+INST_SOURCE="${2:?missing source}"
+SERVER_DIR="${3:?missing server_dir}"
+SCRIPT_NAME="${4:?missing script_name}"
+CONFIG_DIR="${5:?missing config_dir}"
+MODULE_ROOT="${6:?missing module_root}"
 
 STATE_DIR="$SERVER_DIR/.monitor"
 STATE_FILE="$STATE_DIR/state"
 LEGACY_STATE_FILE="$CONFIG_DIR/monitor/$INSTANCE_ID/state"
+LOG_DIR="$SERVER_DIR/logs"
+LOG_FILE="$LOG_DIR/monitor.log"
 MAX_RESTARTS=5
 WINDOW_SECS=3600
+
+mkdir -p "$STATE_DIR" 2>/dev/null || true
+mkdir -p "$LOG_DIR"   2>/dev/null || true
 
 # --- helpers ---------------------------------------------------------------
 
 _read_state_key() {
     local key="$1" default="${2:-}"
-    # Try new state file first
     if [ -f "$STATE_FILE" ]; then
         local v
         v=$(grep "^${key}=" "$STATE_FILE" 2>/dev/null | cut -d= -f2- | head -1) || true
         [ -n "$v" ] && echo "$v" && return
     fi
-    # Fallback to legacy path
     if [ -f "$LEGACY_STATE_FILE" ]; then
         local v
         v=$(grep "^${key}=" "$LEGACY_STATE_FILE" 2>/dev/null | cut -d= -f2- | head -1) || true
@@ -52,7 +51,11 @@ _write_state() {
     mv "$tmp_file" "$STATE_FILE"
 }
 
-_log() { echo "[$(date '+%Y-%m-%d %T')] [$INSTANCE_ID] $*"; }
+_log() {
+    local msg="[$(date '+%Y-%m-%d %T')] [$INSTANCE_ID] $*"
+    echo "$msg"
+    echo "$msg" >> "$LOG_FILE" 2>/dev/null || true
+}
 
 # --- state gate ------------------------------------------------------------
 
@@ -66,10 +69,8 @@ fi
 
 if [[ "$INST_SOURCE" == "lgsm" ]]; then
     _log "LGSM: running ./$SCRIPT_NAME monitor"
-    # Single-quote-escape SERVER_DIR per CLAUDE.md section 5.1
-    safe_dir="${SERVER_DIR//\'/\'\\\'\'}"
-    su -s /bin/bash -c "cd '$safe_dir' && ./$SCRIPT_NAME monitor" "$UNIX_USER" 2>&1 || true
-    lgsm_status=$(su -s /bin/bash -c "cd '$safe_dir' && ./$SCRIPT_NAME status 2>/dev/null" "$UNIX_USER" 2>/dev/null | grep -ci 'ONLINE' || echo "0")
+    cd "$SERVER_DIR" && "./$SCRIPT_NAME" monitor 2>&1 || true
+    lgsm_status=$(cd "$SERVER_DIR" && "./$SCRIPT_NAME" status 2>/dev/null | grep -ci 'ONLINE' || echo "0")
     if [[ "$lgsm_status" -gt 0 ]]; then
         _write_state "running" "0" "$(date +%s)"
         _log "LGSM: server running"
@@ -81,7 +82,7 @@ if [[ "$INST_SOURCE" == "lgsm" ]]; then
     exit 0
 fi
 
-# --- Non-LGSM path ---------------------------------------------------------
+# --- Non-LGSM (steamcmd/Wine) path -----------------------------------------
 
 # Source ports helper to get query port from instance LGSM config
 INSTANCE_QUERY_PORT=0
@@ -135,71 +136,28 @@ if [[ "$RESTART_COUNT" -ge "$MAX_RESTARTS" ]]; then
     _log "FAILED — $MAX_RESTARTS restarts in ${WINDOW_SECS}s"
     _write_state "failed" "$RESTART_COUNT" "$WINDOW_START"
     logger -t linuxgsm-webcore "Monitor: $INSTANCE_ID failed — restart limit reached"
-    exit 1
+    exit 0
 fi
 
 RESTART_COUNT=$((RESTART_COUNT + 1))
-_log "Restart attempt $RESTART_COUNT/$MAX_RESTARTS"
+_log "Restart attempt $RESTART_COUNT/$MAX_RESTARTS — signaling root wrapper"
 _write_state "restarting" "$RESTART_COUNT" "$WINDOW_START"
 
-# Kill stale process and wineserver
+# Kill stale process (game-user can kill own processes)
 if [[ "${server_pid:-0}" -gt 0 ]]; then
     kill -TERM "$server_pid" 2>/dev/null || true
     sleep 2
     kill -KILL "$server_pid" 2>/dev/null || true
 fi
-# Wine prefixes: Windrose uses .wine-windrose (see steamcmd_install.sh / steamcmd_control.sh).
-# Older SteamCMD layouts may use .wine — reap locks from both so RocksDB does not stall on restart.
+
+# Wineserver cleanup (own WINEPREFIX, no root needed)
+# Windrose uses .wine-windrose; older layouts may use .wine.
 for _pfx in "$SERVER_DIR/.wine-windrose" "$SERVER_DIR/.wine"; do
     [ -d "$_pfx" ] || continue
-    su -s /bin/bash -c "WINEPREFIX='$_pfx' /usr/bin/wineserver -k 2>/dev/null || true" "$UNIX_USER" 2>/dev/null || true
+    WINEPREFIX="$_pfx" /usr/bin/wineserver -k 2>/dev/null || true
 done
 
-# Restart via steamcmd_control.sh — use real job dir so output appears in Job-Übersicht
-JOB_DIR=""
-MONITOR_JOB_RECORDED=0
-if command -v perl >/dev/null 2>&1; then
-    _jid_out="$(MODULE_ROOT="$MODULE_ROOT" perl "$MODULE_ROOT/scripts/monitor_create_job.pl" \
-        "$CONFIG_DIR" "$INSTANCE_ID" "$UNIX_USER" 2>/dev/null || true)"
-    _jid="$(echo -n "$_jid_out" | tr -cd '0-9a-f')"
-    if [[ "${#_jid}" -eq 16 ]]; then
-        JOB_DIR="$CONFIG_DIR/jobs/$_jid"
-        MONITOR_JOB_RECORDED=1
-    fi
-fi
-if [[ -z "$JOB_DIR" ]]; then
-    JOB_DIR="$(mktemp -d)"
-    chmod 755 "$JOB_DIR"
-    _log "WARN: could not create jobs/ record (perl/helper failed) — using temp job dir"
-fi
-
-MODULE_ROOT="$MODULE_ROOT" setsid nohup bash "$MODULE_ROOT/scripts/steamcmd_control.sh" \
-    start "$JOB_DIR" "$UNIX_USER" "$SERVER_DIR" >/dev/null 2>&1 &
-sleep 30
-
-# Verify restart
-new_pid=0
-if [ -f "$PIDFILE" ]; then
-    new_pid=$(cat "$PIDFILE" 2>/dev/null | tr -d '[:space:]') || true
-fi
-if [[ "${new_pid:-0}" -gt 0 ]] && kill -0 "$new_pid" 2>/dev/null; then
-    _log "Restart successful"
-    _write_state "running" "$RESTART_COUNT" "$WINDOW_START"
-else
-    _log "Restart failed — will retry at next cron tick"
-    _write_state "restarting" "$RESTART_COUNT" "$WINDOW_START"
-fi
-
-if [[ "$MONITOR_JOB_RECORDED" -eq 1 ]] && [[ -d "$JOB_DIR" ]]; then
-    {
-        echo ""
-        echo "=== monitor_instance.sh post-check ($(date -Is)) ==="
-        echo "instance=$INSTANCE_ID server_dir=$SERVER_DIR"
-        echo "run.pid new_pid=${new_pid:-0} (live game log: $SERVER_DIR/server.log)"
-    } >>"$JOB_DIR/output" 2>/dev/null || true
-fi
-
-if [[ "$MONITOR_JOB_RECORDED" -eq 0 ]] && [[ -n "$JOB_DIR" ]]; then
-    rm -rf "$JOB_DIR"
-fi
+# Signal root wrapper to dispatch steamcmd_control.sh start (needs nice -n -5)
+touch "$STATE_DIR/restart-requested" 2>/dev/null || true
+_log "restart-requested signal written — root wrapper will dispatch"
 exit 0
