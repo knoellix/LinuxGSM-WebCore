@@ -230,6 +230,7 @@ sub grant_server_access {
     return if grep { $_ eq $instance_id || $_ eq '*' } @servers;
     push @servers, $instance_id;
     $acl{'servers'} = join(' ', @servers);
+    $acl{'role'} //= 'operator';
     save_module_acl(\%acl, $webmin_user, $mn);
 }
 

@@ -28,7 +28,7 @@ sub get_instance { return $_inst_db{$_[0]} }
 
 require 'src/lib/acl.pl';
 
-print "1..7\n";
+print "1..9\n";
 
 # Test 1: user-Datei ohne role-Feld → role aus defaultacl (admin).
 # Per-user ACLs go through Webmin's get_module_acl() — the test stub
@@ -142,4 +142,66 @@ print "1..7\n";
     scalar(@r) == 2
         ? pass('allowed_ftp_users: operator mit servers=* sieht alle FTP-User')
         : fail('allowed_ftp_users: operator wildcard (got: ' . scalar(@r) . ')');
+}
+
+# Test 8: grant_server_access setzt role=operator wenn kein role vorhanden
+{
+    my $tmp_acl = tempdir(CLEANUP => 1);
+    mkdir "$tmp_acl/$module_name";
+    open(my $fh, '>', "$tmp_acl/$module_name/newuser") or die $!;
+    print $fh "servers=\n";
+    close $fh;
+    our $stub_acl_dir;
+    $stub_acl_dir = $tmp_acl;
+
+    $_effective_role_cache = undef;
+    $_module_acl_cache     = undef;
+
+    grant_server_access('newuser', 'mc1');
+
+    open(my $r, '<', "$tmp_acl/$module_name/newuser") or die "Can't read: $!";
+    my %saved;
+    while (<$r>) {
+        chomp; next unless /=/;
+        my ($k, $v) = split(/=/, $_, 2);
+        $saved{$k} = $v if defined $k && defined $v;
+    }
+    close($r);
+
+    (($saved{role} // '') eq 'operator' && ($saved{servers} // '') =~ /mc1/)
+        ? pass('grant_server_access: setzt role=operator und fügt Server hinzu')
+        : fail("grant_server_access: role=" . ($saved{role}//'undef') . " servers=" . ($saved{servers}//'undef'));
+
+    $stub_acl_dir = '/nonexistent';
+}
+
+# Test 9: grant_server_access überschreibt bestehende role NICHT
+{
+    my $tmp_acl = tempdir(CLEANUP => 1);
+    mkdir "$tmp_acl/$module_name";
+    open(my $fh, '>', "$tmp_acl/$module_name/vieweruser") or die $!;
+    print $fh "role=viewer\nservers=\n";
+    close $fh;
+    our $stub_acl_dir;
+    $stub_acl_dir = $tmp_acl;
+
+    $_effective_role_cache = undef;
+    $_module_acl_cache     = undef;
+
+    grant_server_access('vieweruser', 'mc1');
+
+    open(my $r, '<', "$tmp_acl/$module_name/vieweruser") or die "Can't read: $!";
+    my %saved;
+    while (<$r>) {
+        chomp; next unless /=/;
+        my ($k, $v) = split(/=/, $_, 2);
+        $saved{$k} = $v if defined $k && defined $v;
+    }
+    close($r);
+
+    ($saved{role} // '') eq 'viewer'
+        ? pass('grant_server_access: überschreibt bestehende role nicht')
+        : fail("grant_server_access: role soll viewer bleiben, got '" . ($saved{role}//'undef') . "'");
+
+    $stub_acl_dir = '/nonexistent';
 }
