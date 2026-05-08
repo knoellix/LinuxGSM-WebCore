@@ -3,11 +3,25 @@ use strict;
 use warnings;
 
 our $config_directory;
+our $_jobs_home_base = '/home';
 
 sub _jobs_dir { return "$config_directory/jobs" }
-sub _job_dir  { return _jobs_dir() . "/$_[0]" }
+
+sub _job_dir {
+    my ($job_id) = @_;
+    my $ptr = _jobs_dir() . "/$job_id";
+    if (-f $ptr) {
+        open(my $fh, '<', $ptr) or return $ptr;
+        my $path = do { local $/; <$fh> };
+        close($fh);
+        chomp($path //= '');
+        return $path if $path;
+    }
+    return $ptr;
+}
 
 sub create_job {
+    my ($unix_user) = @_;
     my $raw;
     open(my $f, '<', '/dev/urandom') or die "Cannot read /dev/urandom\n";
     read($f, $raw, 8);
@@ -16,12 +30,30 @@ sub create_job {
 
     my $jobs_dir = _jobs_dir();
     mkdir($jobs_dir, 0700) unless -d $jobs_dir;
-    my $job_dir = _job_dir($job_id);
-    mkdir($job_dir, 0700) or die "Cannot create job dir: $!\n";
+
+    my $job_dir;
+    if (defined $unix_user && $unix_user ne '') {
+        my $user_home_jobs = "$_jobs_home_base/$unix_user/jobs";
+        unless (-d $user_home_jobs) {
+            mkdir("$_jobs_home_base/$unix_user", 0750) unless -d "$_jobs_home_base/$unix_user";
+            mkdir($user_home_jobs, 0750);
+        }
+        system('chown', "$unix_user:$unix_user", $user_home_jobs) if -d $user_home_jobs;
+        $job_dir = "$user_home_jobs/$job_id";
+        mkdir($job_dir, 0750) or die "Cannot create job dir: $!\n";
+        system('chown', "$unix_user:$unix_user", $job_dir);
+        open(my $pfh, '>', "$jobs_dir/$job_id") or die "Cannot write pointer: $!\n";
+        print $pfh "$job_dir\n";
+        close($pfh);
+    } else {
+        $job_dir = _job_dir($job_id);
+        mkdir($job_dir, 0700) or die "Cannot create job dir: $!\n";
+    }
 
     open(my $fh, '>', "$job_dir/status") or die "Cannot write status: $!\n";
     print $fh "running\n";
     close($fh);
+    system('chown', "$unix_user:$unix_user", "$job_dir/status") if defined $unix_user && $unix_user ne '';
 
     _auto_cleanup_jobs();
 
@@ -69,7 +101,7 @@ sub finish_job {
 }
 
 sub write_job_meta {
-    my ($job_id, $instance_id, $action, $unix_user) = @_;
+    my ($job_id, $instance_id, $action, $unix_user, $extra) = @_;
     my $job_dir = _job_dir($job_id);
     open(my $fh, '>', "$job_dir/meta") or do {
         &log_error("Cannot write meta for job $job_id: $!");
@@ -79,6 +111,16 @@ sub write_job_meta {
     print $fh "action=$action\n";
     print $fh "started_at=" . time() . "\n";
     print $fh "unix_user=$unix_user\n";
+    if ($extra && ref($extra) eq 'HASH') {
+        for my $k (sort keys %$extra) {
+            my $v = $extra->{$k};
+            next unless defined $v && $v ne '';
+            next unless $k =~ /^([a-zA-Z0-9_]+)$/;
+            $k = $1;
+            $v =~ s/[\r\n]//g;
+            print $fh "$k=$v\n";
+        }
+    }
     close($fh);
 }
 
@@ -166,7 +208,9 @@ sub get_all_jobs {
     opendir(my $dh, $jobs_dir) or return ();
     for my $jid (readdir($dh)) {
         next if $jid =~ /^\./;
-        my $jdir = "$jobs_dir/$jid";
+        my $entry = "$jobs_dir/$jid";
+        next unless -d $entry || -f $entry;   # Pointer-File oder altes Dir
+        my $jdir = _job_dir($jid);
         next unless -d $jdir;
 
         timeout_check_job($jid);
@@ -197,6 +241,7 @@ sub get_all_jobs {
             unix_user   => $meta{unix_user}   // '',
             started_at  => $meta{started_at}  // 0,
             status      => $status,
+            trigger     => $meta{trigger}     // '',
         };
     }
     closedir($dh);
@@ -228,12 +273,14 @@ sub abort_job {
 
 sub delete_job {
     my ($job_id) = @_;
+    my $ptr  = _jobs_dir() . "/$job_id";
     my $jdir = _job_dir($job_id);
     return 0 unless -d $jdir;
     my $status = get_job_status($job_id) // '';
     return 0 if $status eq 'running';
     unlink "$jdir/$_" for qw(meta pgid status output error_hint pid);
     rmdir $jdir;
+    unlink $ptr if -f $ptr;
     return 1;
 }
 
@@ -244,7 +291,9 @@ sub _auto_cleanup_jobs {
     opendir(my $dh, $jobs_dir) or return;
     for my $jid (readdir($dh)) {
         next if $jid =~ /^\./;
-        my $jdir = "$jobs_dir/$jid";
+        my $entry = "$jobs_dir/$jid";
+        next unless -d $entry || -f $entry;
+        my $jdir = _job_dir($jid);
         next unless -d $jdir;
         my $status = get_job_status($jid) // '';
         next if $status eq 'running' || $status eq '';
@@ -259,9 +308,12 @@ sub _auto_cleanup_jobs {
     @done = sort { ($a->{started_at} || 0) <=> ($b->{started_at} || 0) } @done;
     my $excess = @done - 10;
     for my $j (@done[0 .. $excess - 1]) {
-        my $jdir = "$jobs_dir/" . $j->{job_id};
+        my $jid  = $j->{job_id};
+        my $jdir = _job_dir($jid);
+        my $ptr  = "$jobs_dir/$jid";
         unlink "$jdir/$_" for qw(meta pgid status output error_hint pid);
         rmdir $jdir;
+        unlink $ptr if -f $ptr;
     }
 }
 
@@ -272,12 +324,15 @@ sub cleanup_old_jobs {
     opendir(my $dh, $jobs_dir) or return;
     for my $jid (readdir($dh)) {
         next if $jid =~ /^\./;
-        my $jdir = "$jobs_dir/$jid";
+        my $entry = "$jobs_dir/$jid";
+        next unless -d $entry || -f $entry;
+        my $jdir = _job_dir($jid);
         next unless -d $jdir;
         my $mtime = (stat($jdir))[9] // 0;
         if ($mtime < $cutoff) {
             unlink "$jdir/$_" for qw(output status pid error_hint);
             rmdir $jdir;
+            unlink $entry if -f $entry;
         }
     }
     closedir($dh);

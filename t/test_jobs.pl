@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 use strict;
 use warnings;
-use Test::More tests => 25;
+use Test::More tests => 37;
 use File::Temp qw(tempdir);
 use FindBin qw($Bin);
 
@@ -70,6 +70,17 @@ is(get_job_status('nonexistent1234567'), undef, 'unknown job returns undef statu
     like($m{started_at}, qr/^\d+$/, 'write_job_meta: started_at is numeric');
 }
 
+# Test 15b: write_job_meta optional extra hash (trigger)
+{
+    my $jid = create_job();
+    write_job_meta($jid, 'srv1', 'monitor_restart', 'u1', { trigger => 'monitor' });
+    my %m;
+    open(my $f, '<', "$tmp/jobs/$jid/meta") or die $!;
+    while (<$f>) { chomp; my ($k,$v)=split(/=/,$_,2); $m{$k}=$v if $k&&defined $v; }
+    close $f;
+    is($m{trigger}, 'monitor', 'write_job_meta: extra trigger=monitor');
+}
+
 # Test 16: get_all_jobs findet Job mit meta
 {
     my $jid = create_job();
@@ -89,6 +100,16 @@ is(get_job_status('nonexistent1234567'), undef, 'unknown job returns undef statu
     my ($j) = grep { $_->{job_id} eq $jid } @jobs;
     is($j->{status},      'failed', 'get_all_jobs: status correct');
     is($j->{instance_id}, 'gs_srv', 'get_all_jobs: instance_id correct');
+}
+
+# Test 18b: get_all_jobs liefert trigger aus meta
+{
+    my $jid = create_job();
+    write_job_meta($jid, 'srv_m', 'monitor_restart', 'um', { trigger => 'monitor' });
+    finish_job($jid, 'ok');
+    my @jobs = get_all_jobs();
+    my ($j) = grep { $_->{job_id} eq $jid } @jobs;
+    is($j->{trigger}, 'monitor', 'get_all_jobs: trigger field from meta');
 }
 
 # Test 19: Zombie-Erkennung — PGID nicht existent → status wird failed
@@ -171,4 +192,70 @@ is(get_job_status('nonexistent1234567'), undef, 'unknown job returns undef statu
     my @done = grep { $_->{status} ne 'running' } get_all_jobs();
     ok(scalar(@done) <= 10, '_auto_cleanup_jobs: keeps max 10 completed jobs');
     ok(scalar(@done) >= 1,  '_auto_cleanup_jobs: keeps at least the newest job');
+}
+
+# --- Task 3 (neu): create_job($unix_user) — User-Home-Style ---
+our $_jobs_home_base;   # aus jobs.pl importiert
+use File::Temp qw(tempdir);
+my $fake_home = tempdir(CLEANUP => 1);
+$_jobs_home_base = $fake_home;  # tests schreiben nach fake home statt /home
+
+# Test 26: create_job mit unix_user erstellt Job im User-Home
+{
+    my $jid = create_job('gameuser1');
+    like($jid, qr/^[0-9a-f]{16}$/, 'create_job(user): job_id ist 16 hex-Zeichen');
+}
+
+# Test 27: Job-Dir liegt im User-Home
+{
+    my $jid = create_job('gameuser1');
+    ok(-d "$fake_home/gameuser1/jobs/$jid", 'create_job(user): Job-Dir in User-Home angelegt');
+}
+
+# Test 28: Pointer-Datei in config_directory/jobs/ (als FILE, nicht Dir)
+{
+    my $jid = create_job('gameuser1');
+    ok(-f "$tmp/jobs/$jid", 'create_job(user): Pointer-Datei in config_directory/jobs/');
+    ok(!-d "$tmp/jobs/$jid", 'create_job(user): Pointer ist FILE, kein Dir');
+}
+
+# Test 29: Pointer enthält korrekten Pfad
+{
+    my $jid = create_job('gameuser1');
+    open(my $fh, '<', "$tmp/jobs/$jid") or die $!;
+    my $path = <$fh>; close($fh); chomp $path;
+    is($path, "$fake_home/gameuser1/jobs/$jid", 'Pointer enthält korrekten User-Home-Pfad');
+}
+
+# Test 30: _job_dir() löst Pointer auf
+{
+    my $jid = create_job('gameuser1');
+    my $resolved = _job_dir($jid);
+    is($resolved, "$fake_home/gameuser1/jobs/$jid", '_job_dir: löst Pointer auf User-Home-Pfad auf');
+}
+
+# Test 31: get_job_status funktioniert für User-Home-Job
+{
+    my $jid = create_job('gameuser1');
+    is(get_job_status($jid), 'running', 'get_job_status: User-Home-Job hat Status running');
+}
+
+# Test 32: get_all_jobs enthält User-Home-Jobs
+{
+    my $jid = create_job('gameuser2');
+    write_job_meta($jid, 'wind_1', 'start', 'gameuser2');
+    finish_job($jid, 'ok');
+    my @jobs = get_all_jobs();
+    my ($found) = grep { $_->{job_id} eq $jid } @jobs;
+    ok(defined $found, 'get_all_jobs: User-Home-Job wird gefunden');
+}
+
+# Test 33: delete_job entfernt User-Home-Dir UND Pointer
+{
+    my $jid = create_job('gameuser2');
+    write_job_meta($jid, 'wind_1', 'stop', 'gameuser2');
+    finish_job($jid, 'ok');
+    delete_job($jid);
+    ok(!-d "$fake_home/gameuser2/jobs/$jid", 'delete_job: User-Home-Dir entfernt');
+    ok(!-f "$tmp/jobs/$jid", 'delete_job: Pointer-Datei entfernt');
 }

@@ -160,7 +160,8 @@ sub _enqueue_install_game_job {
             source => 'steamcmd',
         });
     }
-    my $job_id = &create_job();
+    my $job_id = &create_job($unix_user);
+    my $job_dir = _job_dir($job_id);
     write_job_meta($job_id, $instance_id, $job_action, $unix_user);
     &log_action('job_started', $job_id, {instance_id => $instance_id, action => $job_action});
 
@@ -175,11 +176,11 @@ sub _enqueue_install_game_job {
         my $steamcmd_path = &detect_steamcmd() // 'steamcmd';
         my $prefix = $preclean ? "rm -rf '$server_dir/serverfiles' && " : '';
         my $cmd = "MODULE_ROOT='$module_root' STEAMCMD_PATH='$steamcmd_path' setsid nohup bash -lc \"$prefix" .
-                  "bash '$module_root/scripts/steamcmd_install.sh' '$config_directory/jobs/$job_id' '$unix_user' '$server_dir' '$app_id' '' '$script_name'\" >/dev/null 2>&1 &";
+                  "bash '$module_root/scripts/steamcmd_install.sh' '$job_dir' '$unix_user' '$server_dir' '$app_id' '' '$script_name'\" >/dev/null 2>&1 &";
         &log_debug("$job_action steamcmd: module_root=$module_root steamcmd=$steamcmd_path server_dir=$server_dir app_id=$app_id preclean=$preclean cmd=$cmd");
         &system_logged($cmd);
     } else {
-        my $cmd2 = "MODULE_ROOT='$module_root' setsid nohup bash '$module_root/scripts/game_action.sh' '$config_directory/jobs/$job_id' '$unix_user' '$server_dir' '$script_name' install >/dev/null 2>&1 &";
+        my $cmd2 = "MODULE_ROOT='$module_root' setsid nohup bash '$module_root/scripts/game_action.sh' '$job_dir' '$unix_user' '$server_dir' '$script_name' install >/dev/null 2>&1 &";
         &log_debug("$job_action lgsm: module_root=$module_root server_dir=$server_dir cmd=$cmd2");
         &system_logged($cmd2);
     }
@@ -618,11 +619,12 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         (my $server_dir = $script_path) =~ s|/[^/]+$||;
         $script_name =~ s/[^a-zA-Z0-9_-]//g;
 
-        my $job_id = &create_job();
+        my $job_id = &create_job($unix_user);
+        my $job_dir = _job_dir($job_id);
         my $worker = "$module_root/scripts/setup_lgsm.sh";
         write_job_meta($job_id, $instance_id, 'setup_lgsm', $unix_user);
         &log_action('job_started', $job_id, {instance_id => $instance_id, action => 'setup_lgsm'});
-        &system_logged("setsid nohup bash '$worker' '$config_directory/jobs/$job_id' '$unix_user' '$server_dir' '$script_name' >/dev/null 2>&1 &");
+        &system_logged("setsid nohup bash '$worker' '$job_dir' '$unix_user' '$server_dir' '$script_name' >/dev/null 2>&1 &");
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&action=poll_job&job=" . &html_escape($job_id) . "&next_status=lgsm_ready&xnavigation=1");
         exit;
     }
@@ -639,15 +641,16 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         my $source = $effective_source;
         my ($script_path, $script_name, $server_dir) = _parse_script_info($inst);
 
-        my $job_id = &create_job();
+        my $job_id = &create_job($unix_user);
+        my $job_dir = _job_dir($job_id);
         write_job_meta($job_id, $instance_id, 'update', $unix_user);
         &log_action('job_started', $job_id, {instance_id => $instance_id, action => 'update'});
 
         if ($source eq 'steamcmd') {
             my $steamcmd_path = &detect_steamcmd() // 'steamcmd';
-            &system_logged("MODULE_ROOT='$module_root' STEAMCMD_PATH='$steamcmd_path' setsid nohup bash '$module_root/scripts/steamcmd_control.sh' update '$config_directory/jobs/$job_id' '$unix_user' '$server_dir' >/dev/null 2>&1 &");
+            &system_logged("MODULE_ROOT='$module_root' STEAMCMD_PATH='$steamcmd_path' setsid nohup bash '$module_root/scripts/steamcmd_control.sh' update '$job_dir' '$unix_user' '$server_dir' >/dev/null 2>&1 &");
         } else {
-            &system_logged("MODULE_ROOT='$module_root' setsid nohup bash '$module_root/scripts/game_action.sh' '$config_directory/jobs/$job_id' '$unix_user' '$server_dir' '$script_name' update >/dev/null 2>&1 &");
+            &system_logged("MODULE_ROOT='$module_root' setsid nohup bash '$module_root/scripts/game_action.sh' '$job_dir' '$unix_user' '$server_dir' '$script_name' update >/dev/null 2>&1 &");
         }
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&action=poll_job&job=" . &html_escape($job_id) . "&xnavigation=1");
         exit;
@@ -657,11 +660,12 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         (my $server_dir = $inst->{'script'}) =~ s|/[^/]+$||;
         $script_name =~ s/[^a-zA-Z0-9_-]//g;
 
-        my $job_id = &create_job();
+        my $job_id = &create_job($unix_user);
+        my $job_dir = _job_dir($job_id);
         write_job_meta($job_id, $instance_id, 'validate', $unix_user);
         &log_action('job_started', $job_id, {instance_id => $instance_id, action => 'validate'});
         my $worker = "$module_root/scripts/game_action.sh";
-        &system_logged("MODULE_ROOT='$module_root' setsid nohup bash '$worker' '$config_directory/jobs/$job_id' '$unix_user' '$server_dir' '$script_name' validate >/dev/null 2>&1 &");
+        &system_logged("MODULE_ROOT='$module_root' setsid nohup bash '$worker' '$job_dir' '$unix_user' '$server_dir' '$script_name' validate >/dev/null 2>&1 &");
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&action=poll_job&job=" . &html_escape($job_id) . "&xnavigation=1");
         exit;
     }
@@ -677,11 +681,12 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
             my $script_name = (split('/', $inst->{'script'}))[-1];
             (my $server_dir = $inst->{'script'}) =~ s|/[^/]+$||;
             $script_name =~ s/[^a-zA-Z0-9_-]//g;
-            $job_id = &create_job();
+            $job_id = &create_job($unix_user);
+            my $job_dir = _job_dir($job_id);
             write_job_meta($job_id, $instance_id, 'reinstall', $unix_user);
             &log_action('job_started', $job_id, {instance_id => $instance_id, action => 'reinstall'});
             my $worker = "$module_root/scripts/game_action.sh";
-            &system_logged("MODULE_ROOT='$module_root' setsid nohup bash '$worker' '$config_directory/jobs/$job_id' '$unix_user' '$server_dir' '$script_name' reinstall >/dev/null 2>&1 &");
+            &system_logged("MODULE_ROOT='$module_root' setsid nohup bash '$worker' '$job_dir' '$unix_user' '$server_dir' '$script_name' reinstall >/dev/null 2>&1 &");
         }
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&action=poll_job&job=" . &html_escape($job_id) . "&xnavigation=1");
         exit;
@@ -729,15 +734,17 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         unless (_steamcmd_server_binary_exists($server_dir)) {
             &error($text{'err_invalid_action'});
         }
-        my $jid_stop = &create_job();
+        my $jid_stop = &create_job($unix_user);
+        my $job_dir_stop = _job_dir($jid_stop);
         write_job_meta($jid_stop, $instance_id, 'stop', $unix_user);
         &log_action('job_started', $jid_stop, {instance_id => $instance_id, action => 'stop'});
-        &system_logged("MODULE_ROOT='$module_root' bash '$module_root/scripts/steamcmd_control.sh' stop '$config_directory/jobs/$jid_stop' '$unix_user' '$server_dir' >/dev/null 2>&1");
+        &system_logged("MODULE_ROOT='$module_root' bash '$module_root/scripts/steamcmd_control.sh' stop '$job_dir_stop' '$unix_user' '$server_dir' >/dev/null 2>&1");
         sleep 5;
-        my $jid_start = &create_job();
+        my $jid_start = &create_job($unix_user);
+        my $job_dir_start = _job_dir($jid_start);
         write_job_meta($jid_start, $instance_id, 'start', $unix_user);
         &log_action('job_started', $jid_start, {instance_id => $instance_id, action => 'start'});
-        &system_logged("MODULE_ROOT='$module_root' setsid nohup bash '$module_root/scripts/steamcmd_control.sh' start '$config_directory/jobs/$jid_start' '$unix_user' '$server_dir' >/dev/null 2>&1 &");
+        &system_logged("MODULE_ROOT='$module_root' setsid nohup bash '$module_root/scripts/steamcmd_control.sh' start '$job_dir_start' '$unix_user' '$server_dir' >/dev/null 2>&1 &");
         &_ensure_monitor_cron();
         &set_monitor_running($server_dir, $config_directory, $instance_id);
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
@@ -755,10 +762,11 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
                     . "&next_status=installed&next_action=start&xnavigation=1");
                 exit;
             }
-            my $job_id = &create_job();
+            my $job_id = &create_job($unix_user);
+            my $job_dir = _job_dir($job_id);
             write_job_meta($job_id, $instance_id, $action, $unix_user);
             &log_action('job_started', $job_id, {instance_id => $instance_id, action => $action});
-            &system_logged("MODULE_ROOT='$module_root' setsid nohup bash '$module_root/scripts/steamcmd_control.sh' '$action' '$config_directory/jobs/$job_id' '$unix_user' '$server_dir' >/dev/null 2>&1 &");
+            &system_logged("MODULE_ROOT='$module_root' setsid nohup bash '$module_root/scripts/steamcmd_control.sh' '$action' '$job_dir' '$unix_user' '$server_dir' >/dev/null 2>&1 &");
             if ($action eq 'stop') {
                 &set_monitor_paused($server_dir, $config_directory, $instance_id);
             } else {
@@ -831,10 +839,11 @@ if (($in{'action'} // '') eq 'poll_job') {
         my $source = _effective_instance_source($inst_now);
         my (undef, $script_name, $server_dir) = _parse_script_info($inst_now);
         if ($source eq 'steamcmd') {
-            my $start_job = &create_job();
+            my $start_job = &create_job($unix_user);
+            my $start_job_dir = _job_dir($start_job);
             write_job_meta($start_job, $instance_id, 'start', $unix_user);
             &log_action('job_started', $start_job, {instance_id => $instance_id, action => 'start'});
-            &system_logged("MODULE_ROOT='$module_root' setsid nohup bash '$module_root/scripts/steamcmd_control.sh' start '$config_directory/jobs/$start_job' '$unix_user' '$server_dir' >/dev/null 2>&1 &");
+            &system_logged("MODULE_ROOT='$module_root' setsid nohup bash '$module_root/scripts/steamcmd_control.sh' start '$start_job_dir' '$unix_user' '$server_dir' >/dev/null 2>&1 &");
             &redirect("manage.cgi?instance_id=" . &html_escape($instance_id)
                 . "&action=poll_job&job=" . &html_escape($start_job) . "&xnavigation=1");
             exit;
