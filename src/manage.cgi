@@ -46,6 +46,15 @@ sub _filemin_path_urlencode {
     return $s;
 }
 
+sub _write_file_as_user {
+    my ($path, $content, $unix_user) = @_;
+    (my $safe_path = $path) =~ s/'/'\\''/g;
+    open(my $pipe, '|-', 'su', '-s', '/bin/bash', '-c', "cat > '$safe_path'", $unix_user)
+        or &error("Cannot write $path as $unix_user: $!");
+    print $pipe $content;
+    close($pipe) or &error("Cannot write $path as $unix_user (pipe error): $!");
+}
+
 sub _parse_script_info {
     my ($inst) = @_;
     my $script_path = $inst->{'script'} // '';
@@ -305,12 +314,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         # Ensure lgsm/config-lgsm/$script_name/ exists
         &system_logged("su -s /bin/bash -c \"mkdir -p \Q$script_dir\E/lgsm/config-lgsm/$script_name\" $unix_user");
 
-        open(my $fh, '>', $config_file) or &error("Cannot write config: $!");
-        print $fh "$_\n" for @output_lines;
-        close($fh);
-
-        my @pw = getpwnam($unix_user);
-        chown($pw[2], $pw[3], $config_file) if @pw;
+        &_write_file_as_user($config_file, join("\n", @output_lines) . "\n", $unix_user);
 
         # Backup _default.cfg so LGSM regenerates it cleanly on next run
         rename($default_cfg, $backup_cfg) if -f $default_cfg;
@@ -348,22 +352,14 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         &system_logged("su -s /bin/bash -c \"mkdir -p \Q$script_dir\E/lgsm/config-lgsm/$script_name\" $unix_user");
 
         # Write $script.cfg
-        open(my $fh, '>', $script_path) or &error("Cannot write config: $!");
-        for my $k (@$script_order) {
-            print $fh "$k=\"$script_vals->{$k}\"\n" if exists $script_vals->{$k};
-        }
-        close($fh);
-
-        my @pw = getpwnam($unix_user);
-        chown($pw[2], $pw[3], $script_path) if @pw;
+        my $script_content = join('', map { exists $script_vals->{$_} ? "$_=\"$script_vals->{$_}\"\n" : () } @$script_order);
+        &_write_file_as_user($script_path, $script_content, $unix_user);
 
         # Write back common.cfg; delete if nothing remains
         my @remaining = grep { exists $common_vals->{$_} } @$common_order;
         if (@remaining) {
-            open($fh, '>', $common_path) or &error("Cannot write common config: $!");
-            print $fh "$_=\"$common_vals->{$_}\"\n" for @remaining;
-            close($fh);
-            chown($pw[2], $pw[3], $common_path) if @pw;
+            my $common_content = join('', map { "$_=\"$common_vals->{$_}\"\n" } @remaining);
+            &_write_file_as_user($common_path, $common_content, $unix_user);
         } else {
             unlink $common_path;
         }
@@ -454,16 +450,13 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
                     $new_content = &update_option_settings_in_ini($raw_base, $opt_vals, $opt_order);
                 }
             }
-            eval { &write_file_exact($cfg_path, $new_content); 1 }
-                or &error("Cannot write config: $!");
+            &_write_file_as_user($cfg_path, $new_content, $unix_user);
         } elsif (int($in{'raw_mode'} || 0)) {
-            # Raw mode: filter content and write
+            # Raw mode: filter content and write as game user
             my $raw_lines = &filter_raw_config($in{'config_raw'} // '');
-            open(my $fh, '>', $cfg_path) or &error("Cannot write config: $!");
-            print $fh "$_\n" for @$raw_lines;
-            close($fh);
+            &_write_file_as_user($cfg_path, join("\n", @$raw_lines) . "\n", $unix_user);
         } else {
-            # Form mode: read current file, apply field_* overrides, write back
+            # Form mode: read current file, apply field_* overrides, write back as game user
             my ($cur_vals, $cur_order, undef) = &read_config_file($cfg_path);
 
             # Apply form fields (field_<key> params)
@@ -476,15 +469,9 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
                 push @$cur_order, $key unless grep { $_ eq $key } @$cur_order;
             }
 
-            open(my $fh, '>', $cfg_path) or &error("Cannot write config: $!");
-            for my $key (@$cur_order) {
-                print $fh "$key=\"$cur_vals->{$key}\"\n" if exists $cur_vals->{$key};
-            }
-            close($fh);
+            my $form_content = join('', map { exists $cur_vals->{$_} ? "$_=\"$cur_vals->{$_}\"\n" : () } @$cur_order);
+            &_write_file_as_user($cfg_path, $form_content, $unix_user);
         }
-
-        my @pw = getpwnam($unix_user);
-        chown($pw[2], $pw[3], $cfg_path) if @pw;
 
         &log_action('config_saved', $instance_id, {config_type => $cfg_file_key});
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) .
