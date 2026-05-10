@@ -40,13 +40,14 @@ Dieses Dokument trennt verbindliche Projektregeln (Policy) von Webmin-spezifisch
 - **Fresh-Instanz-Lookup:** `get_instance_flexible($id)` statt `get_instance($id)` verwenden wenn die Instanz im Status `fresh`/`lgsm_ready` sein kann (Script noch nicht auf Disk) — gibt Hash zurueck auch ohne existierende Script-Datei.
 - **poll_job/next_status-Pattern:** `poll_job` setzt `instance_status` via URL-Parameter `next_status` — bei `status=ok` ruft CGI `set_instance_status($id, $next_status)`. Worker schreiben finalen Status nur in `$JOB_DIR/status`, nie direkt in Registry.
 - **Game-Server-Operationen:** Ausnahmslos via `su -s /bin/bash -c "..." {unix_user}` aus dem Serververzeichnis. `apt-get` nur als root fuer System-Abhaengigkeiten; alle Server-Dateien gehoeren dem Unix-User.
+- **CGI-Writes als Game-User:** Kein `open + chown` fuer Dateien in `$SERVER_DIR`. Stattdessen `&_write_file_as_user($path, $content, $unix_user)` aus `manage.cgi` — schreibt via Pipe zu `su -s /bin/bash -c "cat > '$safe_path'" $unix_user`. Pfad-Escaping: `(my $safe = $path) =~ s/'/'\\''/g`.
 - **Live-Konsole:** Echtzeit-Log-Streaming per `tail`-Simulation im Webmin-Interface.
 - **Monitoring:** PID-Check + A2S-Query + Restart-Counter (max. 5/h); bei Limit → Status `failed`, manueller Reset noetig. Kein automatischer Mail-Versand implementiert.
 - **Job-Pointer-File-Pattern:** `$config_directory/jobs/$job_id` ist seit dem User-Home-Refactor eine **regulaere Datei** (kein Verzeichnis), die den echten Pfad `/home/$unix_user/jobs/$job_id/` enthaelt. Beim Lesen: `-f $ptr`-Check + `tr -d '\r\n'` zum Einlesen. In Shell-Strings immer `_shell_safe_job_dir($job_id)` statt `_job_dir($job_id)` verwenden — enthaelt bereits Single-Quote-Escaping. Tests ueberschreiben `$_jobs_home_base = $fake_home` statt echte `/home`-Verzeichnisse anzulegen.
 
 ### 4.1 Worker-Pattern (Background-Worker, manage.cgi-Aufrufe)
 - **Diagnose-Log zuerst:** Background-Worker (`steamcmd_control.sh`, `steamcmd_install.sh`) legen am Anfang der Action (vor Branch-Logik) ein dediziertes Debug-File im `SERVER_DIR` an und loggen Branch-Entscheidungen hinein. Verifikation: Nach Start/Install existiert das Debug-File auch bei fruehem Abbruch.
-- **PID-File-Ownership:** Worker laufen als root. PID-Files immer ueber Helper schreiben und auf `<user>:<user>` chownen (`chmod 0644`), damit der Ziel-User seine PID-Datei lesen kann.
+- **Ownership in SERVER_DIR (verbindlich):** Alle Dateien in `$SERVER_DIR` gehoeren dem Game-User. Shell: Writes via `su`-Dispatch (kein nacktes `chown`). Perl/CGI: `&_write_file_as_user()` aus `manage.cgi` verwenden. PID-Files via `_write_pidfile()` (su-Dispatch, chown nur als Fallback). Root darf ausschliesslich `$SERVER_DIR` selbst einmalig chownen (unmittelbar nach `mkdir`).
 - **Start-Lock gegen Click-Spam:** Manuell triggerbare Aktionen (Start/Stop) per `flock` auf serverlokaler Lock-Datei serialisieren, um Doppelstarts und Prozess-Storms zu verhindern.
 
 ## 5. Test-, Build- und Release-Regeln
