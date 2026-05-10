@@ -39,8 +39,7 @@ Dieses Dokument trennt verbindliche Projektregeln (Policy) von Webmin-spezifisch
 - **register_instance-Signatur:** `register_instance($id, $user, $script_path, \%opts)` — 4. Argument ist immer ein **Hashref**, keine flache Hash-Liste. Schluessel: `source`, `sftp_user`, `owners`, `steam_account`, `instance_status`.
 - **Fresh-Instanz-Lookup:** `get_instance_flexible($id)` statt `get_instance($id)` verwenden wenn die Instanz im Status `fresh`/`lgsm_ready` sein kann (Script noch nicht auf Disk) — gibt Hash zurueck auch ohne existierende Script-Datei.
 - **poll_job/next_status-Pattern:** `poll_job` setzt `instance_status` via URL-Parameter `next_status` — bei `status=ok` ruft CGI `set_instance_status($id, $next_status)`. Worker schreiben finalen Status nur in `$JOB_DIR/status`, nie direkt in Registry.
-- **Game-Server-Operationen:** Ausnahmslos via `su -s /bin/bash -c "..." {unix_user}` aus dem Serververzeichnis. `apt-get` nur als root fuer System-Abhaengigkeiten; alle Server-Dateien gehoeren dem Unix-User.
-- **CGI-Writes als Game-User:** Kein `open + chown` fuer Dateien in `$SERVER_DIR`. Stattdessen `&_write_file_as_user($path, $content, $unix_user)` aus `manage.cgi` — schreibt via Pipe zu `su -s /bin/bash -c "cat > '$safe_path'" $unix_user`. Pfad-Escaping: `(my $safe = $path) =~ s/'/'\\''/g`.
+- **Game-Server-Operationen:** `apt-get` nur als root. Alles in `$SERVER_DIR` via `su -s /bin/bash -c "..." {unix_user}` oder `&_write_file_as_user()` — kein nacktes `chown`; Details siehe §4.1.
 - **Live-Konsole:** Echtzeit-Log-Streaming per `tail`-Simulation im Webmin-Interface.
 - **Monitoring:** PID-Check + A2S-Query + Restart-Counter (max. 5/h); bei Limit → Status `failed`, manueller Reset noetig. Kein automatischer Mail-Versand implementiert.
 - **Job-Pointer-File-Pattern:** `$config_directory/jobs/$job_id` ist seit dem User-Home-Refactor eine **regulaere Datei** (kein Verzeichnis), die den echten Pfad `/home/$unix_user/jobs/$job_id/` enthaelt. Beim Lesen: `-f $ptr`-Check + `tr -d '\r\n'` zum Einlesen. In Shell-Strings immer `_shell_safe_job_dir($job_id)` statt `_job_dir($job_id)` verwenden — enthaelt bereits Single-Quote-Escaping. Tests ueberschreiben `$_jobs_home_base = $fake_home` statt echte `/home`-Verzeichnisse anzulegen.
@@ -53,9 +52,8 @@ Dieses Dokument trennt verbindliche Projektregeln (Policy) von Webmin-spezifisch
 ## 5. Test-, Build- und Release-Regeln
 - **Webmin-Stubs:** `t/stubs.pl` stellt notwendige Funktionen fuer Standalone-Tests bereit.
 - **Tests:** TAP-kompatibel, Ausfuehrung z. B. via `perl t/test_<name>.pl`.
-- **Standard-Verifikation:** Vor Abschluss von Aenderungen `bash scripts/verify.sh` ausfuehren.
+- **Standard-Verifikation:** Vor Abschluss von Aenderungen `bash scripts/verify.sh` (Perl-Syntax `src/`+`t/`, kritische Security-/Provisioning-Tests).
 - **Full-Verifikation:** Vor Releases oder groesseren Refactorings zusaetzlich `bash scripts/verify-full.sh`.
-- **Mindestumfang Verifikation:** Perl-Syntaxchecks fuer `src/` und `t/` plus kritische Security-/Provisioning-Tests.
 - **Kritische Regressionstests:** `t/test_security_guards.pl` und `t/test_provisioning_flow.pl` muessen bei sicherheitsrelevanten oder Provisioning-Aenderungen gruen sein.
 - **Build:** `bash scripts/build.sh` erzeugt die `.wbm`-Datei (Modul-Ordner an Tar-Wurzel).
 - **Webmin-Only-Target:** Fokus auf Webmin-Modul (`.wbm`); keine distro-spezifischen Paketziele (deb/rpm) pflegen.
@@ -72,7 +70,7 @@ Dieses Dokument trennt verbindliche Projektregeln (Policy) von Webmin-spezifisch
 ## 6. Projektlayout
 - **Wiki-Repo:** `/mnt/Lager/github/LinuxGSM-WebCore.wiki/`
 - **Build-Artefakte:** `dist/` und `tmp/` bleiben gitignored.
-- **Shell-Hilfsskripte:** `src/scripts/` — `install_lgsm.sh`, `server_control.sh`, `engine_switch.sh`; werden via `su` als Game-User ausgefuehrt.
+- **Shell-Hilfsskripte:** `src/scripts/` — LGSM: `install_lgsm.sh`, `server_control.sh`, `engine_switch.sh`. Non-LGSM/Wine: `steamcmd_install.sh` (root-Wrapper) → `steamcmd_install_user.sh` (game-user, Install); `steamcmd_control.sh` (start/stop/update) → `steamcmd_start_user.sh` (game-user, Launch-Wrapper). Monitor: `monitor_all.sh` → `monitor_instance_user.sh` (game-user).
 - **Sprachdateien:** `src/lang/de` und `src/lang/en` — einfaches `key=value`-Format; neue Fehlertexte in beiden Dateien pflegen.
 - **ACL-Defaults:** `src/defaultacl` — Fallback-ACL wenn noch keine Webmin-ACL fuer einen User existiert.
 - **Funktions-Lokationen:** `list_webmin_users()` → `src/lib/acl.pl`; `get_game_list()` → `src/lib/games.pl` (nicht `games_meta.pl`); `get_game_fields/display_name/default_port/get_game_config_path/get_game_live_log_path()` → `src/lib/games_meta.pl`.
@@ -186,7 +184,6 @@ Dieser Abschnitt dokumentiert zwingende Webmin-spezifische Details, die aus real
 ### 8.13 Non-LGSM Game-Server (SteamCMD / Wine)
 - **Detach via Session-Manager:** Wine-/UE-Server bevorzugt via `screen -dmS` oder `tmux new-session -d` starten. Reines `nohup setsid ... &` nur als Fallback verwenden.
 - **Pre-Start `wineserver -k`:** Vor jedem Wine-Start im Ziel-Prefix `WINEPREFIX=<prefix> wineserver -k` ausfuehren, um stale Prefix-Locks zu vermeiden.
-- **Launcher-Wrapper mit `exec`:** Wrapper-Skripte mit `exec xvfb-run -a /usr/bin/wine ...` beenden, damit kein transienter Bash-Parent die PID-Adoption verfaelscht.
 - **PID-Adoption robust:** PIDs nicht ueber `$!` aus `su -c "... &"` uebernehmen; stattdessen `pgrep`-basierte Erkennung mit Retry-Loop und Filter fuer transient `bash -c`-Wrapper.
 - **UE5-Logpfade:** Bei SteamCMD/UE5 Logs unter `<serverfiles>/R5/Saved/Logs/` suchen (`R5.log`, projektspezifische Namen) und bei variablen Dateinamen auf die neueste `*.log` per `mtime` fallen.
 - **Multi-Instanz Port-Isolation:** UE5-Server (Windrose etc.) hoeren ohne explizite CLI-Args auf hardcoded Defaults (Game 7777, Query 27015, Beacon 15000). Zwei Instanzen auf demselben Host kollidieren beim Bind silent — die zweite ist unsichtbar nicht erreichbar. `games_meta.json` muss alle drei Ports als `"type": "port"`-Felder fuehren; der Worker (`steamcmd_control.sh`) liest sie ueber `scripts/lib/ports.sh::_resolve_instance_ports` aus der LGSM-Instance-Cfg und reicht `-Port=<n> -QueryPort=<n> -BeaconPort=<n>` an die Wine-Binary durch. Firewall-Open/Close in `manage.cgi` muss alle port-typed Felder durchlaufen, nicht nur `$inst->{port}`.
