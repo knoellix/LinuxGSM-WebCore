@@ -170,9 +170,14 @@ _terminate_pid() {
 _write_pidfile() {
     local pid="$1"
     [ -n "$pid" ] || return 1
-    printf "%s\n" "$pid" > "$PIDFILE"
-    chown "$UNIX_USER":"$UNIX_USER" "$PIDFILE" 2>/dev/null || true
-    chmod 0644 "$PIDFILE" 2>/dev/null || true
+    # Write as game user — run.pid belongs to game user, no chown needed
+    local safe_pid="$pid"
+    local safe_pf="${PIDFILE//\'/\'\\\'\'}"
+    su -s /bin/bash -c "printf '%s\n' '$safe_pid' > '$safe_pf'; chmod 0644 '$safe_pf'" "$UNIX_USER" 2>/dev/null || {
+        # Fallback: root write (should not happen if SERVER_DIR is game-user-owned)
+        printf "%s\n" "$pid" > "$PIDFILE"
+        chmod 0644 "$PIDFILE" 2>/dev/null || true
+    }
     return 0
 }
 
@@ -192,11 +197,13 @@ case "$ACTION" in
         echo "steamcmd_control action=start"
 
         DIAG_LOG="$SERVER_DIR/windrose-debug.log"
-        : > "$DIAG_LOG" 2>/dev/null || true
-        chown "$UNIX_USER":"$UNIX_USER" "$DIAG_LOG" 2>/dev/null || true
-        chmod 0644 "$DIAG_LOG" 2>/dev/null || true
+        # Create as game user — no chown needed
+        _dl_safe="${DIAG_LOG//\'/\'\\\'\'}"
+        su -s /bin/bash -c "printf '' > '$_dl_safe'; chmod 0644 '$_dl_safe'" "$UNIX_USER" 2>/dev/null || \
+            { : > "$DIAG_LOG" 2>/dev/null || true; }
+        unset _dl_safe
         {
-            echo "=== worker start $(date -Is) (rev: 2026-05-02-ports-v16) ==="
+            echo "=== worker start $(date -Is) (rev: 2026-05-02-no-stdbuf-v17) ==="
             echo "ACTION=$ACTION"
             echo "JOB_DIR=$JOB_DIR"
             echo "UNIX_USER=$UNIX_USER"
@@ -432,14 +439,12 @@ export DISPLAY=":\$DISPLAY_NUM"
 echo "DISPLAY=\$DISPLAY ready, launching wine" >>"\$DIAG"
 printf '%s\\n' "\$(date -Is) Windrose: starting wine on DISPLAY=\$DISPLAY (manual Xvfb pid=\$XVFB_PID), ports game=$INSTANCE_GAME_PORT query=$INSTANCE_QUERY_PORT beacon=$INSTANCE_BEACON_PORT." >>"\$LOGFILE"
 # Run wine directly. stdout+stderr → tee → server.log AND screen PTY.
+# Do NOT wrap wine in `stdbuf`: coreutils injects LD_PRELOAD=libstdbuf.so, which Wine's loader
+# rejects with "wrong ELF class: ELFCLASS64" noise on every start (harmless but confusing).
 # UE5 dedicated server CLI args: -Port (game), -QueryPort (Steam A2S), -BeaconPort (UE beacon).
 # Without these, every instance binds the same UE5 defaults (7777/27015/15000) and the second one
 # fails silently — see CLAUDE.md §8.12 multi-instance isolation notes.
-if command -v stdbuf >/dev/null 2>&1; then
-  stdbuf -oL -eL /usr/bin/wine "$WINDROSE_DIRECT_BIN" -log -Port=$INSTANCE_GAME_PORT -QueryPort=$INSTANCE_QUERY_PORT -BeaconPort=$INSTANCE_BEACON_PORT 2>&1 | tee -a "\$LOGFILE"
-else
-  /usr/bin/wine "$WINDROSE_DIRECT_BIN" -log -Port=$INSTANCE_GAME_PORT -QueryPort=$INSTANCE_QUERY_PORT -BeaconPort=$INSTANCE_BEACON_PORT 2>&1 | tee -a "\$LOGFILE"
-fi
+/usr/bin/wine "$WINDROSE_DIRECT_BIN" -log -Port=$INSTANCE_GAME_PORT -QueryPort=$INSTANCE_QUERY_PORT -BeaconPort=$INSTANCE_BEACON_PORT 2>&1 | tee -a "\$LOGFILE"
 RC=\${PIPESTATUS[0]}
 echo "wine exited with rc=\$RC at \$(date -Is)" >>"\$DIAG"
 kill "\$XVFB_PID" 2>/dev/null || true
