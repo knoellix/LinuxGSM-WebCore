@@ -1,5 +1,6 @@
 name: Release
 
+# Build + GitHub Release only when a new version tag is pushed (v*).
 on:
   push:
     tags:
@@ -12,10 +13,18 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+
+      - name: Install Perl test deps
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libtest-simple-perl
+
+      - name: Verify before release
+        run: bash scripts/verify.sh
 
       - name: Build artifacts
-        run: TAG=${{ github.ref_name }} bash scripts/build.sh
+        env:
+          TAG: ${{ github.ref_name }}
+        run: bash scripts/build.sh
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
