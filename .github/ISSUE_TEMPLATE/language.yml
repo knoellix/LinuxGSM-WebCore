@@ -1,5 +1,5 @@
 name: Language / UI string
-description: Fix DE/EN text, or propose Spanish (or another) translation
+description: Fix DE/EN text, or propose a new language translation
 title: "[lang] "
 labels: ["language"]
 body:
@@ -8,7 +8,7 @@ body:
       value: |
         Shipped UI today: **German (`de`) + English (`en`)** (`src/lang/de`, `src/lang/en`).
 
-        This form also works for **Spanish** or any **new language** — when we add a locale later, many keys will be missing at first; open issues (or PRs) with translations here.
+        This form also works for a **new language** — when we add a locale later, many keys will be missing at first; open issues (or PRs) with translations here.
   - type: dropdown
     id: kind
     attributes:
@@ -16,7 +16,6 @@ body:
       options:
         - Fix / improve existing string (de or en)
         - Missing key in de or en (parity)
-        - Spanish (es) translation / addition
         - New language (not yet in the module)
     validations:
       required: true
@@ -27,7 +26,6 @@ body:
       options:
         - de
         - en
-        - es
         - both / key parity (de+en)
         - other (name it below)
     validations:
@@ -36,8 +34,8 @@ body:
     id: other_lang
     attributes:
       label: Other language (if not in the list)
-      description: e.g. fr, pt-BR, nl — leave empty when using de/en/es
-      placeholder: fr
+      description: Language code or name — leave empty when using de/en
+      placeholder: e.g. language code
   - type: input
     id: key
     attributes:
@@ -59,6 +57,6 @@ body:
     id: suggested
     attributes:
       label: Suggested text
-      description: Paste DE/EN/ES (or other) wording. For many keys, a short table `key = value` or a gist/PR link is fine.
+      description: Paste wording for the language(s). For many keys, a short table `key = value` or a gist/PR link is fine.
     validations:
       required: true
