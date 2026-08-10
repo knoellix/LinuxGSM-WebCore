@@ -27,8 +27,9 @@ BEGIN {
     };
 }
 
-use lib '/mnt/Lager/github/LinuxGSM-WebCore/src/lib';
-require '/mnt/Lager/github/LinuxGSM-WebCore/src/lib/core.pl';
+use FindBin;
+use lib "$FindBin::Bin/../src/lib";
+require "$FindBin::Bin/../src/lib/core.pl";
 
 # Test 1: 'start' ist eine gültige Aktion mit script_name und script_dir
 @logged_commands = ();
