@@ -27,15 +27,15 @@ require "$Bin/../src/lib/steam.pl";
 
 # --- Test 1: detect_steamcmd returns PATH result when in PATH ---
 {
-    # Create fake steamcmd in tmpdir
-    my $fake_steam = "$tmpdir/steamcmd_test1";
+    # Must be named exactly "steamcmd" — detect_steamcmd looks for $dir/steamcmd.
+    my $fake_steam = "$tmpdir/steamcmd";
     open(my $fh, '>', $fake_steam) or die $!;
     close $fh;
     chmod(0755, $fake_steam);
+    # Isolate from host PATH and standard install locations.
     local $ENV{PATH} = $tmpdir;
     my $result = detect_steamcmd();
-    # With our impl, this should find it via PATH search before standard paths
-    ok(defined $result && $result =~ /steamcmd/, 'detect_steamcmd finds steamcmd in PATH');
+    is($result, $fake_steam, 'detect_steamcmd finds steamcmd in PATH');
     unlink $fake_steam;
 }
 

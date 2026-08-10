@@ -27,21 +27,25 @@ fi
 
 tui_step "Building linuxgsm-webcore v${VERSION}..."
 
-# Tests ausführen
-tui_step "Running tests..."
-TEST_FAILED=0
-while IFS= read -r -d '' test_file; do
-    if perl "$test_file" >/dev/null 2>&1; then
-        tui_ok "$test_file"
-    else
-        tui_fail "$test_file"
-        perl "$test_file" || true
-        TEST_FAILED=1
+# Tests ausführen (skip when already verified in CI, e.g. SKIP_TESTS=1)
+if [ "${SKIP_TESTS:-0}" = "1" ]; then
+    tui_step "Skipping tests (SKIP_TESTS=1)"
+else
+    tui_step "Running tests..."
+    TEST_FAILED=0
+    while IFS= read -r -d '' test_file; do
+        if perl "$test_file" >/dev/null 2>&1; then
+            tui_ok "$test_file"
+        else
+            tui_fail "$test_file"
+            perl "$test_file" || true
+            TEST_FAILED=1
+        fi
+    done < <(find "$REPO_ROOT/t" -name "test_*.pl" -print0 | sort -z)
+    if [ "$TEST_FAILED" -ne 0 ]; then
+        tui_error "Tests failed. Aborting build."
+        exit 1
     fi
-done < <(find "$REPO_ROOT/t" -name "test_*.pl" -print0 | sort -z)
-if [ "$TEST_FAILED" -ne 0 ]; then
-    tui_error "Tests failed. Aborting build."
-    exit 1
 fi
 
 # Verzeichnisse vorbereiten
