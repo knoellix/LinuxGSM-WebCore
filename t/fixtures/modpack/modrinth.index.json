@@ -1,0 +1,30 @@
+{
+  "formatVersion": 1,
+  "game": "minecraft",
+  "versionId": "1.0.0",
+  "name": "Test NeoForge Pack",
+  "dependencies": {
+    "minecraft": "1.21.1",
+    "neoforge": "21.1.68"
+  },
+  "files": [
+    {
+      "path": "mods/server-mod.jar",
+      "hashes": { "sha1": "abc123" },
+      "downloads": ["https://cdn.modrinth.com/data/x/versions/y/server-mod.jar"],
+      "env": { "server": "required", "client": "unsupported" }
+    },
+    {
+      "path": "mods/client-mod.jar",
+      "hashes": { "sha1": "def456" },
+      "downloads": ["https://cdn.modrinth.com/data/a/versions/b/client-mod.jar"],
+      "env": { "server": "unsupported", "client": "required" }
+    },
+    {
+      "path": "mods/both-mod.jar",
+      "hashes": { "sha1": "ghi789" },
+      "downloads": ["https://cdn.modrinth.com/data/c/versions/d/both-mod.jar"],
+      "env": { "server": "required", "client": "required" }
+    }
+  ]
+}

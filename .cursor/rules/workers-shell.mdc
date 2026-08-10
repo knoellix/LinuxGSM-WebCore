@@ -1,0 +1,84 @@
+---
+description: Shell workers, game-user dispatch, job logs, module config bootstrap, SteamCMD/Wine
+globs: src/scripts/**
+alwaysApply: false
+---
+
+# Workers and shell scripts
+
+## Dispatch pattern
+
+- **User-native workers (target model)**: build the launch command with
+  `user_worker_launch_cmd(unix_user=>…, module_root=>…, worker=>…, args=>[…], env=>{…})`
+  from `jobs.pl`. It emits `setsid nohup su -s /bin/bash -c '<env> exec bash <worker> <args>' <user> &`
+  — the single `su` is the privilege *drop*, no per-op internal `su`.
+- Legacy root workers (only where root is truly required, e.g. apt): `MODULE_ROOT='$module_root' setsid nohup bash '$worker' ... &`
+- Always pass `MODULE_ROOT`; workers derive script paths from it.
+- Verify launch: `job_dispatch_verified($job_id)` after dispatch; on failure `job_mark_launch_failed`.
+- Redirect to **`job_live.cgi`** (not inline poll) for all background jobs when possible.
+
+See `docs/superpowers/plans/2026-07-08-drop-root-runtime.md` and the "User-native runtime" section in `security-isolation.mdc`.
+
+## Game-user vs root workers
+
+| Pattern | Examples |
+|---------|----------|
+| **Root dispatch → user script** | `steamcmd_control.sh` → `steamcmd_control_user.sh`; `mc_modpack_install.sh` → `mc_modpack_install_user.sh` |
+| **Runs as game user (cron/su)** | `monitor_instance_user.sh`, `steamcmd_control_user.sh`, `mc_modpack_install_user.sh` |
+| **Root-only** | `apt-get`, initial `useradd`, `chown` on `$SERVER_DIR` after `mkdir` once |
+
+Never run game servers or write `$SERVER_DIR` as root (except one-time dir create + chown). Downloads/installs in server tree: **as the game user** (directly in `*_user.sh`, not nested `su`).
+
+## Job integration secrets (game-user workers)
+
+Game users cannot read `/etc/webmin/<module>/config`. Before dispatching MC/modpack jobs, CGI writes `$job_dir/.worker_secrets` (0600, owned by game user) via `write_job_worker_secrets()` with keys from `module_config_sync_in()` (CurseForge, Modrinth contact, Hangar).
+
+Workers set `WEBCORE_JOB_DIR=$job_dir`; Perl bootstrap calls `module_config_apply_job_secrets()` after loading Webmin config.
+
+**CGI writes job files as root** — after creating `pack_meta.json`, `mod_meta.json`, `upload/*`, or `meta`, call `chown_job_files_to_user($unix_user, @paths)` (or pass `$unix_user` into `write_modpack_job_meta()` which chowns automatically).
+
+## Job live log
+
+- Shared: `scripts/lib/job_log.sh`
+  - Root worker: `job_log_init "$JOB_DIR" "$unix_user"` — chowns output for Webmin read + user write
+  - Already game-user: `job_log_init_as_user "$JOB_DIR"`
+- Write early lines with `job_log_line` before heavy work (unbuffered append to `$JOB_DIR/output`).
+- Final status: `$JOB_DIR/status` = `ok` | `failed` | `aborted`; unlink `$JOB_DIR/pgid` before status write.
+- `trap EXIT` fallback writes `failed` if worker dies without setting status.
+
+## Standalone Perl workers
+
+Scripts like `mc_modpack_expand_meta.pl` have **no** Webmin `web-lib.pl`.
+
+Before using `%config` (API keys, module settings):
+
+```perl
+require "$module_root/lib/module_config.pl";
+module_config_bootstrap_standalone($module_root)
+    or die "module config bootstrap failed\n";
+```
+
+- Loads `/etc/webmin/<module>/config` via plain `read_file` fallback.
+- Respects `WEBMIN_CONFIG` env when set.
+- **Without bootstrap**, Integrations keys (CurseForge, Modrinth contact) are empty in workers even if UI shows “Key hinterlegt”.
+
+UTF-8 worker output: `binmode STDOUT/STDERR, ':encoding(UTF-8)'` when printing German messages.
+
+## Process priority
+
+- Source `scripts/lib/prio.sh`: `$PRIO_HIGH` for game server tree, `$PRIO_LOW` for downloads/installs.
+
+## SteamCMD / Wine
+
+- Session: prefer `screen -dmS` / `tmux new-session -d`; not bare `nohup` unless fallback.
+- Before Wine start: `wineserver -k` in prefix.
+- Do not use `xvfb-run` under Webmin worker context — start `Xvfb` directly, wait for socket, set `DISPLAY`, track `.xvfb.pid`.
+- PID: `pgrep` retry loop, not `$!` from `su -c "... &"`.
+- UE5 ports: read all port fields from instance cfg via `ports.sh`; pass `-Port`, `-QueryPort`, `-BeaconPort`.
+- Wine A2S: skip; `pgrep -f '*.exe'` fallback for stale `run.pid`.
+
+## Shell quoting
+
+- `\Q...\E` only for untrusted input — breaks paths if overused.
+- Sanitized paths: `$p =~ s/'/'\\''/g;` then embed in single-quoted shell.
+- Heredocs with `set -u`: escape child vars as `\$var`.

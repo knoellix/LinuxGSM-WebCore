@@ -1,0 +1,40 @@
+---
+description: Webmin CGI bootstrap, ACL, and CGI-specific gotchas
+globs: src/**/*.cgi,src/acl_security.pl
+alwaysApply: false
+---
+
+# Webmin CGI and ACL
+
+## CGI bootstrap (order)
+
+1. `do '../web-lib.pl';`
+2. `do '../ui-lib.pl';`
+3. `&init_config();`
+4. `require` project libs
+5. `our (%text, %config, %in, %gconfig);` — add `$module_root`, `$config_directory` when needed
+6. `$main::gconfig{'charset'} = 'utf-8';` in `package main`
+7. `&ReadParse(\%in);`
+
+Webmin runs CGIs in `package $modulename`; functions are not global unless imported/required.
+
+## ACL editor
+
+- Use `acl_security.pl` only (not `acl_edit.cgi`).
+- Required: `acl_security_form`, `acl_security_save`, empty `load_theme_library`.
+- Yes/no: `ui_radio('name', $val, [[1,$yes],[0,$no]])`.
+- Stale ACL fallback: `!defined($access{'key'}) ? 1 : $access{'key'}`.
+
+## CGI gotchas
+
+- `&redirect(...); exit;` — always both.
+- **Success feedback:** see `no-blind-success-feedback.mdc` — use `module_config.pl` for config save + flash; never trust `?saved=1` / `?msg=` alone.
+- Lang strings are not interpolated — build dynamic parts in Perl.
+- Collapsible sections: native `<details><summary>`.
+- Live log `auto_refresh` only with `manual=1`.
+- Port-fix form: skip `bool` fields in `_show_config_fix_form`.
+- `check_referer()` not available in this Webmin version.
+
+## Reference
+
+Search `webmin/webmin` on GitHub: `acl/edit_acl.cgi`, `net/acl_security.pl`.

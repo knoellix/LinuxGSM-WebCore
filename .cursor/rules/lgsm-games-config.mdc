@@ -1,0 +1,37 @@
+---
+description: LGSM config layers, games_meta, and config editor patterns
+globs: src/lib/games_meta.*,src/lib/games.pl,src/lib/config_editor.pl,src/games_admin.cgi
+alwaysApply: false
+---
+
+# LGSM, games meta, config editor
+
+## LGSM config layers (low → high priority)
+
+1. `lgsm/config-default/.../_default.cfg` — **never write**
+2. `lgsm/config-lgsm/common.cfg` — shared per Unix user only
+3. `lgsm/config-lgsm/$script/$script.cfg` — per instance (port, slots, name)
+
+`_has_user_config`: template with comments only does **not** count — need real `key=value`.
+
+## games_meta
+
+- Static: `src/lib/games_meta.json`; local: `$config_directory/games_meta_local.json`.
+- `open` without `:encoding(UTF-8)` for JSON decode (bytes, not Unicode).
+- Local override replaces entire `fields` array — put durable extras at game level (`field_hints`).
+- Non-LGSM: `source=steamcmd` in meta; `get_custom_game_list()`, skip LGSM install step.
+- Tests: `_reset_meta_cache()` between fixtures.
+
+## Config editor
+
+- Views in `manage.cgi`: `common` | `instance` | `game` via `config_view`.
+- Missing game config: offer `init_game_config` (short start/stop) first.
+- INI: byte-exact write (`>:raw`, `write_file_exact()`); Palworld: only touch `OptionSettings=(...)`.
+- Game config path: resolve via LGSM vars (`servercfgfullpath`), not guess.
+- Filemin links: use `edit_file.cgi?path=&file=` for files, not `/?path=` to a file.
+
+## FTP (ProFTPD)
+
+- Find main config robustly (override, systemd `-c`, defaults).
+- Resolve `Include` relative to including file; expand `conf.d/` directories.
+- Virtual FTP users: CRUD via `ftpasswd` only, not direct `AuthUserFile` writes.

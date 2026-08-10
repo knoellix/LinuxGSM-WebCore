@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 use strict;
 use warnings;
-use Test::More tests => 18;
+use Test::More tests => 22;
 use File::Temp qw(tempdir);
 use FindBin qw($Bin);
 
@@ -9,8 +9,10 @@ chdir "$Bin/.." or die "Cannot chdir: $!";
 
 require "$Bin/stubs.pl";
 sub error { die "error: $_[0]\n" }
+sub log_error {}
+sub log_debug {}
 
-our ($config_directory);
+our ($config_directory, $module_root);
 my $tmpdir = tempdir(CLEANUP => 1);
 $config_directory = $tmpdir;
 
@@ -103,11 +105,18 @@ require "$Bin/../src/lib/steam.pl";
     like($content, qr/^# deb cdrom:/m, 'patch_apt_sources: cdrom line commented out');
 }
 
-# --- Test 8: install_steamcmd calls apt-get ---
+# --- Test 8: install_steamcmd delegates apt to module_bootstrap_deps.sh ---
 {
     @logged_cmds = ();
     install_steamcmd();
-    ok(grep { /apt-get.*install.*steamcmd/ } @logged_cmds, 'install_steamcmd calls apt-get install steamcmd');
+    ok(
+        (grep { /module_bootstrap_deps\.sh/ && /steamcmd/ } @logged_cmds),
+        'install_steamcmd calls module_bootstrap_deps.sh steamcmd'
+    );
+    ok(
+        !(grep { /\bapt-get\b/ } @logged_cmds),
+        'install_steamcmd does not call apt-get directly'
+    );
 }
 
 # --- Test 9: load_steam_accounts returns arrayref ---
@@ -173,4 +182,54 @@ require "$Bin/../src/lib/steam.pl";
     my $accounts = load_steam_accounts();
     is($accounts->[0]{'username'}, 'user2', 'remove_steam_account: remaining entry correct');
     remove_steam_account('user2');
+}
+
+# --- Test 19: login_session_dispatch_verified detects worker status ---
+{
+    my ($token, $dir) = create_login_session();
+    mkdir "$dir" unless -d $dir;
+    open(my $sf, '>', "$dir/status") or die $!;
+    print $sf "connecting\n";
+    close $sf;
+    ok(login_session_dispatch_verified($token), 'login_session_dispatch_verified: true when status exists');
+    cleanup_session($token);
+}
+
+# --- Test 20: start_login_session returns token when worker starts ---
+{
+    $module_root = $tmpdir;
+    mkdir "$tmpdir/scripts" unless -d "$tmpdir/scripts";
+    my $worker = "$tmpdir/scripts/steam_login_worker.sh";
+    open(my $wf, '>', $worker) or die $!;
+    print $wf "#!/bin/bash\n";
+    print $wf 'echo connecting > "$1/status"' . "\n";
+    print $wf 'rm -f "$3"' . "\n";
+    close $wf;
+    chmod(0755, $worker);
+    {
+        no warnings 'redefine';
+        *main::_steam_background_exec = sub {
+            my ($cmd) = @_;
+            if ($cmd =~ /steam_login_worker\.sh/) {
+                my ($sd) = $cmd =~ /nohup '[^']+' '([^']+)'/;
+                if ($sd) {
+                    open(my $sf, '>', "$sd/status") or return 1;
+                    print $sf "connecting\n";
+                    close $sf;
+                }
+                return 0;
+            }
+            return 1;
+        };
+    }
+    my $tok = start_login_session('loginuser', 'secret');
+    ok(defined $tok && $tok =~ /^[0-9a-f]{32}$/, 'start_login_session returns token when worker starts');
+    cleanup_session($tok) if $tok;
+}
+
+# --- Test 21: start_login_session returns undef when worker missing ---
+{
+    my $worker = "$tmpdir/scripts/steam_login_worker.sh";
+    unlink $worker if -f $worker;
+    is(start_login_session('failuser', 'secret'), undef, 'start_login_session returns undef when worker missing');
 }

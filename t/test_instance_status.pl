@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 use strict;
 use warnings;
-use Test::More tests => 8;
+use Test::More tests => 10;
 use File::Temp qw(tempdir);
 use FindBin qw($Bin);
 
@@ -59,3 +59,17 @@ close($fh);
 my $flex = get_instance_flexible('gs_mc_fresh');
 ok(defined $flex, 'get_instance_flexible returns hash for fresh instance');
 is($flex->{'instance_status'}, 'fresh', 'get_instance_flexible has instance_status=fresh');
+
+# Test 9+10: get_instance keeps registry instance_status when script file exists
+my $srv = "$tmp/serverdir";
+require File::Path;
+File::Path::make_path("$srv/lgsm/config-lgsm/mcserver");
+open(my $sf, '>', "$srv/mcserver") or die $!;
+close($sf);
+chmod 0755, "$srv/mcserver";
+open($fh, '>', "$tmp/instances") or die $!;
+print $fh "gs_mc_live\tgs_mc\t$srv/mcserver\tprovisioned\t\t\t\tlgsm_ready\n";
+close($fh);
+my $live = get_instance('gs_mc_live');
+ok($live, 'get_instance when script exists');
+is($live->{'instance_status'}, 'lgsm_ready', 'instance_status preserved when script exists');

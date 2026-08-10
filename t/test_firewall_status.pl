@@ -3,6 +3,9 @@
 use strict;
 use warnings;
 use Test::More tests => 4;
+use FindBin qw($Bin);
+
+chdir "$Bin/.." or die "Cannot chdir to repo root: $!\n";
 use lib 'src/lib';
 
 sub error { die "error: $_[0]\n"; }

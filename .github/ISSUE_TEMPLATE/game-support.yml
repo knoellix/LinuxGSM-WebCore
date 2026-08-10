@@ -1,0 +1,51 @@
+name: Game server support / metadata
+description: Add or improve support for a specific game (LGSM / SteamCMD / Wine)
+title: "[game] "
+labels: ["game-support"]
+body:
+  - type: input
+    id: game
+    attributes:
+      label: Game name
+      placeholder: e.g. Valheim, ARK, …
+    validations:
+      required: true
+  - type: input
+    id: shortname
+    attributes:
+      label: LinuxGSM shortname / script (if known)
+      placeholder: e.g. vhserver, pwserver
+  - type: dropdown
+    id: source
+    attributes:
+      label: Install / runtime source
+      options:
+        - LinuxGSM (lgsm)
+        - SteamCMD / native
+        - Wine / SteamCMD
+        - Unknown
+    validations:
+      required: true
+  - type: dropdown
+    id: tested
+    attributes:
+      label: Have you tested this with LinuxGSM-WebCore?
+      options:
+        - Yes — works for me
+        - Partially
+        - No — metadata / docs only request
+        - Broken — describe below
+    validations:
+      required: true
+  - type: textarea
+    id: need
+    attributes:
+      label: What should be added or fixed?
+      description: Ports, config paths, apt deps, Wine, query, wiki notes, …
+    validations:
+      required: true
+  - type: textarea
+    id: refs
+    attributes:
+      label: References
+      description: LinuxGSM docs, Steam app id, server files layout

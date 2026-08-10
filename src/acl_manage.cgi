@@ -48,8 +48,23 @@ if ($action eq 'save_acl') {
         : ($in{'can_manage_ftp'} ? 1 : 0);
 
     &save_module_acl(\%acl, $target_user, $module_name);
+    my %check = &get_module_acl($target_user, $module_name);
+    my $check_role = $check{'role'} // '';
+    $check_role eq $role
+        or &error($text{'acl_save_failed'} || 'Berechtigungen konnten nicht gespeichert werden.');
+    if ($role ne 'admin') {
+        my $want_servers = $acl{'servers'} // '';
+        my $got_servers  = $check{'servers'} // '';
+        $got_servers eq $want_servers
+            or &error($text{'acl_save_failed'} || 'Berechtigungen konnten nicht gespeichert werden.');
+        my $want_ftp = $acl{'can_manage_ftp'} ? 1 : 0;
+        my $got_ftp  = ($check{'can_manage_ftp'} // 0) ? 1 : 0;
+        $got_ftp == $want_ftp
+            or &error($text{'acl_save_failed'} || 'Berechtigungen konnten nicht gespeichert werden.');
+    }
     &log_action('acl_saved', $target_user, {role => $role});
     &redirect("acl_manage.cgi?xnavigation=1");
+    exit;
 }
 
 # --- Edit form ---

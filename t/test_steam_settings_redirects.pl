@@ -2,8 +2,11 @@
 use strict;
 use warnings;
 use Test::More;
+use FindBin qw($Bin);
 
-my $file = 'src/steam_settings.cgi';
+chdir "$Bin/.." or die "Cannot chdir to repo root: $!\n";
+
+my $file = 'src/integrations.cgi';
 open(my $fh, '<', $file) or die "Cannot open $file: $!";
 my @lines = <$fh>;
 close($fh);
@@ -14,7 +17,7 @@ for (my $i = 0; $i < @lines; $i++) {
     push @redirects, $i;
 }
 
-ok(scalar(@redirects) > 0, 'steam_settings.cgi contains redirects');
+ok(scalar(@redirects) > 0, 'integrations.cgi contains redirects');
 
 for my $idx (@redirects) {
     my $has_exit = 0;

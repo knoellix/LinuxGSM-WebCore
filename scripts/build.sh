@@ -3,11 +3,15 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
+
+# shellcheck source=lib/term_ui.sh
+. "$SCRIPT_DIR/lib/term_ui.sh"
 
 # Version aus src/module.info lesen
 VERSION=$(grep '^version=' "$REPO_ROOT/src/module.info" | cut -d= -f2)
 if [ -z "$VERSION" ]; then
-    echo "ERROR: Could not read version from src/module.info" >&2
+    tui_error "Could not read version from src/module.info"
     exit 1
 fi
 
@@ -15,24 +19,28 @@ fi
 if [ -n "${TAG:-}" ]; then
     TAG_VERSION="${TAG#v}"
     if [ "$TAG_VERSION" != "$VERSION" ]; then
-        echo "ERROR: Tag version ($TAG_VERSION) != module.info version ($VERSION)" >&2
+        tui_error "Tag version ($TAG_VERSION) != module.info version ($VERSION)"
         echo "Update src/module.info before tagging." >&2
         exit 1
     fi
 fi
 
-echo "==> Building linuxgsm-webcore v${VERSION}..."
+tui_step "Building linuxgsm-webcore v${VERSION}..."
 
 # Tests ausführen
-echo "==> Running tests..."
+tui_step "Running tests..."
 TEST_FAILED=0
 while IFS= read -r -d '' test_file; do
-    if ! perl "$test_file"; then
+    if perl "$test_file" >/dev/null 2>&1; then
+        tui_ok "$test_file"
+    else
+        tui_fail "$test_file"
+        perl "$test_file" || true
         TEST_FAILED=1
     fi
 done < <(find "$REPO_ROOT/t" -name "test_*.pl" -print0 | sort -z)
 if [ "$TEST_FAILED" -ne 0 ]; then
-    echo "ERROR: Tests failed. Aborting build." >&2
+    tui_error "Tests failed. Aborting build."
     exit 1
 fi
 
@@ -48,7 +56,7 @@ cp -r "$REPO_ROOT/src/." "$TMP_MODULE/"
 # .wbm bauen (tar.gz mit Modul-Verzeichnis an der Wurzel)
 WBM_FILE="$DIST_DIR/linuxgsm-webcore-${VERSION}.wbm"
 tar czf "$WBM_FILE" -C "$REPO_ROOT/tmp" linuxgsm-webcore/
-echo "==> Built: $WBM_FILE"
+tui_ok "Built: $WBM_FILE"
 
 # install.sh generieren
 INSTALL_SH="$DIST_DIR/install.sh"
@@ -87,11 +95,11 @@ echo "Webmin → Server → LinuxGSM Game Server Manager"
 INSTALL_EOF
 
 chmod +x "$INSTALL_SH"
-echo "==> Generated: $INSTALL_SH"
+tui_ok "Generated: $INSTALL_SH"
 
 # tmp/ aufräumen
 rm -rf "$REPO_ROOT/tmp"
 
-echo "==> Build complete."
+tui_done "Build complete."
 echo "    $WBM_FILE"
 echo "    $INSTALL_SH"

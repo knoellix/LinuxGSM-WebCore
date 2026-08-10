@@ -10,7 +10,7 @@
 # i.e. an empty hash made every operator a de-facto admin.
 use strict;
 use warnings;
-use Test::More tests => 14;
+use Test::More tests => 17;
 use FindBin qw($Bin);
 use File::Temp qw(tempdir);
 chdir "$Bin/.." or die "cannot chdir: $!";
@@ -25,7 +25,7 @@ require 't/stubs.pl';
 
 our (%access, $remote_user, $config_directory, $module_name);
 our ($_effective_role_cache, $_module_acl_cache);
-our $stub_acl_dir;
+our ($stub_acl_dir, $module_root, $module_root_directory);
 
 $remote_user = 'operator-bob';
 $module_name = 'linuxgsm-webcore';
@@ -93,10 +93,8 @@ is_deeply(
 # Admin recovery: when the admin user has NO per-user ACL file at all,
 # acl.pl must still resolve them as admin via either:
 #   (a) acl::master_admin returning true, OR
-#   (b) a defaultacl that ships role=admin.
-# Otherwise the admin lands on the safe 'operator' default and loses
-# every admin button + every instance — exactly the regression we just
-# saw in production.
+#   (b) an explicit per-user ACL file with role=admin.
+# The shipped defaultacl is role=operator — it must NOT grant admin.
 # ------------------------------------------------------------------
 {
     # (a) master_admin returns true → role admin even with empty %access
@@ -112,24 +110,54 @@ is_deeply(
 }
 
 {
-    # (b) defaultacl shipped at $module_root/defaultacl says role=admin
-    our $module_root;
+    # (b) explicit per-user role=admin → admin even when defaultacl is operator
     my $tmp_root = tempdir(CLEANUP => 1);
     open(my $fh, '>', "$tmp_root/defaultacl") or die $!;
-    print $fh "role=admin\nservers=\ncan_manage_ftp=1\n";
+    print $fh "role=operator\nservers=\ncan_manage_ftp=1\n";
     close $fh;
 
+    my $tmp_acl = tempdir(CLEANUP => 1);
+    mkdir "$tmp_acl/$module_name";
+    open($fh, '>', "$tmp_acl/$module_name/admin-user") or die $!;
+    print $fh "role=admin\nservers=\ncan_manage_ftp=1\n";
+    close $fh;
+    $stub_acl_dir = $tmp_acl;
+
     local $module_root = $tmp_root;
-    local $remote_user = 'admin-no-acl-file';
-    local $config_directory = tempdir(CLEANUP => 1);  # empty
+    local $remote_user = 'admin-user';
+    local $config_directory = tempdir(CLEANUP => 1);
 
     reset_caches();
     %access = ();
     is(effective_role(), 'admin',
-        'effective_role: defaultacl recovers admin role for users without per-user file');
-    ok(is_admin(), 'is_admin: defaultacl admin → true');
+        'effective_role: explicit per-user role=admin overrides safe defaultacl');
+    ok(is_admin(), 'is_admin: per-user role=admin → true');
     is_deeply([allowed_servers()], ['*'],
-        'allowed_servers: admin → wildcard, never the defaultacl empty servers field');
+        'allowed_servers: admin → wildcard');
+    $stub_acl_dir = '/nonexistent';
+}
+
+{
+    # Safe defaultacl: user without per-user file → operator, not admin
+    my $tmp_root = tempdir(CLEANUP => 1);
+    open(my $fh, '>', "$tmp_root/defaultacl") or die $!;
+    print $fh "role=operator\nservers=\ncan_manage_ftp=1\n";
+    close $fh;
+
+    local $module_root = $tmp_root;
+    local $remote_user = 'new-webmin-user';
+    local $config_directory = tempdir(CLEANUP => 1);
+
+    no warnings 'redefine';
+    *acl::master_admin = sub { return 0 };
+
+    reset_caches();
+    %access = ();
+    is(effective_role(), 'operator',
+        'effective_role: safe defaultacl → operator for users without per-user file');
+    ok(!is_admin(), 'is_admin: safe defaultacl must not grant admin');
+    is_deeply([allowed_servers()], [],
+        'allowed_servers: operator with empty servers sees none');
 }
 
 # ------------------------------------------------------------------
@@ -153,30 +181,35 @@ is_deeply(
 }
 
 # ------------------------------------------------------------------
-# Admin recovery via $module_root_directory (Webmin's own variable name).
+# Explicit per-user admin via $module_root_directory (Webmin's own variable name).
 # index.cgi does NOT alias $module_root_directory → $module_root the way
 # manage.cgi does, so _ctx_module_root must also accept the longer name.
-# Without this, every admin without a per-user ACL file lands on the
-# 'operator' default — exactly the regression seen in production.
 # ------------------------------------------------------------------
 {
-    our ($module_root, $module_root_directory);   # declare for `local`
     my $tmp_root = tempdir(CLEANUP => 1);
     open(my $fh, '>', "$tmp_root/defaultacl") or die $!;
-    print $fh "role=admin\nservers=\ncan_manage_ftp=1\n";
+    print $fh "role=operator\nservers=\ncan_manage_ftp=1\n";
     close $fh;
 
-    local $module_root = undef;                 # not set by index.cgi
-    local $module_root_directory = $tmp_root;   # what Webmin sets natively
+    my $tmp_acl = tempdir(CLEANUP => 1);
+    mkdir "$tmp_acl/$module_name";
+    open($fh, '>', "$tmp_acl/$module_name/admin-user") or die $!;
+    print $fh "role=admin\nservers=\ncan_manage_ftp=1\n";
+    close $fh;
+    $stub_acl_dir = $tmp_acl;
+
+    local $module_root = undef;
+    local $module_root_directory = $tmp_root;
     local $remote_user = 'admin-user';
-    local $config_directory = tempdir(CLEANUP => 1);  # no per-user file
+    local $config_directory = tempdir(CLEANUP => 1);
 
     no warnings 'redefine';
-    *acl::master_admin = sub { return 0 };      # not a master admin
+    *acl::master_admin = sub { return 0 };
 
     reset_caches();
     %access = ();
     is(effective_role(), 'admin',
-        'effective_role: defaultacl read via $module_root_directory (index.cgi case)');
-    ok(is_admin(), 'is_admin: $module_root_directory fallback → true');
+        'effective_role: per-user admin read via $module_root_directory (index.cgi case)');
+    ok(is_admin(), 'is_admin: per-user admin via $module_root_directory → true');
+    $stub_acl_dir = '/nonexistent';
 }

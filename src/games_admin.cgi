@@ -32,7 +32,8 @@ if ($action eq 'delete') {
     my $script = $in{'script'} // '';
     $script =~ s/[^a-z0-9_\-]//g;
     if ($script) {
-        &delete_local_game_meta($script);
+        &delete_local_game_meta($script)
+            or &error($text{'games_admin_delete_failed'} || 'Spiel konnte nicht gelöscht werden.');
     }
     &redirect("games_admin.cgi?xnavigation=1");
     exit;
@@ -66,7 +67,7 @@ if ($action eq 'save') {
               label_de => 'Port', label_en => 'Port',
               default  => "$port" },
         ],
-    });
+    }) or &error($text{'games_admin_save_failed'} || 'Spiel konnte nicht gespeichert werden.');
     &redirect("games_admin.cgi?xnavigation=1");
     exit;
 }

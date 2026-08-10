@@ -3,16 +3,20 @@ use strict;
 use warnings;
 use FindBin qw($Bin);
 use lib "$Bin/..";
+use Test::More tests => 6;
 chdir "$Bin/.." or die "Cannot chdir: $!";
 
-print "1..6\n";
-
-sub pass { print "ok - $_[0]\n" }
-sub fail { print "not ok - $_[0]\n" }
+# Mock acl::master_admin — never a Webmin master admin in these tests
+package acl;
+sub master_admin { return 0 }
+package main;
 
 # --- stubs ---
-our (%text, %in, %access, $module_name);
-$module_name = 'linuxgsm-webcore';
+our (%text, %in, %access, $module_name, $remote_user, $config_directory,
+     $_effective_role_cache, $_module_acl_cache);
+$module_name       = 'linuxgsm-webcore';
+$remote_user       = 'test_manage_actions';
+$config_directory  = '/nonexistent';
 %text = (
     err_invalid_input  => 'Invalid input',
     err_not_found      => 'Not found',
@@ -38,55 +42,55 @@ sub html_escape {
 sub foreign_require { return 1 }
 sub get_module_acl  { return () }
 sub save_module_acl { return 1 }
+
 require './src/lib/acl.pl';
-{ no warnings 'redefine'; *list_webmin_users = sub { return ('admin', 'user1') }; }
+
+# Reset per-request ACL caches between blocks (same pattern as t/test_acl.pl).
+sub _acl_reset {
+    $_effective_role_cache = undef;
+    $_module_acl_cache     = undef;
+}
 
 # 1. can_create returns true for admin role
 {
+    _acl_reset();
     %access = (role => 'admin');
-    can_create()
-        ? pass('can_create true for admin role')
-        : fail('can_create should return true for admin role');
+    ok( can_create(), 'can_create true for admin role' );
 }
 
 # 2. can_create returns false for operator (no role = operator default)
 {
+    _acl_reset();
     %access = ();
-    !can_create()
-        ? pass('can_create false for operator (no role key)')
-        : fail('can_create should return false for operator');
+    ok( !can_create(), 'can_create false for operator (no role key)' );
 }
 
 # 3. can_scan returns true for admin role
 {
+    _acl_reset();
     %access = (role => 'admin');
-    can_scan()
-        ? pass('can_scan true for admin role')
-        : fail('can_scan should return true for admin role');
+    ok( can_scan(), 'can_scan true for admin role' );
 }
 
 # 4. user_can_manage: wildcard grants access to any instance
 {
+    _acl_reset();
     %access = (servers => '*');
-    user_can_manage('anyserver')
-        ? pass('user_can_manage: wildcard grants access')
-        : fail('user_can_manage: wildcard should grant access');
+    ok( user_can_manage('anyserver'), 'user_can_manage: wildcard grants access' );
 }
 
 # 5. user_can_manage: explicit list only grants access to listed instance
 {
+    _acl_reset();
     %access = (servers => 'mcserver valheim');
     my $ok_mc  = user_can_manage('mcserver');
     my $ok_ark = user_can_manage('arkserver');
-    ($ok_mc && !$ok_ark)
-        ? pass('user_can_manage: explicit list grants correct access')
-        : fail('user_can_manage: explicit list grants wrong access');
+    ok( $ok_mc && !$ok_ark, 'user_can_manage: explicit list grants correct access' );
 }
 
-# 6. is_admin: false when specific servers listed
+# 6. is_admin: false when specific servers listed (operator)
 {
+    _acl_reset();
     %access = (servers => 'mcserver');
-    !is_admin()
-        ? pass('is_admin returns 0 for restricted user')
-        : fail('is_admin should return 0 for restricted user');
+    ok( !is_admin(), 'is_admin returns 0 for restricted user' );
 }

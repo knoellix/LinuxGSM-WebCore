@@ -1,0 +1,55 @@
+---
+description: Instance registry, provisioning, jobs, live log, monitoring (per-user cron)
+globs: src/lib/instance.pl,src/lib/jobs.pl,src/lib/provision.pl,src/lib/monitor.pl,src/lib/live_log.pl,src/manage.cgi,src/wizard.cgi,src/provision.cgi,src/jobs.cgi,src/job_live.cgi
+alwaysApply: false
+---
+
+# Instances, jobs, monitoring
+
+## Registry
+
+- Primary: TSV at `$config_directory/instances`.
+- `register_instance($id, $user, $script_path, \%opts)` — 4th arg is **Hashref** (`source`, `sftp_user`, `owners`, `steam_account`, `instance_status`).
+- Fresh/lgsm_ready lookup: `get_instance_flexible($id)` (script may not exist on disk yet).
+- Kind: `instance_monitor_kind($source)` / `instance_is_lgsm($source)` — `lgsm` vs `native` (steamcmd/wine).
+
+## Provisioning (two-stage)
+
+1. **Wizard:** Unix user + `/home/{user}/{servername}/` + registry (`fresh`).
+2. **manage.cgi jobs:** LGSM download, game install, updates → `$config_directory/jobs/{job_id}/`.
+
+## Job pointer pattern
+
+- `$config_directory/jobs/$job_id` is a **file** containing `/home/$unix_user/jobs/$job_id/`.
+- Read: `-f` check + `tr -d '\r\n'`.
+- Shell: `_shell_safe_job_dir($job_id)` not raw `_job_dir`.
+- Tests: set `$_jobs_home_base = $fake_home`.
+
+## Live log and poll_job
+
+- **Primary UX:** `job_live.cgi` — xterm.js + JSON poll to `manage.cgi?action=poll_job&poll_format=json`.
+- Fallback: `job_live_fallback=1` → inline poll partial in manage.cgi.
+- On job `ok`: `job_live.cgi` / `_manage_poll_job_on_ok` applies `next_status` via `set_instance_status`.
+- Worker outcome: read `$JOB_DIR/status` only — never trust redirect or “started” as success.
+- Preserve MC search params in job_live URLs (`pack_q`, `mod_q`).
+
+## poll_job / next_status
+
+- Worker writes final status to `$JOB_DIR/status` only.
+- `poll_job` + `next_status` URL param → CGI calls `set_instance_status($id, $next_status)` on `ok`.
+
+## Monitoring (per-instance, as game user)
+
+- **No** root `monitor_all.sh` sweep — removed; use per-instance `/etc/cron.d/linuxgsm-webcore-monitor-*` entries.
+- Cron runs **`monitor_instance_user.sh` as the game user** (not root):
+  - `lgsm`: `./script monitor` + status parse
+  - `native`: PID + A2S; restart via `steamcmd_control_user.sh` (no root)
+- Rebuild cron: `rebuild_monitor_cron($module_root, $config_directory)` — call after instance register/delete/status changes; `postinstall.pl` migrates legacy single cron file.
+- State: `$SERVER_DIR/.monitor/state`; max 5 restarts/h → `failed`.
+- Monitor restarts create real jobs (`monitor_restart` action) where applicable.
+- Start/stop from UI: `flock` on server-local lock against click spam.
+
+## source=steamcmd
+
+- Never `./$script details|monitor|status` — forks Wine. Status via `_detect_status_steamcmd` (`run.pid` + `kill(0,$pid)`).
+- `./<script> <action>` wrapper ignores args; defense-in-depth in wrapper case block.

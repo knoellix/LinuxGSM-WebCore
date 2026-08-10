@@ -17,29 +17,9 @@ our $config_directory;
 $main::gconfig{'charset'} = 'utf-8';
 &ReadParse(\%in);
 
-sub _effective_instance_source {
-    my ($inst) = @_;
-    my $src = $inst->{'source'} // '';
-    return $src if $src eq 'steamcmd';
-    my $script_path = $inst->{'script'} // '';
-    (my $server_dir = $script_path) =~ s|/[^/]+$||;
-    return 'steamcmd' if $server_dir && -f "$server_dir/.steam_app_id";
-    return $src || 'lgsm';
-}
-
 sub _instance_status_badge {
     my ($inst) = @_;
-    my $status = 'unknown';
-    my $src = _effective_instance_source($inst);
-    if ($src eq 'steamcmd') {
-        my $script_path = $inst->{'script'} // '';
-        (my $server_dir = $script_path) =~ s|/[^/]+$||;
-        $status = &_detect_status_steamcmd($server_dir);
-    } elsif (($inst->{'instance_status'} // 'installed') ne 'installed') {
-        $status = $inst->{'instance_status'};
-    } else {
-        $status = $inst->{'status'} // 'unknown';
-    }
+    my $status = instance_runtime_status($inst, light => 1);
     my %map = (
         online     => '&#x1F7E2; L&auml;uft',
         running    => '&#x1F7E2; L&auml;uft',
@@ -47,6 +27,7 @@ sub _instance_status_badge {
         stopped    => '&#x1F534; Nicht gestartet',
         fresh      => '&#x1F7E1; Bereitstellung offen',
         lgsm_ready => '&#x1F7E1; Installation offen',
+        mc_ready   => '&#x1F7E1; Java bereit',
         unknown    => '&#x1F7E1; Unbekannt',
     );
     return $map{$status} || ('&#x1F7E1; ' . &html_escape($status));
@@ -55,15 +36,12 @@ sub _instance_status_badge {
 sub _monitor_status_badge {
     my ($inst, $cfg_dir) = @_;
     my $id = $inst->{'id'};
-    my $s = &read_monitor_state($cfg_dir, $id);
-    my %map = (
-        running    => '&#x1F7E2;',
-        restarting => '&#x1F7E1; ' . ($text{'jobs_status_running'} || '...'),
-        failed     => '&#x1F534; ' . ($text{'monitor_status_failed'}   || 'Fehlgeschlagen'),
-        paused     => '&#x26AB; '  . ($text{'monitor_status_paused'}   || 'Pausiert'),
-        disabled   => '&#x26AB; '  . ($text{'monitor_status_disabled'} || 'Deaktiviert'),
-    );
-    return $map{$s->{'status'}} // '&#x1F7E2;';
+    my $script_path = $inst->{'script'} // '';
+    (my $server_dir = $script_path) =~ s|/[^/]+$||;
+    my $s = &read_monitor_state($server_dir, $cfg_dir, $id);
+    my $status = $s->{'status'} // 'disabled';
+    my $key = 'monitor_status_' . $status;
+    return &html_escape($text{$key} // $status);
 }
 
 &header($text{'index_title'}, '');
@@ -83,8 +61,8 @@ if (&can_scan()) {
     print &ui_submit($text{'index_btn_ftp'});
     print &ui_form_end();
 
-    print &ui_form_start('steam_settings.cgi', 'get');
-    print &ui_submit($text{'steam_btn'}, undef, undef, undef, 'btn-default');
+    print &ui_form_start('integrations.cgi', 'get');
+    print &ui_submit($text{'integrations_btn'}, undef, undef, undef, 'btn-default');
     print &ui_form_end();
 }
 

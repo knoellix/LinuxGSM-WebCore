@@ -94,11 +94,12 @@ sub save_module_acl {
     my ($acl_ref, $user, $module) = @_;
     my $dir = "$stub_acl_dir/$module";
     mkdir $dir unless -d $dir;
-    open(my $fh, '>', "$dir/$user") or return;
+    open(my $fh, '>', "$dir/$user") or return 0;
     for my $k (sort keys %$acl_ref) {
         print $fh "$k=$acl_ref->{$k}\n";
     }
     close($fh);
+    return 1;
 }
 
 # Stubs: log_* — no-op so libs can call them without require logging.pl

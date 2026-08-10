@@ -135,7 +135,7 @@ printf '%s\\n' "\$(date -Is) Windrose: starting wine on DISPLAY=\$DISPLAY (manua
 # rejects with "wrong ELF class: ELFCLASS64" noise on every start (harmless but confusing).
 # UE5 dedicated server CLI args: -Port (game), -QueryPort (Steam A2S), -BeaconPort (UE beacon).
 # Without these, every instance binds the same UE5 defaults (7777/27015/15000) and the second one
-# fails silently — see CLAUDE.md §8.12 multi-instance isolation notes.
+# fails silently — see .cursor/rules/workers-shell.mdc (multi-instance port isolation)
 /usr/bin/wine "$SERVERFILES/$WINDROSE_DIRECT_BIN" -log -Port=$INSTANCE_GAME_PORT -QueryPort=$INSTANCE_QUERY_PORT -BeaconPort=$INSTANCE_BEACON_PORT 2>&1 | tee -a "\$LOGFILE"
 RC=\${PIPESTATUS[0]}
 echo "wine exited with rc=\$RC at \$(date -Is)" >>"\$DIAG"

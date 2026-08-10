@@ -2,7 +2,7 @@
 # t/test_games_meta.pl — Tests for src/lib/games_meta.pl
 use strict;
 use warnings;
-use Test::More tests => 11;
+use Test::More tests => 19;
 use File::Temp qw(tempdir);
 use FindBin qw($Bin);
 use lib "$Bin/..";
@@ -146,6 +146,7 @@ write_base_json(<<'JSON');
     "source": "steamcmd",
     "steam_app_id": 4129620,
     "runtime": "wine",
+    "live_log_path": "serverfiles/R5/Saved/Logs/R5.log",
     "game_config_path": "serverfiles/R5/ServerDescription.json",
     "game_config_format": "json",
     "fields": [
@@ -169,3 +170,44 @@ is(&get_game_display_name('windrose'), 'Windrose (custom)',
     'local override wins for shared keys (name)');
 is(&get_game_config_path('windrose'), 'serverfiles/R5/ServerDescription.json',
     'local override inherits base-only keys (game_config_path)');
+is(&get_game_live_log_path('windrose'), 'serverfiles/R5/Saved/Logs/R5.log',
+    'local override inherits live_log_path from base');
+
+# ------------------------------------------------------------------
+# Test 12-14: get_game_live_log_path safety and unknown
+# ------------------------------------------------------------------
+unlink "$tmpdir/games_meta_local.json" if -f "$tmpdir/games_meta_local.json";
+write_base_json(<<'JSON');
+{
+  "badlog": {
+    "name": "Bad",
+    "fields": [],
+    "live_log_path": "foo/../../../etc/passwd"
+  },
+  "abslog": {
+    "name": "Abs",
+    "fields": [],
+    "live_log_path": "/var/log/syslog"
+  },
+  "goodlog": {
+    "name": "Good",
+    "fields": [],
+    "live_log_path": "logs/game.log"
+  }
+}
+JSON
+&_reset_meta_cache();
+is(&get_game_live_log_path('badlog'), '', 'live_log_path rejects ..');
+is(&get_game_live_log_path('abslog'), '', 'live_log_path rejects absolute path');
+is(&get_game_live_log_path('goodlog'), 'logs/game.log', 'live_log_path returns relative path');
+
+# ------------------------------------------------------------------
+# Test 15-17: save_local_game_meta / delete_local_game_meta return values
+# ------------------------------------------------------------------
+ok(&save_local_game_meta('testgame', {
+    name => 'Test Game', source => 'steamcmd', steam_app_id => 12345,
+    fields => [{ key => 'port', type => 'port', default => '27015' }],
+}), 'save_local_game_meta returns 1 on success');
+is(&get_game_display_name('testgame'), 'Test Game', 'save_local_game_meta: entry readable after save');
+ok(&delete_local_game_meta('testgame'), 'delete_local_game_meta returns 1 on success');
+is(&get_game_display_name('testgame'), 'testgame', 'delete_local_game_meta: falls back to script name');

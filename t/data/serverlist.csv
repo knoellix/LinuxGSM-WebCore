@@ -1,4 +1,5 @@
 shortname,gameservername,gamename,os
 mcserver,mcserver,Minecraft Java Edition,linux
+pw,pwserver,Palworld,linux
 csgoserver,csgoserver,Counter-Strike: Global Offensive,linux
 tf2server,tf2server,Team Fortress 2,linux

@@ -7,32 +7,24 @@ do '../ui-lib.pl';
 &init_config();
 
 require './lib/core.pl';
+require './lib/module_config.pl';
 require './lib/acl.pl';
 
 our (%text, %config, %in);
 &ReadParse(\%in);
-&is_admin() or &error($text{'err_acl_admin_only'} || 'Access denied');
 
+# Legacy save handler for bookmarks to the old config.cgi page.
 if ($in{'save'}) {
-    $config{debug_logging} = $in{'debug_logging'} ? 1 : 0;
-    &save_module_config(\%config);
-    &redirect('config.cgi?xnavigation=1');
+    &is_admin() or &error($text{'err_acl_admin_only'} || 'Access denied');
+    &module_config_sync_in();
+    $config{debug_logging} = &module_config_bool($in{'debug_logging'});
+    &module_config_save()
+        or &error($text{'integrations_save_failed'} || 'Einstellungen konnten nicht gespeichert werden.');
+    &module_config_flash_mark_ok()
+        or &error($text{'integrations_save_failed'} || 'Einstellungen konnten nicht gespeichert werden.');
+    &redirect('integrations.cgi?saved=1&xnavigation=1');
     exit;
 }
 
-&header($text{'config_title'}, '');
-
-print &ui_form_start('config.cgi', 'post');
-print &ui_table_start($text{'config_title'}, "width=100%", 2);
-
-print &ui_table_row(
-    $text{'config_debug_logging'},
-    &ui_radio('debug_logging', $config{debug_logging} ? 1 : 0,
-        [[1, $text{'yes'}], [0, $text{'no'}]])
-);
-
-print &ui_table_end();
-print &ui_submit($text{'acl_manage_save'} || 'Save');
-print &ui_form_end();
-
-&footer('index.cgi', $text{'index_title'});
+&redirect('integrations.cgi?xnavigation=1');
+exit;

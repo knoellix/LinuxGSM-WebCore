@@ -1,0 +1,38 @@
+name: Language / UI string
+description: Missing, wrong, or inconsistent DE/EN UI text
+title: "[lang] "
+labels: ["language"]
+body:
+  - type: dropdown
+    id: lang
+    attributes:
+      label: Language
+      options:
+        - de
+        - en
+        - both / key parity
+    validations:
+      required: true
+  - type: input
+    id: key
+    attributes:
+      label: Lang key (if known)
+      description: e.g. manage_title — leave empty if unknown
+      placeholder: manage_something
+  - type: textarea
+    id: where
+    attributes:
+      label: Where in the UI
+      description: Page / action / screenshot description
+    validations:
+      required: true
+  - type: textarea
+    id: current
+    attributes:
+      label: Current text (wrong or missing)
+  - type: textarea
+    id: suggested
+    attributes:
+      label: Suggested DE and/or EN text
+    validations:
+      required: true

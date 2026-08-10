@@ -1,8 +1,10 @@
 #!/bin/bash
-# steamcmd_install.sh — root entry point for non-LGSM game install
-# Root responsibilities ONLY: job tracking, apt dependencies, dispatch to game user.
+# steamcmd_install.sh — root entry point for non-LGSM game install.
+# Root responsibilities ONLY: job tracking + privilege drop (su) to the game user.
+# apt system dependencies are installed once by provision_deps.sh (root) at
+# provisioning time — this script no longer touches apt.
 # ALL file creation inside SERVER_DIR is done by steamcmd_install_user.sh (as game user).
-# Usage: steamcmd_install.sh <job_dir> <unix_user> <server_dir> <steam_app_id> [validate] [script_name]
+# Usage: steamcmd_install.sh <job_dir> <unix_user> <server_dir> <steam_app_id> [validate] [script_name] [preclean]
 set -euo pipefail
 
 JOB_DIR="$1"
@@ -11,9 +13,12 @@ SERVER_DIR="$3"
 STEAM_APP_ID="$4"
 VALIDATE="${5:-}"
 SCRIPT_NAME="${6:-}"
+PRECLEAN="${7:-}"
 
-echo $$ > "$JOB_DIR/pgid"
-exec >> "$JOB_DIR/output" 2>&1
+_SCRIPT_LIB="$(cd "$(dirname "$0")"/lib && pwd)"
+# shellcheck source=lib/job_log.sh
+. "$_SCRIPT_LIB/job_log.sh"
+job_log_init "$JOB_DIR" "$UNIX_USER"
 
 _PRIO_LIB_DIR="${MODULE_ROOT:-}/scripts/lib"
 if [ ! -f "$_PRIO_LIB_DIR/prio.sh" ]; then
@@ -45,22 +50,7 @@ trap on_exit EXIT
 echo "=== steamcmd_install revision: 2026-05-10-user-owned-v1 ==="
 echo "Process priority: PRIO_LOW=[$PRIO_LOW]"
 
-# Read metadata — no file creation, root reads world-readable JSON
-APT_DEPS=$(MODULE_ROOT="${MODULE_ROOT:-}" STEAM_APP_ID="$STEAM_APP_ID" perl -e '
-use JSON::PP;
-my $meta_file = "$ENV{MODULE_ROOT}/lib/games_meta.json";
-open(my $f, "<", $meta_file) or exit 0;
-local $/;
-my $data = decode_json(<$f>);
-for my $k (keys %$data) {
-    if (($data->{$k}{steam_app_id} // 0) == $ENV{STEAM_APP_ID}) {
-        my $deps = $data->{$k}{apt_deps} // [];
-        print join(" ", @$deps);
-        last;
-    }
-}
-' 2>/dev/null || true)
-
+# Read metadata — no file creation, root reads world-readable JSON.
 RUNTIME_MODE=$(MODULE_ROOT="${MODULE_ROOT:-}" STEAM_APP_ID="$STEAM_APP_ID" perl -e '
 use JSON::PP;
 my $meta_file = "$ENV{MODULE_ROOT}/lib/games_meta.json";
@@ -74,29 +64,8 @@ for my $k (keys %$data) {
 }
 ' 2>/dev/null || true)
 
-# --- ROOT PHASE: apt install (only root can do this) ---
-echo "=== Installing apt dependencies ==="
-if [ -n "$APT_DEPS" ]; then
-    dpkg --add-architecture i386 2>/dev/null || true
-    apt-get update -qq
-    # shellcheck disable=SC2086
-    if ! apt-get install -y $APT_DEPS; then
-        echo "hint_package_not_found" > "$JOB_DIR/error_hint"
-        set_final_status "failed"
-        exit 1
-    fi
-fi
-
-if [ "${RUNTIME_MODE:-}" = "wine" ]; then
-    if ! apt-get install -y winbind winetricks cabextract xvfb xauth; then
-        echo "hint_wine_required" > "$JOB_DIR/error_hint"
-        set_final_status "failed"
-        exit 1
-    fi
-fi
-
-# Ensure SERVER_DIR is owned by game user (may have been created by wizard as root)
-chown "$UNIX_USER":"$UNIX_USER" "$SERVER_DIR" 2>/dev/null || true
+# apt dependencies were installed once by provision_deps.sh (root) at
+# provisioning time — nothing to install here.
 
 # --- USER PHASE: all SERVER_DIR work as game user ---
 # No files inside SERVER_DIR are created by root. steamcmd_install_user.sh owns everything.
@@ -108,13 +77,14 @@ safe_sd="${SCRIPT_DIR//\'/\'\\\'\'}"
 safe_rt="${RUNTIME_MODE//\'/\'\\\'\'}"
 safe_validate="${VALIDATE//\'/\'\\\'\'}"
 safe_sn="${SCRIPT_NAME//\'/\'\\\'\'}"
+safe_pc="${PRECLEAN//\'/\'\\\'\'}"
 
 echo "=== Dispatching installation to game user $UNIX_USER ==="
 if ! MODULE_ROOT="${MODULE_ROOT:-}" \
    STEAMCMD_PATH="${STEAMCMD_PATH:-}" \
    $PRIO_LOW su -s /bin/bash -c \
      "bash '$safe_sd/steamcmd_install_user.sh' \
-          '$safe_srv' '$safe_job' '$STEAM_APP_ID' '$safe_validate' '$safe_sn' '$safe_rt'" \
+          '$safe_srv' '$safe_job' '$STEAM_APP_ID' '$safe_validate' '$safe_sn' '$safe_rt' '$safe_pc'" \
      "$UNIX_USER" 2>&1; then
     # error_hint may have been written into JOB_DIR by the user script
     set_final_status "failed"

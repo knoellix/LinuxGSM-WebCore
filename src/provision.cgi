@@ -20,10 +20,13 @@ if ($in{'submit'}) {
     my $err   = &validate_provision($user, $game, $port);
     if ($err) {
         &error($err);
-    } else {
-        &provision_server($user, $game, $port);
-        &redirect('index.cgi');
     }
+    my $result = &provision_server($user, $game, $port);
+    if (!$result || !$result->{'ok'}) {
+        &error($result->{'err'} // $text{'provision_failed'} // 'Provisioning failed.');
+    }
+    &redirect('index.cgi?xnavigation=1');
+    exit;
 } else {
     print &ui_form_start("provision.cgi", "post");
     print &ui_table_start($text{'provision_title'}, "width=100%", 2);

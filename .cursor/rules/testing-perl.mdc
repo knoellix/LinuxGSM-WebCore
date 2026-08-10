@@ -1,0 +1,36 @@
+---
+description: Perl/Webmin test patterns and gotchas
+globs: t/**
+alwaysApply: false
+---
+
+# Testing
+
+## Run
+
+- `perl t/test_<name>.pl` (TAP via Test::More)
+- Stubs: `t/stubs.pl` — keep `%text` complete for validate_* tests
+- Lib tests calling CGI-only subs: add empty stubs to `stubs.pl`
+
+## Gotchas
+
+- `CORE::GLOBAL` mocks in `BEGIN { }`, not `local *` after require
+- STDERR capture: `File::Temp` + `open(STDERR, '>&', $fh)`, not `open(STDERR, '>>', \$scalar)`
+- `\Q...\E` sparingly in tests — breaks path regex when over-applied
+- Job tests: `$_jobs_home_base = $fake_home`, not real `/home`
+- `module_config_bootstrap_standalone`: test with fake `WEBMIN_CONFIG` + `miniserv.conf`, not production paths
+- Network skips: use `SKIP: { skip ..., 1 unless ... }` at top level — not `skip` inside `subtest` (breaks Test::More plan)
+- Precedence: `ref($x) ne 'HASH'` not `!ref($x) eq 'HASH'`
+
+## Minecraft / modpack regression
+
+After modpack/mod/API changes:
+
+- `t/test_mc_modpack.pl`, `t/test_mc_mods.pl`, `t/test_module_config.pl`
+
+## Critical regression
+
+Must pass after security/provisioning changes:
+
+- `t/test_security_guards.pl`
+- `t/test_provisioning_flow.pl`

@@ -7,6 +7,7 @@ do '../ui-lib.pl';
 &init_config();
 
 require './lib/core.pl';
+require './lib/module_config.pl';
 require './lib/acl.pl';
 require './lib/instance.pl';
 require './lib/ftp_proftpd.pl';
@@ -14,10 +15,56 @@ require './lib/logging.pl';
 require './lib/provision.pl';
 
 our (%text, %in, %access, %gconfig);
+our ($module_name, $config_directory, $module_config_directory);
 $main::gconfig{'charset'} = 'utf-8';
 &ReadParse(\%in);
 
+&module_config_sync_in();
+
 &can_scan() or &error($text{'err_access_denied'});
+
+sub _scan_action_failed {
+    &error($text{'scan_action_failed'} || 'Aktion konnte nicht abgeschlossen werden.');
+}
+
+sub _scan_redirect_success {
+    my ($event, $extra_qs) = @_;
+    $event =~ s/[^a-z_]//g;
+    $event or _scan_action_failed();
+    &module_config_flash_mark("scan_$event")
+        or _scan_action_failed();
+    my $url = "scan.cgi?ok=$event";
+    if (defined $extra_qs && $extra_qs =~ /\S/) {
+        $extra_qs =~ s/[^a-zA-Z0-9_=&\-]//g;
+        $url .= "&$extra_qs" if $extra_qs =~ /=/;
+    }
+    $url .= '&xnavigation=1';
+    &redirect($url);
+    exit;
+}
+
+sub _scan_owner_in_registry {
+    my ($instance_id, $webmin_user) = @_;
+    my $reg = &get_registered_instance($instance_id);
+    return 0 unless $reg;
+    my @owners = grep { /\S/ } split /,/, ($reg->{'owners'} // '');
+    return grep { $_ eq $webmin_user } @owners ? 1 : 0;
+}
+
+sub _scan_render_success_banner {
+    my $ok = $in{'ok'} // '';
+    $ok =~ s/[^a-z_]//g;
+    return unless $ok;
+    return unless &module_config_flash_consume("scan_$ok");
+    my %msg_key = (
+        assigned   => 'scan_assigned_ok',
+        registered => 'scan_registered_ok',
+        deleted    => 'scan_deleted_ok',
+    );
+    return unless $msg_key{$ok};
+    print "<div class='alert alert-success'><b>"
+        . &html_escape($text{$msg_key{$ok}}) . "</b></div>\n";
+}
 
 # --- POST handler ---
 if ($ENV{REQUEST_METHOD} eq 'POST') {
@@ -51,11 +98,15 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
             source    => ($reg ? ($reg->{'source'}    // 'manual') : 'manual'),
             sftp_user => ($reg ? ($reg->{'sftp_user'} // '')       : ''),
             owners    => $new_owners,
-        });
+        }) or _scan_action_failed();
 
-        &grant_server_access($webmin_user, $instance_id);
-        &redirect('scan.cgi?msg=assigned');
-        exit;
+        &grant_server_access($webmin_user, $instance_id)
+            or _scan_action_failed();
+        &_scan_owner_in_registry($instance_id, $webmin_user)
+            or _scan_action_failed();
+
+        &log_action('scan_assign', $instance_id, {webmin_user => $webmin_user});
+        &_scan_redirect_success('assigned');
     }
     elsif ($action eq 'quickregister') {
         my $instance_id = &sanitize_input($in{'instance_id'});
@@ -74,10 +125,19 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
 
         &register_instance($instance_id, $inst->{'user'}, $inst->{'script'}, {
             source => 'manual',
-        });
-        &grant_server_access($reg_wbuser, $instance_id) if $reg_wbuser;
-        &redirect('scan.cgi?msg=registered&show_scan=1');
-        exit;
+        }) or _scan_action_failed();
+
+        my $reg = &get_registered_instance($instance_id);
+        ($reg->{'source'} // '') eq 'manual'
+            or _scan_action_failed();
+
+        if ($reg_wbuser) {
+            &grant_server_access($reg_wbuser, $instance_id)
+                or _scan_action_failed();
+        }
+
+        &log_action('scan_register', $instance_id, {webmin_user => $reg_wbuser});
+        &_scan_redirect_success('registered', 'show_scan=1');
     }
     elsif ($action eq 'register') {
         my $reg_user   = &sanitize_input($in{'reg_user'});
@@ -119,18 +179,32 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
         &register_instance($script_id, $reg_user, $reg_script, {
             source    => 'manual',
             sftp_user => $reg_sftp_user,
-        });
-        &grant_server_access($reg_wbuser, $script_id) if $reg_wbuser;
-        &redirect('scan.cgi?msg=registered');
-        exit;
+        }) or _scan_action_failed();
+
+        my $reg = &get_registered_instance($script_id);
+        $reg && ($reg->{'user'} // '') eq $reg_user
+            && ($reg->{'script'} // '') eq $reg_script
+            or _scan_action_failed();
+
+        if ($reg_wbuser) {
+            &grant_server_access($reg_wbuser, $script_id)
+                or _scan_action_failed();
+        }
+
+        &log_action('scan_register', $script_id, {webmin_user => $reg_wbuser});
+        &_scan_redirect_success('registered');
     }
     elsif ($action eq 'untrack_manual') {
         my $instance_id = &sanitize_input($in{'instance_id'});
         my $meta = &get_registered_instance($instance_id);
         $meta or &error($text{'err_not_found'});
         ($meta->{'source'} // '') eq 'manual' or &error($text{'err_invalid_action'});
-        &unregister_instance($instance_id);
-        &redirect('scan.cgi');
+        &unregister_instance($instance_id)
+            or _scan_action_failed();
+        &get_registered_instance($instance_id)
+            and _scan_action_failed();
+        &log_action('scan_untrack', $instance_id, {});
+        &redirect('scan.cgi?xnavigation=1');
         exit;
     }
     elsif ($action eq 'delete') {
@@ -156,16 +230,25 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
 
         # Remove server files if path looks safe
         if ($server_dir && $server_dir =~ m|^/[a-zA-Z0-9_./()\-]+$| && $server_dir ne '/') {
-            (my $safe_dir = $server_dir) =~ s/'/'\\''/g;
-            &system_logged("rm -rf '$safe_dir'");
+            if (-d $server_dir) {
+                (my $safe_dir = $server_dir) =~ s/'/'\\''/g;
+                my $rc = &system_logged("rm -rf '$safe_dir'");
+                ($rc == 0 && !-d $server_dir)
+                    or &error($text{'scan_delete_failed'} || 'Instanz-Dateien konnten nicht gelöscht werden.');
+            }
         }
 
-        &unregister_instance($instance_id);
+        &unregister_instance($instance_id)
+            or _scan_action_failed();
+        &get_registered_instance($instance_id)
+            and _scan_action_failed();
 
         if ($delete_opt eq 'user_ftp' && $sftp_user && $sftp_user ne $unix_user) {
             my %ftp_state = &discover_ftp_state();
             my $auth_file = $ftp_state{'auth_user_file'} || '/etc/proftpd/ftpd.passwd';
-            &ftpasswd_delete_user(file => $auth_file, name => $sftp_user);
+            my $rc = &ftpasswd_delete_user(file => $auth_file, name => $sftp_user);
+            ($rc == 0)
+                or &error($text{'scan_delete_failed'} || 'Instanz-Dateien konnten nicht gelöscht werden.');
         }
 
         if (($delete_opt eq 'user' || $delete_opt eq 'user_ftp') && !@other_for_user && $unix_user) {
@@ -178,8 +261,7 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
         }
 
         &log_action('server_deleted', $instance_id, {unix_user => $unix_user, scope => $delete_opt});
-        &redirect('scan.cgi?msg=deleted');
-        exit;
+        &_scan_redirect_success('deleted');
     }
 }
 
@@ -240,15 +322,7 @@ if (($in{'action'} // '') eq 'delete_confirm') {
 # --- GET: show page ---
 &header($text{'scan_title'}, '');
 
-my $msg = $in{'msg'} // '';
-$msg =~ s/[^a-zA-Z0-9_\-]//g;
-if ($msg eq 'assigned') {
-    print "<div class='alert alert-success'><b>" . &html_escape($text{'scan_assigned_ok'}) . "</b></div>\n";
-} elsif ($msg eq 'registered') {
-    print "<div class='alert alert-success'><b>" . &html_escape($text{'scan_registered_ok'}) . "</b></div>\n";
-} elsif ($msg eq 'deleted') {
-    print "<div class='alert alert-success'><b>" . &html_escape($text{'scan_deleted_ok'} || 'Instanz wurde gelöscht.') . "</b></div>\n";
-}
+&_scan_render_success_banner();
 
 my @instances    = &list_instances();
 my @webmin_users = &list_webmin_users();

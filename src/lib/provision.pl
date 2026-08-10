@@ -45,30 +45,40 @@ sub port_in_use {
 # Creates system user, installs LGSM, runs install script.
 # Never runs as root — uses su.
 # Rolls back (userdel -r) if any step after useradd fails.
+# Returns { ok => 1, user => $user } or { ok => 0, err => $message }.
 sub provision_server {
     my ($user, $game, $port) = @_;
     $user = &sanitize_input($user);
     $game = &sanitize_input($game);
     $port = int($port);
 
-    # Strict whitelist already enforced by validate_provision, but guard here too
-    die "Invalid username\n" unless $user =~ /^[a-z][a-z0-9_-]{0,30}$/;
+    unless ($user =~ /^[a-z][a-z0-9_-]{0,30}$/) {
+        return { ok => 0, err => ($text{'err_invalid_input'} // 'Invalid username') };
+    }
 
-    # Create system user with nologin shell.
-    # $user is already sanitized to [a-z][a-z0-9_-]{0,30} by the guard above.
-    &system_logged("useradd -m -s /usr/sbin/nologin $user") == 0
-        or die "useradd failed for $user\n";
+    if (&system_logged("useradd -m -s /usr/sbin/nologin $user") != 0) {
+        return {
+            ok  => 0,
+            err => ($text{'provision_useradd_failed'} // "useradd failed for $user"),
+        };
+    }
 
-    # Install LGSM as game user; roll back the system user on failure.
-    # $game and $script_path are already sanitized; $user is quoted for shell safety.
     my $script_path = "$module_root/../scripts/install_lgsm.sh";
     my $rc = &system_logged("su -s /bin/bash -c 'bash $script_path $game' \Q$user\E");
     if ($rc != 0) {
         &system_logged("userdel -r \Q$user\E");
-        die "LGSM install failed for $user (game=$game); user removed\n";
+        return {
+            ok  => 0,
+            err => ($text{'provision_install_failed'} // "LGSM install failed for $user"),
+        };
     }
 
-    return 1;
+    getpwnam($user) or return {
+        ok  => 0,
+        err => ($text{'provision_verify_failed'} // 'Provisioning verification failed'),
+    };
+
+    return { ok => 1, user => $user };
 }
 
 sub validate_provision_fast {

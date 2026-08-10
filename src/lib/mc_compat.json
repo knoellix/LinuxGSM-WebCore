@@ -1,0 +1,74 @@
+{
+  "loaders": {
+    "vanilla": {
+      "lgsm_script": "mcserver",
+      "mod_dir": "plugins",
+      "label_de": "Vanilla",
+      "label_en": "Vanilla",
+      "phase": 1,
+      "lgsm_executable": "./minecraft_server.jar",
+      "lgsm_preexecutable": "java_jar"
+    },
+    "paper": {
+      "lgsm_script": "pmcserver",
+      "mod_dir": "plugins",
+      "label_de": "Paper",
+      "label_en": "Paper",
+      "phase": 1,
+      "lgsm_executable": "./paperclip.jar",
+      "lgsm_preexecutable": "java_jar"
+    },
+    "fabric": {
+      "lgsm_script": "mcserver",
+      "mod_dir": "mods",
+      "label_de": "Fabric",
+      "label_en": "Fabric",
+      "phase": 2,
+      "lgsm_executable": "./fabric_server.jar",
+      "lgsm_preexecutable": "java_jar"
+    },
+    "forge": {
+      "lgsm_script": "mcserver",
+      "mod_dir": "mods",
+      "label_de": "Forge",
+      "label_en": "Forge",
+      "phase": 2,
+      "lgsm_executable": "./run.sh",
+      "lgsm_preexecutable": "empty"
+    },
+    "neoforge": {
+      "lgsm_script": "mcserver",
+      "mod_dir": "mods",
+      "label_de": "NeoForge",
+      "label_en": "NeoForge",
+      "phase": 2,
+      "lgsm_executable": "./run.sh",
+      "lgsm_preexecutable": "empty"
+    }
+  },
+  "versions": {
+    "1.21.1": { "java_major": 21, "min_java": 21, "max_java": 21 },
+    "1.21":   { "java_major": 21, "min_java": 21, "max_java": 21 },
+    "1.20.6": { "java_major": 21, "min_java": 21, "max_java": 21 },
+    "1.20.4": { "java_major": 21, "min_java": 17, "max_java": 21 },
+    "1.20.1": { "java_major": 17, "min_java": 17, "max_java": 21 },
+    "1.19.4": { "java_major": 17, "min_java": 17, "max_java": 17 },
+    "1.18.2": { "java_major": 17, "min_java": 17, "max_java": 17 },
+    "1.17.1": { "java_major": 17, "min_java": 16, "max_java": 17 },
+    "1.16.5": { "java_major": 8,  "min_java": 8,  "max_java": 8  }
+  },
+  "mc_versions": [
+    "1.21.1", "1.21", "1.20.6", "1.20.4", "1.20.1", "1.19.4", "1.18.2", "1.17.1", "1.16.5"
+  ],
+  "game_to_loader": {
+    "mc": "vanilla",
+    "mcserver": "vanilla",
+    "pmc": "paper",
+    "pmcserver": "paper",
+    "mc-paper": "paper",
+    "mc-fabric": "fabric",
+    "mc-forge": "forge",
+    "mc-neoforge": "neoforge"
+  },
+  "java_mod_excluded": ["mcb", "mcbserver", "wmc", "wmcserver", "vpmc", "vpmcserver"]
+}

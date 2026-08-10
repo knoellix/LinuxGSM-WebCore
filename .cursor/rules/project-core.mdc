@@ -1,0 +1,39 @@
+---
+description: LinuxGSM-WebCore workflow, UI standards, and project conventions
+alwaysApply: true
+---
+
+# Project core
+
+## Workflow
+
+- Large features: write plan in `docs/superpowers/plans/` before coding.
+- End every change set with `bash scripts/verify.sh`.
+- Security/provisioning changes: `t/test_security_guards.pl` and `t/test_provisioning_flow.pl` must stay green.
+- Webmin-only target: ship via `.wbm`; do not maintain deb/rpm packaging unless explicitly requested.
+
+## Code and UI
+
+- UI strings: German in `src/lang/de` + `src/lang/en`.
+- Code/comments: English.
+- Only `ui_*` for UI; no hardcoded colors/styles.
+- `ui_submit` with explicit CSS class (5th arg): `btn-danger` destructive, `btn-default` neutral.
+- New error text keys in **both** lang files.
+- No hardcoded paths outside the module; resolve Webmin CLI tools dynamically.
+
+## Commits
+
+- Use local git config as author.
+- Do not commit unless the user asks.
+
+## Integrations page
+
+- `integrations.cgi`: Steam (accounts, SteamCMD), download-source API keys (Modrinth contact, CurseForge key, optional Hangar token, custom URL hosts), debug logging.
+- Module config keys: `modrinth_contact`, `curseforge_api_key`, `hangar_api_token`, `download_allow_custom_url`, `download_custom_hosts`, `debug_logging`.
+- Config file: `/etc/webmin/linuxgsm-webcore/config` — CGIs use `module_config_sync_in()`; **game-user workers** read integration keys from `$job_dir/.worker_secrets` (written at dispatch via `write_job_worker_secrets()`). Standalone Perl also calls `module_config_bootstrap_standalone($module_root)` with `WEBCORE_JOB_DIR` set.
+
+## Background jobs (summary)
+
+- All long tasks → job + **`job_live.cgi`** (see `instance-jobs.mdc`, `workers-shell.mdc`).
+- Minecraft modpack/mod install: see `minecraft-mods.mdc`.
+- Success only after `$JOB_DIR/status` = `ok` (see `no-blind-success-feedback.mdc`).

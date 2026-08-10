@@ -2,7 +2,9 @@
 use strict;
 use warnings;
 use Test::More tests => 13;
+use FindBin qw($Bin);
 
+chdir "$Bin/.." or die "Cannot chdir to repo root: $!\n";
 BEGIN { push @INC, '.'; }
 require "./src/lib/config_editor.pl";
 

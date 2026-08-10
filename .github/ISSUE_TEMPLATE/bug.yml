@@ -1,0 +1,49 @@
+name: Bug report
+description: Something does not work as expected
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Module / commit / .wbm version
+  - type: input
+    id: game
+    attributes:
+      label: Game / instance (if relevant)
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / job output
+      description: Paste relevant Live-Log or journal lines (no passwords/API keys)
+  - type: checkboxes
+    id: verify
+    attributes:
+      label: Checks
+      options:
+        - label: I did not paste secrets (Steam passwords, API keys, …)
+          required: true

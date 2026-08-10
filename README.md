@@ -1,21 +1,32 @@
 # LinuxGSM-WebCore
 
-A Webmin plugin for managing game servers via [LinuxGSM](https://linuxgsm.com/).
+Webmin module (`.wbm`) for provisioning and managing [LinuxGSM](https://linuxgsm.com/), SteamCMD, and Wine game servers from a browser.
+
+**Wiki:** [GitHub Wiki](https://github.com/knoellix/LinuxGSM-WebCore/wiki) (DE + EN)
+
+## Project status
+
+This project is maintained **solo by [knoellix](https://github.com/knoellix)**. It started because I needed it for my own servers — not as a polished product with a roadmap.
+
+- There is **no fixed timeline** and no promise of feature completeness.
+- Not everything works perfectly yet; some games are only scaffolded in metadata.
+- I have used and extended it for real workloads (especially **Minecraft** and **Palworld**; also **Windrose**/SteamCMD).
+- **Pushes and pull requests are welcome.** Please read [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Features
 
-- Provision game server instances (isolated system users, no login shell)
-- Start/Stop/Restart/Update via web UI
-- SFTP-only file access (chrooted, separate password)
-- Automatic firewall port management (ufw / iptables)
-- Engine switching (e.g. Vanilla → Paper for Minecraft)
+- Provision instances (dedicated Unix users, `/usr/sbin/nologin`, LGSM under `/home/{user}/{server}/`)
+- Start / stop / restart / update / validate via background jobs and live log
+- Minecraft: loaders, mods, modpack import (Modrinth / CurseForge)
+- Monitoring (LGSM-native + SteamCMD/Wine paths) and scheduled restarts
+- SFTP (chrooted), firewall helpers, integrations (Steam accounts, download API keys)
+- Config editor for LGSM and game configs (with path validation)
 
 ## Requirements
 
-- Webmin
-- Perl
-- Bash
-- curl
+- Linux with Webmin
+- Perl, Bash, curl
+- Root for install / provisioning (runtime game ops run as the game user)
 
 ## Installation
 
@@ -23,23 +34,25 @@ A Webmin plugin for managing game servers via [LinuxGSM](https://linuxgsm.com/).
 sudo bash <(curl -sL https://github.com/knoellix/LinuxGSM-WebCore/releases/latest/download/install.sh)
 ```
 
-Voraussetzung: [Webmin](https://webmin.com/install/) muss installiert sein.
+Webmin must already be installed. See the [wiki](https://github.com/knoellix/LinuxGSM-WebCore/wiki) for details.
 
-### Manuelle Installation (.wbm)
+### Manual `.wbm` install
 
-Das `.wbm`-Archiv kann auch direkt in Webmin installiert werden:
-**Webmin → Webmin-Konfiguration → Webmin-Module → Von lokaler Datei installieren**
+1. Build or download `linuxgsm-webcore-*.wbm`
+2. Webmin → Webmin Configuration → Webmin Modules → install from local file
 
-## Development
+### Development build
 
-Source lives in `src/`, deployed to `/usr/share/webmin/linuxgsm-webcore/` by the package.
+```bash
+bash scripts/verify.sh
+bash scripts/build.sh
+```
 
-## Security
+## Security (short)
 
-- Game users get `/usr/sbin/nologin` — no SSH login possible
-- Plugin never runs game binaries as `root`
-- SFTP access is chrooted to the user's home directory
-- All inputs are sanitized before shell execution
+- Game binaries never run as root; Webmin dispatches via privilege drop to the game user
+- Config writes never target LGSM `_default.cfg`
+- Inputs sanitized / HTML escaped; see wiki **Security**
 
 ## License
 

@@ -23,7 +23,7 @@ sub error { die "error: $_[0]\n" }
 
 require 'src/lib/games.pl';
 
-print "1..6\n";
+print "1..8\n";
 
 # 1. _parse_csv parses 3 games correctly
 {
@@ -33,9 +33,9 @@ print "1..6\n";
     close $fh;
 
     my @games = &_parse_csv($csv);
-    scalar(@games) == 3
-        ? pass('_parse_csv returns 3 entries')
-        : fail("_parse_csv returns 3 entries (got " . scalar(@games) . ")");
+    scalar(@games) == 4
+        ? pass('_parse_csv returns 4 entries')
+        : fail("_parse_csv returns 4 entries (got " . scalar(@games) . ")");
 }
 
 # 2. Games are sorted by name
@@ -76,7 +76,7 @@ print "1..6\n";
     copy('t/data/serverlist.csv', $cache) or die "copy failed: $!";
 
     my @games = &get_game_list();
-    scalar(@games) == 3
+    scalar(@games) == 4
         ? pass('get_game_list reads from cache')
         : fail("get_game_list reads from cache (got " . scalar(@games) . ")");
 }
@@ -101,4 +101,19 @@ print "1..6\n";
     $ok
         ? pass('_cache_path falls back without warnings')
         : fail('_cache_path falls back without warnings');
+}
+
+# 7. resolve_lgsm_game_script maps shortname to on-disk script
+{
+    copy('t/data/serverlist.csv', "$tmpdir/data/serverlist.csv") or die "copy failed: $!";
+    resolve_lgsm_game_script('pw') eq 'pwserver'
+        ? pass('pw shortname resolves to pwserver')
+        : fail('pw shortname resolves to pwserver');
+}
+
+# 8. resolve_lgsm_game_shortname maps script back to linuxgsm.sh shortname
+{
+    resolve_lgsm_game_shortname('pwserver') eq 'pw'
+        ? pass('pwserver resolves to pw shortname')
+        : fail('pwserver resolves to pw shortname');
 }

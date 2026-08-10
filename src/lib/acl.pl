@@ -213,6 +213,14 @@ sub user_is_readonly {
     return user_can_manage($id) ? 1 : 0;
 }
 
+# Returns 1 if current user may change instance state (start/stop/config/jobs/etc.).
+# Operators and admins on assigned servers; viewers never.
+sub user_can_operate {
+    my ($id) = @_;
+    return 0 if user_is_readonly($id);
+    return user_can_manage($id) ? 1 : 0;
+}
+
 # Returns all instances the current user may see (filtered by role/servers).
 sub list_managed_instances {
     my @all = list_instances();
@@ -221,17 +229,26 @@ sub list_managed_instances {
 }
 
 # Grants $webmin_user access to $instance_id by appending to their servers list.
-# No-op if already has access. Called by wizard/scan after install.
+# Returns 1 on success (including no-op when access already exists).
 sub grant_server_access {
     my ($webmin_user, $instance_id) = @_;
+    return 1 unless defined $webmin_user && $webmin_user =~ /\S/;
+    return 1 unless defined $instance_id && $instance_id =~ /\S/;
     my $mn = _ctx_module_name();
+    return 0 unless defined $mn && $mn ne '';
+
     my %acl = get_module_acl($webmin_user, $mn);
     my @servers = grep { /\S/ } split /\s+/, ($acl{'servers'} // '');
-    return if grep { $_ eq $instance_id || $_ eq '*' } @servers;
+    return 1 if grep { $_ eq $instance_id || $_ eq '*' } @servers;
+
     push @servers, $instance_id;
     $acl{'servers'} = join(' ', @servers);
     $acl{'role'} //= 'operator';
-    save_module_acl(\%acl, $webmin_user, $mn);
+    eval { &save_module_acl(\%acl, $webmin_user, $mn); 1 } or return 0;
+
+    my %check = get_module_acl($webmin_user, $mn);
+    my @check_servers = grep { /\S/ } split /\s+/, ($check{'servers'} // '');
+    return (grep { $_ eq $instance_id || $_ eq '*' } @check_servers) ? 1 : 0;
 }
 
 # Returns sorted list of Webmin usernames explicitly assigned to $instance_id.

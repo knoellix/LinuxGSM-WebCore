@@ -6,7 +6,7 @@ use FindBin qw($Bin);
 use lib "$Bin/..";
 chdir "$Bin/.." or die "Cannot chdir: $!";
 
-print "1..11\n";
+print "1..12\n";
 sub pass { print "ok - $_[0]\n" }
 sub fail { print "not ok - $_[0]\n" }
 
@@ -17,12 +17,12 @@ require './src/lib/monitor.pl';
 # server_dir = "$tmp/inst" (new path: $tmp/inst/.monitor/state)
 # config_dir = $tmp, id = 'inst' (legacy fallback: $tmp/monitor/inst/state)
 
-# 1. read_monitor_state returns defaults for missing file
+# 1. read_monitor_state returns disabled for missing file (pre-first-start)
 {
     my $server_dir = "$tmp/inst1";
     my $s = read_monitor_state($server_dir, $tmp, 'inst1');
-    ($s->{status} eq 'running' && $s->{restart_count} == 0)
-        ? pass('read_monitor_state: defaults for missing state file')
+    ($s->{status} eq 'disabled' && $s->{restart_count} == 0)
+        ? pass('read_monitor_state: disabled default for missing state file')
         : fail("read_monitor_state: wrong defaults: status=$s->{status} count=$s->{restart_count}");
 }
 
@@ -112,7 +112,7 @@ require './src/lib/monitor.pl';
 # 10. read_monitor_state mit undef server_dir → gibt Defaults zurück (kein Crash)
 {
     my $s = read_monitor_state(undef, $tmp, 'x');
-    $s->{status} eq 'running'
+    $s->{status} eq 'disabled'
         ? pass('read_monitor_state: undef server_dir → safe defaults')
         : fail("read_monitor_state undef: status=$s->{status}");
 }
@@ -123,4 +123,20 @@ require './src/lib/monitor.pl';
     !$@
         ? pass('write_monitor_state: undef server_dir → kein Crash')
         : fail("write_monitor_state undef crashed: $@");
+}
+
+# 12. last_restart_at / last_restart_job round-trip
+{
+    my $server_dir = "$tmp/inst_restart";
+    write_monitor_state($server_dir, {
+        status           => 'running',
+        restart_count    => 1,
+        window_start     => 1000,
+        last_restart_at  => 1700000000,
+        last_restart_job => 'abcd1234abcd1234',
+    });
+    my $s = read_monitor_state($server_dir, $tmp, 'inst_restart');
+    ($s->{last_restart_at} == 1700000000 && $s->{last_restart_job} eq 'abcd1234abcd1234')
+        ? pass('last_restart fields round-trip')
+        : fail("last_restart round-trip: at=$s->{last_restart_at} job=$s->{last_restart_job}");
 }

@@ -1,0 +1,107 @@
+---
+description: Evidence-based success feedback — no blind OK messages or URL-param success banners
+globs: src/**/*.cgi,src/lib/**/*.pl,src/scripts/**
+alwaysApply: true
+---
+
+# No blind success feedback
+
+User-visible success requires **verified outcome**. Dispatching a command, redirecting, or returning from a handler is **not** success.
+
+## Core rules
+
+1. **Never** show success UI because a URL query param says so (`?saved=1`, `?msg=deleted`, `?ok=1`) without a **one-time server-side flash** or re-read verification.
+2. **Never** redirect to a success URL before the mutation is **confirmed** (write return value, read-back, exit code, or expected state on disk).
+3. **Started ≠ succeeded** — async jobs: show “gestartet / läuft” until worker writes final `ok`/`failed`; poll page decides outcome from `$JOB_DIR/status`.
+4. **Unknown = not OK** — if verification cannot run, show warning/error or neutral state; do not default to green banners.
+5. **Check return values** — `system_logged`, `write_file`, `register_instance`, `save_module_acl`, `firewall_*`, `write_job_meta`, `module_config_save` must be checked or wrapped; callers branch on failure.
+6. **No silent `eval`** on persistence paths without logging and explicit fallback (prefer propagate failure to UI).
+
+## Approved patterns
+
+### Module config save (reference)
+
+Use `src/lib/module_config.pl`:
+
+```perl
+&module_config_sync_in();
+# ... mutate %config ...
+&module_config_save()
+    or &error($text{'integrations_save_failed'});
+&module_config_flash_mark_ok()
+    or &error($text{'integrations_save_failed'});
+&redirect('integrations.cgi?saved=1&xnavigation=1');
+exit;
+```
+
+GET side — banner only after flash consume:
+
+```perl
+if (($in{'saved'} // '') eq '1' && &module_config_flash_consume_ok()) {
+    print ui_success($text{'integrations_saved_ok'});
+}
+```
+
+`module_config_save()` must return `1` only after write **and** read-back match.
+
+### One-time flash (any CGI)
+
+- After verified success: write timestamp file under `$module_config_directory` (e.g. `.flash_<action>`), chmod 0600.
+- On GET: show banner only if flash exists, is fresh (<120s), then **unlink** flash.
+- Bookmarks/reloads must not replay success.
+
+### Sync vs async
+
+| Flow | User message |
+|------|----------------|
+| Sync mutation (config, registry write) | Success only after verify; else `&error()` |
+| `scan.cgi` assign/register/delete | Flash `scan_*` + read-back verify — see `scan.cgi` |
+| Background job | Redirect to `job_live.cgi`; success only on `status=ok`; concrete `ERROR:` in job output |
+| Modpack search import | Job starts immediately; resolve in worker; use `mc_modpack_error_message` — no generic failure text |
+| Idempotent stop (already stopped) | Neutral or explicit “already stopped”, not generic OK unless verified |
+
+### Library contracts
+
+Prefer functions that return **`1/0`** or **`{ ok => 1, err => '...' }`**, not silent `return` on `open` failure. Callers must not redirect-success when the callee failed.
+
+## Anti-patterns (forbidden)
+
+```perl
+# BAD — URL alone triggers green banner
+&redirect('scan.cgi?msg=deleted');
+# GET: if ($in{'msg'} eq 'deleted') { print success; }
+
+# BAD — redirect after dispatch, no rc check
+&system_logged("setsid nohup ... &");
+&redirect("manage.cgi?action=poll_job&job=$id");
+
+# BAD — save without verify
+$config{foo} = $in{'foo'};
+&save_module_config(\%config);
+&redirect('...?saved=1');
+
+# BAD — Perl truthiness on radio "0"
+$config{flag} = $in{'flag'} ? 1 : 0;   # "0" is true in Perl!
+# USE: module_config_bool($in{'flag'})
+```
+
+## Known debt (audit 2026-06)
+
+No open items — re-audit when adding new save/dispatch flows.
+
+When fixing a row: add flash or inline verify, add lang keys (`*_failed`, `*_ok`) in **de + en**, add/adjust test in `t/`.
+
+## Agent completion claims
+
+Do not state “fixed/saved/working” until:
+
+- `bash scripts/verify.sh` passes (or scoped test for the change), **and**
+- the success path is verified in code (not assumed from redirect alone).
+
+## Related rules
+
+- `webmin-cgi.mdc` — redirect + exit
+- `instance-jobs.mdc` — job status files, live log, poll pattern
+- `workers-shell.mdc` — job_log.sh, module_config_bootstrap_standalone
+- `minecraft-mods.mdc` — modpack resolve errors in worker log
+- `testing-perl.mdc` — regression tests for save/ACL flows

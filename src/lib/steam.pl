@@ -74,9 +74,11 @@ sub patch_apt_sources {
     close($fh);
 }
 
-# Install steamcmd via apt-get.
+# Install steamcmd via module bootstrap script (apt only in scripts/, not libs).
 sub install_steamcmd {
-    &system_logged('apt-get install -y steamcmd 2>&1');
+    our $module_root;
+    my $script = "$module_root/scripts/module_bootstrap_deps.sh";
+    return &system_logged("bash '$script' steamcmd 2>&1");
 }
 
 # ---------------------------------------------------------------------------
@@ -234,9 +236,28 @@ sub cleanup_session {
     rmdir $session_dir;
 }
 
+# Returns 1 when login worker wrote session state after dispatch.
+sub login_session_dispatch_verified {
+    my ($token) = @_;
+    return 0 unless defined $token && $token =~ /^[0-9a-f]{32}$/i;
+    my $session_dir = _sessions_dir() . "/$token";
+    return 0 unless -d $session_dir;
+    for (1 .. 20) {
+        return 1 if -f "$session_dir/status";
+        return 1 if -f "$session_dir/pid";
+        select(undef, undef, undef, 0.1);
+    }
+    return 0;
+}
+
+# Internal hook for background dispatch (overridable in tests).
+sub _steam_background_exec {
+    return system(@_);
+}
+
 # Start login worker in background.
 # $password is written to a chmod-600 temp file; worker deletes it immediately.
-# Returns $token.
+# Returns session token on success, undef on failure.
 sub start_login_session {
     my ($username, $password) = @_;
     our $module_root;
@@ -251,6 +272,11 @@ sub start_login_session {
     chmod(0600, $pass_file);
 
     my $worker = "$module_root/scripts/steam_login_worker.sh";
+    unless (-f $worker && -x $worker) {
+        &log_error("steam login worker missing or not executable: $worker");
+        &cleanup_session($token);
+        return undef;
+    }
     my $steamcmd_path = detect_steamcmd() // 'steamcmd';
     (my $w  = $worker)      =~ s/'/'\\''/g;
     (my $sd = $session_dir) =~ s/'/'\\''/g;
@@ -260,7 +286,12 @@ sub start_login_session {
     my $log = '/var/webmin/miniserv.error';
     my $cmd = "STEAMCMD_PATH='$sc' nohup '$w' '$sd' '$un' '$pf' </dev/null >>'$log' 2>&1 &";
     &log_debug("steam login start: user=$username worker=$worker steamcmd=$steamcmd_path session=$session_dir");
-    system($cmd);
+    my $rc = &_steam_background_exec($cmd);
+    if ($rc != 0 || !&login_session_dispatch_verified($token)) {
+        &log_error("steam login worker failed to start for user=$username rc=$rc");
+        &cleanup_session($token);
+        return undef;
+    }
 
     return $token;
 }

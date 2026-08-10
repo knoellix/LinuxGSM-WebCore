@@ -14,8 +14,10 @@ my @_PATTERNS = (
     [ qr/Login Failure|Invalid Password|steamcmd.*login.*fail/i,                      'hint_steamcmd_login' ],
     [ qr/No server binary found|No executable server binary found/i,                   'hint_no_server_binary' ],
     [ qr/exited shortly after start/i,                                                  'hint_server_process_exited' ],
+    [ qr/Server process still running after stop/i,                                    'hint_server_stop_incomplete' ],
     [ qr/Wine runtime required|wine: command not found|wine64: command not found/i,   'hint_wine_required' ],
     [ qr/msvcp140\.dll.*unimplemented|ntlm_auth was not found/i,                       'hint_wine_required' ],
+    [ qr/CurseForge CDN limit|curseforge_cdn_rate_limited|hint_modpack_cf_cdn_rate_limited/i, 'hint_modpack_cf_cdn_rate_limited' ],
 );
 
 sub get_hint {

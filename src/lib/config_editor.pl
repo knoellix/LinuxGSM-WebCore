@@ -9,14 +9,15 @@ use warnings;
 # Allowed targets:
 #   .../lgsm/config-lgsm/common.cfg
 #   .../lgsm/config-lgsm/<script>/<script>.cfg
-# Never allows _default.cfg.
-# Calls error() on failure; returns 1 on success.
+# Never allows _default.cfg. Canonicalizes via realpath when possible.
+# Calls error() on failure; returns resolved path on success.
 sub validate_config_target {
     my ($path) = @_;
     our %text;
 
     # Must be an absolute path
     &error($text{'err_invalid_input'}) unless defined $path && $path =~ m|^/|;
+    &error($text{'err_invalid_input'}) if $path =~ /\.\./;
 
     # Never allow _default.cfg
     &error($text{'err_invalid_input'}) if $path =~ /_default\.cfg/;
@@ -34,7 +35,57 @@ sub validate_config_target {
         &error($text{'err_invalid_input'});
     }
 
-    return 1;
+    my $resolved = _config_editor_realpath($path);
+    &error($text{'err_invalid_input'}) unless defined $resolved && $resolved ne '';
+    if ($resolved =~ /_default\.cfg\z/) {
+        &error($text{'err_invalid_input'});
+    }
+    unless ($resolved =~ m|/lgsm/config-lgsm/|) {
+        &error($text{'err_invalid_input'});
+    }
+    unless (
+        $resolved =~ m|^/[a-zA-Z0-9_./()\- ]+/lgsm/config-lgsm/common\.cfg$| ||
+        $resolved =~ m|^/[a-zA-Z0-9_./()\- ]+/lgsm/config-lgsm/[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+\.cfg$|
+    ) {
+        &error($text{'err_invalid_input'});
+    }
+
+    return $resolved;
+}
+
+# Resolve path; returns undef if missing and realpath fails on all parents.
+sub _config_editor_realpath {
+    my ($path) = @_;
+    return undef unless defined $path && $path ne '';
+    require Cwd;
+    my $resolved = Cwd::realpath($path);
+    return $resolved if defined $resolved && $resolved ne '';
+    (my $parent = $path) =~ s|/[^/]+$||;
+    return undef unless defined $parent && $parent ne '' && $parent ne $path;
+    my $base = Cwd::realpath($parent);
+    return undef unless defined $base && $base ne '';
+    my $leaf = $path;
+    $leaf =~ s|.*/||;
+    return "$base/$leaf";
+}
+
+# Game-server config must stay under $script_dir (resolved canonical tree).
+sub validate_game_config_path {
+    my ($script_dir, $path) = @_;
+    our %text;
+    &error($text{'err_invalid_input'}) unless defined $path && $path =~ m|^/|;
+    &error($text{'err_invalid_input'}) if $path =~ /\.\./;
+    &error($text{'err_invalid_input'}) unless defined $script_dir && $script_dir =~ m|^/|;
+
+    require Cwd;
+    my $base = Cwd::realpath($script_dir) // $script_dir;
+    $base =~ s{/\z}{};
+    my $resolved = _config_editor_realpath($path);
+    &error($text{'err_invalid_input'}) unless defined $resolved && $resolved ne '';
+    unless ($resolved eq $base || index($resolved, "$base/") == 0) {
+        &error($text{'err_invalid_input'});
+    }
+    return $resolved;
 }
 
 # Parse a LGSM config file.
@@ -116,20 +167,88 @@ sub split_editor_fields {
 # Game config format detection and .properties support
 # ---------------------------------------------------------------------------
 
-# Detect the format of a game-server config file.
+# Strip UTF-8 BOM and decode UTF-16 LE exports (rare, breaks OptionSettings regex).
+sub _normalize_game_config_text {
+    my ($raw) = @_;
+    return '' unless defined $raw;
+    $raw =~ s/^\x{FEFF}//;
+    if (length($raw) >= 2 && substr($raw, 0, 2) eq "\xFF\xFE") {
+        eval {
+            require Encode;
+            $raw = Encode::decode('UTF-16LE', substr($raw, 2));
+        };
+    }
+    $raw =~ s/\r\n/\n/g;
+    $raw =~ s/\r/\n/g;
+    return $raw;
+}
+
+# Read game-server config as normalized UTF-8 text.
+sub read_game_config_raw {
+    my ($path) = @_;
+    return '' unless defined $path && $path ne '' && -f $path;
+    open(my $fh, '<:raw', $path) or return '';
+    local $/;
+    my $raw = <$fh>;
+    close($fh);
+    return _normalize_game_config_text($raw);
+}
+
+# Unified format pick: OptionSettings content wins over a wrong games_meta hint.
+sub resolve_game_config_format {
+    my ($script_name, $path, $raw) = @_;
+    $raw = _normalize_game_config_text($raw // '');
+    return 'ini_option_settings' if $raw =~ /OptionSettings\s*=\s*\(/;
+    if (defined $path && $path ne '') {
+        return 'json'                if $path =~ /\.json$/i;
+        return 'properties'          if $path =~ /\.properties$/i;
+        return 'ini_option_settings' if $path =~ /\.ini$/i;
+    }
+    if (defined &get_game_config_format) {
+        my $meta_fmt = &get_game_config_format($script_name);
+        return $meta_fmt if $meta_fmt ne '';
+    }
+    return &detect_game_config_format($path, $raw);
+}
+
+# Parse game config into ($vals_href, $order_aref) using resolved format + fallbacks.
+sub parse_game_config_values {
+    my ($script_name, $path, $raw) = @_;
+    $raw = _normalize_game_config_text($raw // '');
+    my $fmt = resolve_game_config_format($script_name, $path, $raw);
+    my ($vals, $order);
+    if ($fmt eq 'json') {
+        ($vals, $order) = parse_json_config($raw);
+    }
+    elsif ($fmt eq 'properties') {
+        ($vals, $order) = parse_properties_file($raw);
+        # Palworld .ini mis-tagged as properties: one OptionSettings= line only.
+        if ($raw =~ /OptionSettings\s*=\s*\(/ && (!%$vals || (keys %$vals == 1 && exists $vals->{OptionSettings}))) {
+            ($vals, $order) = parse_option_settings_from_ini($raw);
+        }
+    }
+    else {
+        ($vals, $order) = parse_option_settings_from_ini($raw);
+    }
+    return ($vals, $order, $fmt);
+}
+
 # Returns 'json' (Windrose & co.), 'ini_option_settings' (Palworld),
 # 'properties', or 'unknown'.
 sub detect_game_config_format {
     my ($path, $raw) = @_;
-    return 'unknown' unless defined $raw && length $raw;
     # Path-driven shortcuts beat content heuristics so empty/templated files
     # still resolve to a sensible parser.
     if (defined $path) {
         return 'json'                if $path =~ /\.json$/i;
         return 'properties'          if $path =~ /\.properties$/i;
+        return 'ini_option_settings' if $path =~ /\.ini$/i;
     }
-    return 'json'                if $raw =~ /\A\s*[\{\[]/;
+    return 'unknown' unless defined $raw && length $raw;
+    # Palworld / Unreal INI uses [Section] headers — not JSON arrays.
     return 'ini_option_settings' if $raw =~ /OptionSettings\s*=\s*\(/;
+    return 'json'                if $raw =~ /\A\s*\{/;
+    return 'json'                if $raw =~ /\A\s*\[\s*(?:\{|[\[\]\"]|true|false|null|-?\d)/;
     return 'properties' if $raw =~ /^[a-zA-Z][a-zA-Z0-9_\-\.]*\s*=/m;
     return 'unknown';
 }
@@ -200,9 +319,18 @@ sub resolve_game_server_config_path {
     my %cfg = %{$cfg_ref || {}};
 
     if (defined $static_hint && length $static_hint) {
+        return '' if $static_hint =~ /\.\./;
         my $abs = ($static_hint =~ m|^/|) ? $static_hint : "$script_dir/$static_hint";
         $abs =~ s|//+|/|g;
-        return $abs;
+        return $abs if $static_hint !~ m|^/|;
+        return '' unless defined $script_dir && $script_dir =~ m|^/|;
+        require Cwd;
+        my $base = Cwd::realpath($script_dir) // $script_dir;
+        $base =~ s{/\z}{};
+        my $resolved = _config_editor_realpath($abs);
+        return '' unless defined $resolved && $resolved ne '';
+        return $resolved if $resolved eq $base || index($resolved, "$base/") == 0;
+        return '';
     }
 
     $cfg{'rootdir'}     ||= $script_dir;
@@ -222,6 +350,7 @@ sub resolve_game_server_config_path {
 }
 
 # Write file content exactly as provided (no normalization, no extra newline).
+# Used by tests; manage.cgi uses binmode(:raw) on the su pipe for the same fidelity.
 sub write_file_exact {
     my ($path, $content) = @_;
     open(my $fh, '>:raw', $path) or die "Cannot write file: $!";
@@ -259,14 +388,59 @@ sub _split_csv_preserving_quotes {
     return @parts;
 }
 
+# Extract inner text of OptionSettings=(...) using balanced-parenthesis scan.
+sub _option_settings_inner {
+    my ($raw) = @_;
+    return '' unless defined $raw && $raw =~ /OptionSettings\s*=\s*\(/;
+    my ($prefix) = $raw =~ /\A(.*?)OptionSettings\s*=\s*\(/s;
+    $prefix = '' unless defined $prefix;
+    my $pos = length($prefix) + (index(substr($raw, length($prefix)), '(') // -1);
+    return '' if $pos < 0;
+    $pos++;    # first char inside parens
+    my $depth   = 1;
+    my $in_quote = 0;
+    my $quote_ch = '';
+    my $len     = length($raw);
+    my $start   = $pos;
+    while ($pos < $len) {
+        my $ch = substr($raw, $pos, 1);
+        if ($in_quote) {
+            if ($ch eq '\\' && $pos + 1 < $len) {
+                $pos += 2;
+                next;
+            }
+            $in_quote = 0 if $ch eq $quote_ch;
+        }
+        elsif ($ch eq '"' || $ch eq "'") {
+            $in_quote = 1;
+            $quote_ch = $ch;
+        }
+        elsif ($ch eq '(') {
+            $depth++;
+        }
+        elsif ($ch eq ')') {
+            $depth--;
+            if ($depth == 0) {
+                return substr($raw, $start, $pos - $start);
+            }
+        }
+        $pos++;
+    }
+    # Truncated or malformed file: parse best-effort up to EOF (common on long Palworld lines).
+    if ($depth > 0 && $pos > $start) {
+        return substr($raw, $start);
+    }
+    return '';
+}
+
 # Parse Palworld-style OptionSettings=(...) line from INI.
 # Returns hashref + ordered key list.
 sub parse_option_settings_from_ini {
     my ($raw) = @_;
     my (%vals, @order);
     return (\%vals, \@order) unless defined $raw;
-    return (\%vals, \@order) unless $raw =~ /OptionSettings\s*=\s*\(([^)]*)\)/s;
-    my $inside = $1 // '';
+    my $inside = _option_settings_inner($raw);
+    return (\%vals, \@order) unless length $inside;
     for my $part (_split_csv_preserving_quotes($inside)) {
         $part =~ s/^\s+|\s+$//g;
         next unless $part =~ /^([A-Za-z_]\w*)\s*=\s*(.*)$/;
@@ -293,7 +467,7 @@ sub _quote_option_value {
 # ---------------------------------------------------------------------------
 # JSON game config support (Windrose ServerDescription.json and similar)
 #
-# Design rationale: like the INI byte-preservation rule (CLAUDE.md §8.6), we
+# Design rationale: like the INI byte-preservation rule (.cursor/rules/lgsm-games-config.mdc), we
 # keep JSON files byte-identical except for the values the user actually
 # changed. JSON::PP would re-serialize the entire document and lose key order
 # plus formatting, so we read with JSON::PP for the values and write via
@@ -396,15 +570,46 @@ sub update_option_settings_in_ini {
     my $new_line = "OptionSettings=(" . join(',', @pairs) . ")";
 
     return $raw unless defined $raw;
-    if ($raw =~ /^([ \t]*)OptionSettings\s*=\s*\([^)]*\)([ \t]*)(\r?\n?)/m) {
-        my ($indent, $trail, $eol) = ($1 // '', $2 // '', $3 // '');
-        my $replacement = $indent . $new_line . $trail . $eol;
-        $raw =~ s/^[ \t]*OptionSettings\s*=\s*\([^)]*\)[ \t]*(\r?\n?)/$replacement/m;
-        return $raw;
+    if ($raw =~ /^([ \t]*)OptionSettings\s*=\s*\(/m) {
+        my $indent = $1 // '';
+        my $line_start = $-[0];
+        my $inner = _option_settings_inner(substr($raw, $line_start));
+        if (length $inner) {
+            my $rest = substr($raw, $line_start);
+            my $close_pos = index($rest, '(') + 1 + length($inner) + 1;
+            my $suffix = substr($rest, $close_pos);
+            my $replacement = $indent . $new_line . $suffix;
+            return substr($raw, 0, $line_start) . $replacement;
+        }
     }
     # Fallback: append at end without forcing newline normalization
     my $sep = ($raw =~ /\n\z/) ? '' : "\n";
     return $raw . $sep . $new_line . "\n";
 }
+
+# Palworld: after first world save, WorldOption.sav may override PalWorldSettings.ini.
+# Returns first matching path under serverfiles/Pal/Saved/SaveGames, or ''.
+sub find_palworld_world_option_sav {
+    my ($script_dir) = @_;
+    return '' unless defined $script_dir && $script_dir ne '';
+    my $base = "$script_dir/serverfiles/Pal/Saved/SaveGames";
+    return '' unless -d $base;
+    opendir(my $dh, $base) or return '';
+    my $found = '';
+    while (my $e = readdir($dh)) {
+        next if $e eq '.' || $e eq '..';
+        for my $path (glob("$base/$e/*/WorldOption.sav")) {
+            if (-f $path) {
+                $found = $path;
+                last;
+            }
+        }
+        last if $found ne '';
+    }
+    closedir($dh);
+    return $found;
+}
+
+*normalize_game_config_text = \&_normalize_game_config_text;
 
 1;

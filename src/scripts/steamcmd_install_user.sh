@@ -2,7 +2,7 @@
 # steamcmd_install_user.sh — game-user-side SteamCMD installation
 # Runs as the game user via su from steamcmd_install.sh.
 # ALL files created here are owned by the game user — no chown needed.
-# Args: <server_dir> <job_dir> <steam_app_id> <validate> <script_name> <runtime_mode>
+# Args: <server_dir> <job_dir> <steam_app_id> <validate> <script_name> <runtime_mode> [preclean]
 set -euo pipefail
 
 SERVER_DIR="$1"
@@ -11,6 +11,7 @@ STEAM_APP_ID="$3"
 VALIDATE="${4:-}"
 SCRIPT_NAME="${5:-}"
 RUNTIME_MODE="${6:-}"
+PRECLEAN="${7:-}"
 
 INSTALL_DIR="$SERVER_DIR/serverfiles"
 LAUNCH_CMD_FILE="$SERVER_DIR/.steam_launch_cmd"
@@ -44,6 +45,11 @@ for my $k (keys %$data) {
     last;
 }
 ' 2>/dev/null || true)
+fi
+
+if [ "$PRECLEAN" = "1" ]; then
+    echo "=== Deleting serverfiles/ (reinstall preclean) ==="
+    rm -rf "$INSTALL_DIR"
 fi
 
 echo "=== Downloading via SteamCMD (App ID: $STEAM_APP_ID) ==="

@@ -28,9 +28,9 @@ sub get_instance { return $_inst_db{$_[0]} }
 
 require 'src/lib/acl.pl';
 
-print "1..9\n";
+print "1..10\n";
 
-# Test 1: user-Datei ohne role-Feld → role aus defaultacl (admin).
+# Test 1: user-Datei ohne role-Feld → role aus defaultacl (operator).
 # Per-user ACLs go through Webmin's get_module_acl() — the test stub
 # stores them at $stub_acl_dir/$module/$user. The defaultacl is read
 # from $module_root/defaultacl as last-resort fallback.
@@ -45,7 +45,7 @@ print "1..9\n";
 
     my $tmp_root = tempdir(CLEANUP => 1);
     open(my $df, '>', "$tmp_root/defaultacl") or die $!;
-    print $df "role=admin\n";
+    print $df "role=operator\nservers=\ncan_manage_ftp=1\n";
     close $df;
     our $module_root;
     $module_root = $tmp_root;
@@ -54,9 +54,9 @@ print "1..9\n";
     $_module_acl_cache     = undef;
     %access = ();
 
-    effective_role() eq 'admin'
-        ? pass('_compute_role merge: user-Datei ohne role → admin von defaultacl')
-        : fail('_compute_role merge: user-Datei ohne role → admin von defaultacl (got: ' . (effective_role()//'undef') . ')');
+    effective_role() eq 'operator'
+        ? pass('_compute_role merge: user-Datei ohne role → operator von defaultacl')
+        : fail('_compute_role merge: user-Datei ohne role → operator von defaultacl (got: ' . (effective_role()//'undef') . ')');
     $module_root      = undef;
     $stub_acl_dir     = '/nonexistent';
 }
@@ -204,4 +204,20 @@ print "1..9\n";
         : fail("grant_server_access: role soll viewer bleiben, got '" . ($saved{role}//'undef') . "'");
 
     $stub_acl_dir = '/nonexistent';
+}
+
+# Test 10: shipped defaultacl must not grant admin to every user
+{
+    open(my $df, '<', 'src/defaultacl') or die "Cannot read src/defaultacl: $!";
+    my %dflt;
+    while (<$df>) {
+        chomp; next unless /=/;
+        my ($k, $v) = split(/=/, $_, 2);
+        $dflt{$k} = $v if defined $k;
+    }
+    close $df;
+
+    (($dflt{role} // '') ne 'admin')
+        ? pass('shipped defaultacl: role is not admin')
+        : fail('shipped defaultacl: role=admin grants admin to all users without explicit ACL');
 }

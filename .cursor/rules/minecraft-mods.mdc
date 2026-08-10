@@ -1,0 +1,66 @@
+---
+description: Minecraft profile, mods, modpack search/import, CurseForge/Modrinth APIs
+globs: src/lib/mc_*.pl,src/scripts/mc_*.sh,src/scripts/mc_*.pl,src/manage.cgi,t/test_mc_*.pl
+alwaysApply: false
+---
+
+# Minecraft mods and modpacks
+
+## Profile and UI gating
+
+- Profile: `$SERVER_DIR/.mc_profile.json` via `mc_profile.pl` / `read_mc_profile()`.
+- Mod/modpack UI only when `mc_mod_ui_ready($server_dir)` — Java + loader on disk (Paper: jar installed).
+- Preserve search state: hidden `pack_q` / `mod_q` on forms and redirects (`_manage_ui_preserve_mc_search_hidden`).
+
+## Libraries
+
+| File | Role |
+|------|------|
+| `mc_profile.pl` | Profile read/write, LGSM cfg patch hooks |
+| `mc_loader.pl` | Fabric/Forge/NeoForge install + version lists |
+| `mc_mods.pl` | Mod API, download host whitelist, CurseForge download URL helpers |
+| `mc_modpack.pl` | Parse/validate modpacks, search, resolve, job expand, error messages |
+
+## Modpack import flows
+
+| Path | When |
+|------|------|
+| **Search → Install** | `modpack_import_remote` — job with `remote_pending` in `pack_meta.json`; resolve+download in worker |
+| **FTP path** | `modpack_import_path` — sync validate path, then job with local `pack_file` |
+| **Upload** | Not supported (Webmin 413); UI explains server-side search/path only |
+
+**Remote search import:** CGI validates source + project_id only, writes job meta, redirects to `job_live.cgi`. Do **not** resolve CurseForge/Modrinth download URLs in CGI — worker does it (`mc_modpack_expand_meta.pl` → `expand_remote_modpack_job_meta`).
+
+## CurseForge specifics
+
+- API key: `$config{curseforge_api_key}` from Integrations — **must** load in workers via `module_config_bootstrap_standalone()` (CGI `module_config_sync_in()` alone is not enough).
+- `/download-url` response: `data` is a **string URL**, not `{ downloadUrl: ... }` — use `curseforge_extract_download_url()`.
+- CDN download (`forgecdn.net`): pass `x-api-key` header — `mc_download_url_to_file()`.
+- Search returns metadata only (no per-hit download-url roundtrip). Import resolves file_id → URL once.
+- CF-only packs (e.g. ATM10): slug hints in `mc_modpack_guess_curseforge_slugs()` / `mc_modpack_query_likely_curseforge_only()`.
+- `project_id` sanitize: digits only for curseforge; Modrinth uses slug/alnum.
+
+## Errors (no generic silence)
+
+- Use `mc_modpack_error_message($err, $detail, $profile, \%text)` in CGI **and** worker log output.
+- Map concrete codes: `curseforge_key_missing`, `curseforge_no_matching_file`, `loader_mismatch`, `version_mismatch`, `download_failed`, …
+- New keys in **de + en** (`mc_modpack_resolve_*`, `mc_modpack_job_*`).
+- Worker must print `ERROR: <human message>` to job output — user reads Live-Log, not Webmin error page.
+
+## Jobs
+
+| Action | Worker | Notes |
+|--------|--------|-------|
+| `modpack_import` | `mc_modpack_install.sh` → `mc_modpack_install_user.sh` | Root drops privileges; user worker does download, adopt, Java/loader sub-steps, mods |
+| `mc_mod_install` | `mc_mod_install_user.sh` | Resolve in CGI; user worker downloads single mod |
+| `mc_java_setup` | `mc_java_install_user.sh` | Temurin JDK per instance (user-native) |
+| `mc_loader_setup` | `mc_loader_install_user.sh` | Fabric/Forge/NeoForge, pinned `loader_version` (user-native) |
+
+Adopt mode (modpack-first): the user worker runs `mc_modpack_adopt.pl` → Java → loader (pinned) → mods in **one** job (`WEBCORE_SUBSTEP=1` for the sub-steps). Dispatch via `user_worker_launch_cmd()`.
+
+Mod writes: `$SERVER_DIR/serverfiles/{mods|plugins}/` — worker runs **as the game user** (no internal `su`).
+
+## Tests
+
+- `t/test_mc_modpack.pl`, `t/test_mc_mods.pl`, `t/test_mc_profile.pl`, `t/test_mc_loader.pl`
+- Fixture: `t/fixtures/modpack/modrinth.index.json`

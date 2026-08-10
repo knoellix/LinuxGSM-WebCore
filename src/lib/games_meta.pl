@@ -9,6 +9,7 @@
 #   {
 #     "mcserver": {
 #       "name": "Minecraft (Vanilla)",
+#       "live_log_path": "optional/relative/to/script_dir.log",
 #       "fields": [
 #         {"key":"port","type":"port","label_de":"Port","label_en":"Port","default":"25565"},
 #         ...
@@ -43,6 +44,14 @@ sub _resolve_meta_key {
     my ($script_name) = @_;
     my %meta = load_games_meta();
     return $script_name if exists $meta{$script_name};
+    # LGSM wizard passes CSV shortnames (mc, pmc) — resolve to script (mcserver, pmcserver).
+    if (defined &resolve_lgsm_game_script) {
+        my $resolved = &resolve_lgsm_game_script($script_name);
+        if ($resolved ne $script_name && exists $meta{$resolved}) {
+            return $resolved;
+        }
+        $script_name = $resolved if $resolved ne $script_name;
+    }
     for my $key (keys %meta) {
         my $entry = $meta{$key};
         next unless ref($entry) eq 'HASH';
@@ -94,6 +103,34 @@ sub get_game_config_path {
     my $key   = _resolve_meta_key($script_name);
     my $entry = $meta{$key} or return '';
     return $entry->{'game_config_path'} // '';
+}
+
+# Optional UI label for the game-config tab (e.g. Palworld "World settings").
+sub get_game_config_label {
+    my ($script_name, $lang) = @_;
+    my %meta = load_games_meta();
+    my $key = _resolve_meta_key($script_name);
+    my $entry = $meta{$key} or return '';
+    $lang = ($lang // '') eq 'de' ? 'de' : 'en';
+    my $k = "game_config_label_$lang";
+    return $entry->{$k} // '';
+}
+
+# Return path of the primary live server log file, relative to the instance
+# script_dir (same convention as game_config_path). Used by manage.cgi
+# monitor view so UE/Wine games can prefer R5.log over wrapper server.log.
+# Empty string if unset or unsafe (absolute path, ..).
+sub get_game_live_log_path {
+    my ($script_name) = @_;
+    my %meta = load_games_meta();
+    my $key  = _resolve_meta_key($script_name);
+    my $entry = $meta{$key} or return '';
+    my $p = $entry->{'live_log_path'} // '';
+    return '' unless $p =~ /\S/;
+    $p =~ s/^\s+|\s+$//g;
+    return '' if $p =~ m{(?:^|/)\.\.(?:/|$)};
+    return '' if $p =~ m{^/};
+    return $p;
 }
 
 # Return human-readable display name for the given script name.
@@ -234,40 +271,54 @@ sub local_game_scripts {
 
 # Write or update one entry in games_meta_local.json.
 # $entry_ref is a hashref with keys: name, source, steam_app_id, fields, etc.
+# Returns 1 on verified write, 0 on failure.
 sub save_local_game_meta {
     my ($script_name, $entry_ref) = @_;
-    return unless defined $config_directory;
+    return 0 unless defined $config_directory;
+    return 0 unless defined $script_name && $script_name =~ /\S/;
     my $file = "$config_directory/games_meta_local.json";
     my %local;
     _merge_meta(\%local, $file) if -f $file;
     $local{$script_name} = $entry_ref;
-    _write_local_meta($file, \%local);
-    _reset_meta_cache();
+    _write_local_meta($file, \%local) or return 0;
+    my %verify;
+    _merge_meta(\%verify, $file);
+    return exists $verify{$script_name} ? 1 : 0;
 }
 
-# Remove one entry from games_meta_local.json.
+# Remove one entry from games_meta_local.json. Returns 1 on verified delete.
 sub delete_local_game_meta {
     my ($script_name) = @_;
-    return unless defined $config_directory;
+    return 0 unless defined $config_directory;
+    return 0 unless defined $script_name && $script_name =~ /\S/;
     my $file = "$config_directory/games_meta_local.json";
-    return unless -f $file;
+    return 1 unless -f $file;
     my %local;
     _merge_meta(\%local, $file);
+    return 1 unless exists $local{$script_name};
     delete $local{$script_name};
-    _write_local_meta($file, \%local);
-    _reset_meta_cache();
+    _write_local_meta($file, \%local) or return 0;
+    my %verify;
+    _merge_meta(\%verify, $file) if -f $file;
+    return exists $verify{$script_name} ? 0 : 1;
 }
 
 sub _write_local_meta {
     my ($file, $data) = @_;
-    eval {
+    my $ok = eval {
         require JSON::PP;
         my $json = JSON::PP->new->pretty->canonical->utf8;
         open(my $fh, '>', $file) or die "Cannot write $file: $!";
         print $fh $json->encode($data);
         close $fh;
+        1;
     };
-    warn "save_local_game_meta failed: $@" if $@;
+    if (!$ok) {
+        warn "save_local_game_meta failed: $@" if $@;
+        return 0;
+    }
+    _reset_meta_cache();
+    return -f $file ? 1 : 0;
 }
 
 # Reset the module-level cache (used in tests to reload different fixtures).

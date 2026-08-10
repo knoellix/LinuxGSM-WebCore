@@ -10,7 +10,9 @@ require './lib/core.pl';
 require './lib/instance.pl';
 require './lib/acl.pl';
 require './lib/jobs.pl';
+require './lib/schedule.pl';
 require './lib/logging.pl';
+require './lib/live_log.pl';
 
 our (%text, %config, %in, %gconfig);
 $main::gconfig{'charset'} = 'utf-8';
@@ -79,17 +81,21 @@ if ($action eq 'view_output') {
     &is_admin() || &user_can_manage($inst_id)
         or &error($text{'err_acl_admin_only'});
 
-    my ($out, undef) = get_job_output($job_id, 0);
+    my $out = get_job_output_display($job_id);
     &header($text{'jobs_output_title'} || 'Job Output', '');
+    print &job_log_view_page_css();
+    print &job_log_view_page_open();
     print "<h3>" . &html_escape($text{'jobs_output_title'} || 'Job Output') . "</h3>\n";
+    print &job_log_view_toolbar_open();
     print "<p><a href='jobs.cgi'>&larr; "
         . &html_escape($text{'jobs_title'} || 'Jobs') . "</a></p>\n";
+    print &job_log_view_toolbar_close();
     if (defined $out && $out ne '') {
-        print "<pre style='background:#111;color:#eee;padding:8px;overflow:auto;max-height:600px'>"
-            . &html_escape($out) . "</pre>\n";
+        print &job_log_view_block($out, id => 'jobs_output');
     } else {
         print "<p><i>" . &html_escape('Keine Ausgabe vorhanden.') . "</i></p>\n";
     }
+    print &job_log_view_page_close();
     &footer('jobs.cgi', $text{'jobs_title'} || 'Jobs');
     exit;
 }
@@ -105,15 +111,7 @@ unless (&is_admin()) {
     @all_jobs = grep { &user_can_manage($_->{instance_id} // '') } @all_jobs;
 }
 
-my %action_labels = (
-    install_game => $text{'jobs_action_install_game'} || 'Spiel installieren',
-    setup_lgsm   => $text{'jobs_action_setup_lgsm'}   || 'LGSM einrichten',
-    update       => $text{'jobs_action_update'}        || 'Update',
-    validate     => $text{'jobs_action_validate'}      || 'Dateien prüfen',
-    reinstall    => $text{'jobs_action_reinstall'}     || 'Neu installieren',
-    start        => $text{'jobs_action_start'}         || 'Starten',
-    stop         => $text{'jobs_action_stop'}          || 'Stoppen',
-);
+my %action_labels = %{ &job_action_labels_hash(\%text) };
 
 my %status_labels = (
     running => '&#x23F3; ' . ($text{'jobs_status_running'} || 'Läuft…'),
@@ -139,10 +137,10 @@ if (!@all_jobs) {
 
         my $out_cell;
         if ($status eq 'running') {
-            $out_cell = "<a href='manage.cgi?instance_id="
+            $out_cell = "<a href='job_live.cgi?instance_id="
                 . &html_escape($job->{instance_id} // '')
-                . "&amp;action=poll_job&amp;job=" . &html_escape($jid) . "'>Live</a>";
-        } elsif ($status eq 'failed' || $status eq 'aborted') {
+                . "&amp;job=" . &html_escape($jid) . "&amp;xnavigation=1'>Live</a>";
+        } elsif ($status eq 'ok' || $status eq 'failed' || $status eq 'aborted') {
             $out_cell = "<a href='jobs.cgi?action=view_output&amp;job_id="
                 . &html_escape($jid) . "'>Log</a>";
         } else {

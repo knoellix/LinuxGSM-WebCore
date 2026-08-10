@@ -31,6 +31,7 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
         my $rc = &apply_secure_ftp_baseline();
         $rc == 0 or &error("Failed applying FTP baseline");
         &redirect('ftp_settings.cgi?xnavigation=1');
+        exit;
     }
     elsif ($action eq 'create_ftp_user') {
         my $instance_id = &sanitize_input($in{'instance_id'});
@@ -55,8 +56,9 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
 
         &register_instance($instance_id, $inst->{'user'}, $inst->{'script'}, {
             sftp_user => $ftp_user,
-        });
+        }) or &error($text{'ftp_register_failed'} || 'FTP-Zuweisung konnte nicht in der Registry gespeichert werden.');
         &redirect('ftp_settings.cgi?xnavigation=1');
+        exit;
     }
     elsif ($action eq 'change_ftp_pass') {
         my $ftp_user = &sanitize_input($in{'ftp_user'});
@@ -68,6 +70,7 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
             password => $ftp_pass,
         ) == 0 or &error("Failed changing FTP password");
         &redirect('ftp_settings.cgi?xnavigation=1');
+        exit;
     }
     elsif ($action eq 'delete_ftp_user') {
         my $ftp_user = &sanitize_input($in{'ftp_user'});
@@ -76,6 +79,7 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
             name => $ftp_user,
         ) == 0 or &error("Failed deleting FTP user");
         &redirect('ftp_settings.cgi?xnavigation=1');
+        exit;
     }
     elsif ($action eq 'assign_ftp_user') {
         my $ftp_user    = &sanitize_input($in{'ftp_user'});
@@ -83,8 +87,9 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
         my $inst = &get_instance($instance_id) or &error($text{'err_not_found'});
         &register_instance($instance_id, $inst->{'user'}, $inst->{'script'}, {
             sftp_user => $ftp_user,
-        });
+        }) or &error($text{'ftp_register_failed'} || 'FTP-Zuweisung konnte nicht in der Registry gespeichert werden.');
         &redirect('ftp_settings.cgi?xnavigation=1');
+        exit;
     }
 }
 

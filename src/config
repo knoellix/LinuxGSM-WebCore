@@ -1,0 +1,7 @@
+debug_logging=0
+modrinth_contact=
+curseforge_api_key=
+hangar_api_token=
+download_allow_custom_url=0
+download_custom_hosts=
+modpack_cf_auto_resume=1

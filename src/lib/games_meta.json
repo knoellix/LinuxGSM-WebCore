@@ -72,6 +72,21 @@
     "name": "Palworld",
     "steam_required": true,
     "query_port_field": "queryport",
+    "game_config_format": "ini_option_settings",
+    "game_config_path": "serverfiles/Pal/Saved/Config/LinuxServer/PalWorldSettings.ini",
+    "game_config_label_de": "Servereinstellungen",
+    "game_config_label_en": "Server settings",
+    "game_config_fields": [
+      {"key": "ServerName",           "type": "text",     "label_de": "Servername",           "label_en": "Server name"},
+      {"key": "ServerDescription",    "type": "text",     "label_de": "Beschreibung",         "label_en": "Description"},
+      {"key": "ServerPassword",       "type": "text",     "label_de": "Server-Passwort",      "label_en": "Server password"},
+      {"key": "AdminPassword",        "type": "password", "label_de": "Admin-Passwort",       "label_en": "Admin password"},
+      {"key": "PublicPort",           "type": "port",     "label_de": "Port",                 "label_en": "Port"},
+      {"key": "ServerPlayerMaxNum",   "type": "int",      "label_de": "Max. Spieler",         "label_en": "Max players"},
+      {"key": "Difficulty",           "type": "text",     "label_de": "Schwierigkeit",        "label_en": "Difficulty"},
+      {"key": "RCONEnabled",          "type": "bool",     "label_de": "RCON aktiv",           "label_en": "RCON enabled"},
+      {"key": "RCONPort",             "type": "port",     "label_de": "RCON-Port",            "label_en": "RCON port"}
+    ],
     "fields": [
       {"key": "port",       "type": "port",   "label_de": "Port",         "label_en": "Port",          "default": "8211"},
       {"key": "gamename",   "type": "text",   "label_de": "Spielname",    "label_en": "Game name",     "default": "Palworld"},

@@ -1,0 +1,40 @@
+---
+description: Security, isolation, and privilege separation for game servers
+alwaysApply: true
+---
+
+# Security and isolation
+
+## Unix isolation
+
+- **Preferred:** dedicated Unix user per server (`/usr/sbin/nologin`).
+- **Allowed:** shared user (e.g. `game_master`) — admin accepts reduced isolation.
+- LGSM always under `/home/{user}/{servername}/`, never directly in home root.
+
+## Privilege boundary
+
+- Game binaries and `$SERVER_DIR` writes: `su -s /bin/bash -c "..." {unix_user}` or `_write_file_as_user()` in Perl.
+- Root may `chown` `$SERVER_DIR` itself once after `mkdir` only.
+- `apt-get` only as root.
+- Never run game servers as root.
+
+## User-native runtime (rolled out)
+
+Plan: `docs/superpowers/plans/2026-07-08-drop-root-runtime.md`.
+
+- **Root only at bootstrap**: `useradd`/`userdel`, initial `mkdir` + one-time `chown`, all `apt`/dpkg deps (front-loaded at provisioning), firewall, system cron.
+- **apt owner = `scripts/provision_deps.sh`** (root job, action `provision_deps`): the single place that runs `apt`/dpkg (i386 + contrib/non-free, base tools, per-game `apt_deps`, Wine runtime). The wizard always runs it once right after provisioning, before any install step. `setup_lgsm.sh`/`steamcmd_install.sh` are apt-free.
+- **Runtime = 100% game user**: install/update/loader/mods/modpack, start/stop/update/validate, profile/meta writes. No `apt` after bootstrap.
+- **Only privileged runtime step** = the `su` privilege *drop* at dispatch (Webmin CGI is root). Build it via `user_worker_launch_cmd()` in `jobs.pl` — no ad-hoc `setsid nohup bash <worker>` root strings, no per-op internal `su` inside workers.
+- User-native workers: `job_log_init_as_user`, direct file writes (no internal `su`).
+- `write_mc_profile()` auto-selects direct write when `euid == user`, else `su` (root context). Prefer running the caller as the user so no `su` is needed.
+- **Invariant**: no runtime worker performs a privileged operation on game data. New/converted workers must not reintroduce root writes to `$SERVER_DIR`.
+
+## Hardening
+
+- Validate/sanitize all inputs; optional params: manual strip (`$var =~ s/[^a-zA-Z0-9_\-]//g`), not `sanitize_input()` (that calls `error()` on empty).
+- Escape all dynamic HTML: `html_escape()`.
+- Firewall opens/closes only via Webmin firewall API (UFW/Iptables).
+- SFTP: `internal-sftp` chroot; lookup via `resolve_instance_sftp_user($id, $user)` from `instance.pl`.
+- Config writes: `validate_config_target($path)` before save; never write LGSM `_default.cfg`.
+- Provisioning failures: rollback (atomic user/registry creation).

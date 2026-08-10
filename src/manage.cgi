@@ -10,6 +10,7 @@
 use strict;
 use warnings;
 use File::Basename qw(dirname basename);
+use File::Copy qw(copy);
 use File::Find ();
 
 do '../web-lib.pl';
@@ -21,6 +22,7 @@ require './lib/instance.pl';
 require './lib/firewall.pl';
 require './lib/acl.pl';
 require './lib/games_meta.pl';
+require './lib/games.pl';
 require './lib/config_editor.pl';
 require './lib/ftp_proftpd.pl';
 require './lib/steam.pl';
@@ -29,7 +31,18 @@ require './lib/logging.pl';
 require './lib/error_hints.pl';
 require './lib/provision.pl';
 require './lib/monitor.pl';
+require './lib/schedule.pl';
 require './lib/query.pl';
+require './lib/mc_profile.pl';
+require './lib/mc_loader.pl';
+require './lib/mc_mods.pl';
+require './lib/mc_modpack.pl';
+require './lib/module_config.pl';
+require './lib/instance_profile.pl';
+require './lib/live_log.pl';
+
+our ($module_config_directory, $module_config_file);
+&module_config_sync_in();
 
 our (%text, %config, %in, %gconfig);
 our ($module_root, $module_root_directory, $config_directory, $module_name);
@@ -37,7 +50,12 @@ our $current_lang;
 $module_root ||= $module_root_directory;
 $module_root ||= do { (my $d = __FILE__) =~ s{/[^/]+$}{}; $d };
 $main::gconfig{'charset'} = 'utf-8';
-&ReadParse(\%in);
+if (($ENV{REQUEST_METHOD} // '') eq 'POST'
+    && ($ENV{CONTENT_TYPE} // '') =~ /multipart\/form-data/i) {
+    &ReadParseMime(\%in);
+} else {
+    &ReadParse(\%in);
+}
 
 # Percent-encode path for filemin query strings (same rules as config editor).
 sub _filemin_path_urlencode {
@@ -47,12 +65,76 @@ sub _filemin_path_urlencode {
 }
 
 sub _write_file_as_user {
-    my ($path, $content, $unix_user) = @_;
+    my ($path, $content, $unix_user, %opts) = @_;
     (my $safe_path = $path) =~ s/'/'\\''/g;
-    open(my $pipe, '|-', 'su', '-s', '/bin/bash', '-c', "cat > '$safe_path'", $unix_user)
+    my $cmd = "cat > '$safe_path'";
+    if ($opts{'mkdir'}) {
+        (my $safe_dir = $opts{'mkdir'}) =~ s/'/'\\''/g;
+        $cmd = "mkdir -p '$safe_dir' && $cmd";
+    }
+    open(my $pipe, '|-', 'su', '-s', '/bin/bash', '-c', $cmd, $unix_user)
         or &error("Cannot write $path as $unix_user: $!");
-    print $pipe $content;
+    binmode($pipe, ':raw');
+    print $pipe (defined $content ? $content : '');
     close($pipe) or &error("Cannot write $path as $unix_user (pipe error): $!");
+}
+
+# Launch steamcmd control as game-user background worker (E8).
+sub _manage_steamcmd_worker_cmd {
+    my ($action, $job_dir, $unix_user, $server_dir, %opts) = @_;
+    my %env;
+    $env{STEAMCMD_PATH} = $opts{'steamcmd_path'} if defined $opts{'steamcmd_path'} && $opts{'steamcmd_path'} ne '';
+    return &user_worker_launch_cmd(
+        unix_user   => $unix_user,
+        module_root => $module_root,
+        worker      => "$module_root/scripts/steamcmd_control_user.sh",
+        args        => [ $action, $job_dir, $unix_user, $server_dir ],
+        env         => \%env,
+    );
+}
+
+# HTML for monitor/schedule "last run" table row (E5).
+sub _manage_last_run_row_html {
+    my ($epoch, $text_template, $job_id, $instance_id) = @_;
+    return '' unless defined $epoch && $epoch =~ /^\d+$/ && $epoch > 0;
+    my $lr_ts = &monitor_format_restart_time($epoch);
+    $lr_ts = '—' unless defined $lr_ts && $lr_ts ne '';
+    my $lr_html = &html_escape(&text($text_template, $lr_ts));
+    $job_id = '' unless defined $job_id;
+    $job_id =~ s/[^0-9a-f]//g;
+    if (length($job_id) == 16 && defined $instance_id && $instance_id =~ /\S/) {
+        my $job_url = "job_live.cgi?instance_id=" . &html_escape($instance_id)
+            . "&job=" . &html_escape($job_id) . "&xnavigation=1";
+        $lr_html .= ' &mdash; <a href="' . &html_escape($job_url) . '">'
+            . &html_escape($text{'monitor_job_link'}) . '</a>';
+    }
+    return $lr_html;
+}
+
+# Dispatch LGSM game-config bootstrap (start → sleep → stop) as background job (E4).
+sub _manage_dispatch_game_config_bootstrap {
+    my ($instance_id, $inst, $unix_user, %opts) = @_;
+    my (undef, $script_name, $server_dir) = _parse_script_info($inst);
+    $script_name = _manage_executable_script_name($server_dir, $script_name);
+    my $job_id = &_manage_launch_background_job(
+        $instance_id, 'init_game_config', $unix_user,
+        sub {
+            my ($jid) = @_;
+            my $job_dir = _shell_safe_job_dir($jid);
+            return &user_worker_launch_cmd(
+                unix_user   => $unix_user,
+                module_root => $module_root,
+                worker      => "$module_root/scripts/game_action_user.sh",
+                args        => [ $job_dir, $unix_user, $server_dir, $script_name, 'bootstrap_game_config' ],
+            );
+        },
+    );
+    $job_id or _manage_job_launch_failed();
+    my %launch_opts = (action => 'init_game_config');
+    if ($opts{'config_view'}) {
+        $launch_opts{'notice_action'} = 'init_game_config';
+    }
+    &_manage_redirect_after_job_launch($job_id, $instance_id, %launch_opts);
 }
 
 sub _parse_script_info {
@@ -63,6 +145,194 @@ sub _parse_script_info {
     (my $server_dir = $script_path) =~ s{/[^/]+$}{};
     $script_name =~ s/[^a-zA-Z0-9_-]//g;
     return ($script_path, $script_name, $server_dir);
+}
+
+# LGSM CSV shortnames (pw) differ from on-disk script names (pwserver). Prefer the
+# executable that actually exists under SERVER_DIR.
+sub _manage_executable_script_name {
+    my ($server_dir, $script_name) = @_;
+    return '' unless defined $server_dir && $server_dir ne '' && $script_name;
+    return $script_name if -x "$server_dir/$script_name";
+    if (defined &resolve_lgsm_game_script) {
+        my $resolved = &resolve_lgsm_game_script($script_name);
+        return $resolved if $resolved ne $script_name && -x "$server_dir/$resolved";
+    }
+    return $script_name;
+}
+
+sub _manage_read_mc_profile {
+    my ($inst) = @_;
+    my (undef, undef, $server_dir) = _parse_script_info($inst);
+    return (undef, $server_dir) unless defined $server_dir && $server_dir ne '';
+    return (undef, $server_dir) unless -d $server_dir;
+    my $profile = &read_mc_profile($server_dir);
+    return ($profile, $server_dir);
+}
+
+sub _manage_lgsm_script_ready {
+    my ($inst) = @_;
+    my (undef, $script_name, $server_dir) = _parse_script_info($inst);
+    return 0 unless $script_name && defined $server_dir && $server_dir ne '';
+    $script_name = _manage_executable_script_name($server_dir, $script_name);
+    return -x "$server_dir/$script_name" ? 1 : 0;
+}
+
+# Derive setup phase from filesystem (works even when poll_job missed next_status).
+sub _manage_infer_setup_status_from_disk {
+    my ($inst, $profile, $server_dir) = @_;
+    if (ref($profile) eq 'HASH') {
+        return &mc_infer_setup_status(
+            _manage_lgsm_script_ready($inst),
+            &mc_pending_setup_steps($profile, $server_dir),
+        );
+    }
+    return _manage_lgsm_script_ready($inst) ? 'lgsm_ready' : 'fresh';
+}
+
+sub _manage_infer_setup_status_from_jobs {
+    my ($instance_id) = @_;
+    my @jobs = &get_instance_jobs($instance_id);
+    my %ok = map { ($_->{action} // '') => 1 }
+        grep { ($_->{status} // '') eq 'ok' } @jobs;
+    return 'installed' if $ok{'install_game'} || $ok{'mc_loader_setup'};
+    return 'mc_ready'   if $ok{'mc_java_setup'};
+    return 'lgsm_ready' if $ok{'setup_lgsm'};
+    return undef;
+}
+
+# Fix registry status from on-disk MC setup progress (upgrade and downgrade).
+sub _manage_reconcile_mc_instance_status {
+    my ($inst, $instance_id) = @_;
+    my ($profile, $server_dir) = _manage_read_mc_profile($inst);
+    my $istatus = $inst->{'instance_status'} // 'installed';
+    return $inst if $istatus eq 'installed';
+
+    my $from_disk = _manage_infer_setup_status_from_disk($inst, $profile, $server_dir);
+    my $from_jobs = _manage_infer_setup_status_from_jobs($instance_id);
+    my $new_status = &mc_pick_setup_status($from_disk, $from_jobs);
+
+    if (defined $new_status && $new_status ne $istatus) {
+        &set_instance_status($instance_id, $new_status);
+        $inst->{'instance_status'} = $new_status;
+    }
+    return $inst;
+}
+
+sub _manage_next_status_for_action {
+    return &job_next_instance_status($_[0]);
+}
+
+# Redirect to live log if a background job is already running (never returns).
+sub _manage_redirect_if_job_running {
+    my ($instance_id, $action) = @_;
+    my $job_id = &find_running_job_for_instance($instance_id, $action);
+    $job_id ||= &find_running_job_for_instance($instance_id);
+    return 0 unless $job_id;
+    my $meta = &get_job_meta($job_id);
+    my $job_action = $meta->{'action'} // $action // '';
+    my $next = _manage_next_status_for_action($job_action);
+    my %opts;
+    $opts{'next_status'} = $next if $next;
+    $opts{'action'} = $job_action if _manage_is_silent_job_action($job_action);
+    &_manage_redirect_after_job_launch($job_id, $instance_id, %opts);
+}
+
+sub _manage_job_action_labels {
+    my $h = &job_action_labels_hash(\%text);
+    return %{$h};
+}
+
+sub _manage_render_active_job_notice {
+    my ($instance_id) = @_;
+    return unless defined $instance_id && $instance_id =~ /\S/;
+    my @running = &get_instance_jobs($instance_id, status => 'running');
+    return unless @running;
+    my %labels = _manage_job_action_labels();
+    for my $job (@running) {
+        my $jid = $job->{job_id};
+        my $act = $job->{action} // '';
+        my $label = $labels{$act} // $act;
+        my $next = _manage_next_status_for_action($act);
+        print "<div class='alert alert-info'>";
+        print "<strong>" . &html_escape($text{'manage_job_running_title'}) . "</strong><br>";
+        print &html_escape($label) . " — " . &html_escape($text{'job_running'}) . "<br>";
+        unless (_manage_is_silent_job_action($act)) {
+            my $url = "job_live.cgi?instance_id=" . &html_escape($instance_id)
+                . "&job=" . &html_escape($jid) . "&xnavigation=1";
+            $url .= "&next_status=" . &html_escape($next) if $next;
+            print "<a href=\"" . &html_escape($url) . "\">"
+                . &html_escape($text{'manage_job_open_live'}) . "</a>";
+        }
+        print "</div>\n";
+    }
+}
+
+sub _manage_render_instance_jobs_table {
+    my ($instance_id, $max_rows) = @_;
+    $max_rows //= 5;
+    return unless defined $instance_id && $instance_id =~ /\S/;
+    &sync_monitor_job_pointers();
+    my @inst_jobs = &get_instance_jobs($instance_id);
+    return unless @inst_jobs;
+    @inst_jobs = @inst_jobs[0 .. ($max_rows - 1)] if @inst_jobs > $max_rows;
+
+    print "<h3>" . &html_escape($text{'jobs_title'} || 'Jobs') . "</h3>\n";
+    my %job_action_labels = _manage_job_action_labels();
+    my %status_icons = (
+        running => '&#x23F3;',
+        ok      => '&#x2705;',
+        failed  => '&#x1F534;',
+        aborted => '&#x1F6AB;',
+    );
+    my @rows;
+    for my $job (@inst_jobs) {
+        my $jid    = $job->{job_id};
+        my $status = $job->{status};
+        my $act    = $job->{action} // '';
+        my $ts     = $job->{started_at} || 0;
+        my @lt     = localtime($ts);
+        my $ts_str = $ts ? sprintf('%02d:%02d', $lt[2], $lt[1]) : '—';
+        my $st_icon = $status_icons{$status} // '';
+        my $next = _manage_next_status_for_action($act);
+        my $out_cell = '—';
+        if ($status eq 'running') {
+            my $live_url = "job_live.cgi?instance_id=" . &html_escape($instance_id)
+                . "&amp;job=" . &html_escape($jid) . "&amp;xnavigation=1";
+            $live_url .= "&amp;next_status=" . &html_escape($next) if $next;
+            $out_cell = "<a href='$live_url'>"
+                . &html_escape($text{'manage_job_open_live'}) . "</a>";
+        } elsif ($status eq 'ok' || $status eq 'failed' || $status eq 'aborted') {
+            $out_cell = "<a href='jobs.cgi?action=view_output&amp;job_id="
+                . &html_escape($jid) . "'>"
+                . &html_escape($text{'jobs_view_log'} || 'Log') . "</a>";
+        }
+        my $act_label = $job_action_labels{$act} // $act // '—';
+        my $act_cell = ($act eq 'monitor_restart' || $act eq 'scheduled_restart')
+            ? '&#x1F504; ' . &html_escape($act_label)
+            : &html_escape($act_label);
+        my $st_label = &job_status_label($status, \%text);
+        push @rows, [
+            $act_cell,
+            $ts_str,
+            "$st_icon " . &html_escape($st_label),
+            $out_cell,
+        ];
+    }
+    print &ui_columns_table(
+        [
+            $text{'jobs_col_action'}  || 'Aktion',
+            $text{'jobs_col_started'} || 'Gestartet',
+            $text{'jobs_col_status'}  || 'Status',
+            $text{'jobs_col_output'}  || 'Ausgabe',
+        ],
+        '100%',
+        \@rows,
+    );
+}
+
+sub _manage_setup_action_running {
+    my ($instance_id, $action) = @_;
+    return &find_running_job_for_instance($instance_id, $action) ? 1 : 0;
 }
 
 sub _effective_instance_source {
@@ -101,15 +371,23 @@ sub _steamcmd_server_binary_exists {
 # Returns an arrayref of { key, port, label } in field declaration order.
 # Used for firewall open/close and the info table so multi-port games like
 # Windrose (game/query/beacon) get treated as a port group, not a single value.
-# Installs the monitor cron job if not already present.
-# Called whenever monitoring is activated (server start / monitor reset).
-sub _ensure_monitor_cron {
-    my $cron_src  = "$module_root/scripts/linuxgsm-webcore-monitor.cron";
-    my $cron_dest = "/etc/cron.d/linuxgsm-webcore-monitor";
-    return if -f $cron_dest;
-    return unless -f $cron_src;
-    system("cp", $cron_src, $cron_dest);
-    chmod(0644, $cron_dest);
+# Rebuild the per-instance /etc/cron.d monitor file from the current registry +
+# monitor state. LGSM and steamcmd instances get a game-user cron line via
+# monitor_instance_user.sh. Call AFTER any set_monitor_* state change.
+sub _rebuild_monitor_cron {
+    return unless defined &rebuild_monitor_cron;
+    &rebuild_monitor_cron($module_root, $config_directory)
+        or &_log_monitor_cron_failure();
+}
+
+sub _rebuild_schedule_cron {
+    return 1 unless defined &rebuild_schedule_cron;
+    return &rebuild_schedule_cron($module_root, $config_directory) ? 1 : 0;
+}
+
+sub _log_monitor_cron_failure {
+    system('logger', '-t', 'linuxgsm-webcore',
+        'failed to write /etc/cron.d/linuxgsm-webcore-monitor');
 }
 
 sub _collect_instance_ports {
@@ -152,9 +430,1059 @@ sub _runtime_status_badge_html {
         stopped    => '&#x1F534; Nicht gestartet',
         fresh      => '&#x1F7E1; Bereitstellung offen',
         lgsm_ready => '&#x1F7E1; Installation offen',
+        mc_ready   => '&#x1F7E1; Minecraft vorbereitet',
         unknown    => '&#x1F7E1; Unbekannt',
     );
     return $map{$status} || ('&#x1F7E1; ' . &html_escape($status));
+}
+
+sub _manage_action_failed {
+    &error($text{'manage_action_failed'} || 'Aktion fehlgeschlagen.');
+}
+
+sub _manage_run_server_action {
+    my ($user, $action, $script_name, $script_dir) = @_;
+    my $rc = &run_server_action($user, $action, $script_name, $script_dir);
+    $rc == 0 or _manage_action_failed();
+    return 1;
+}
+
+sub _manage_job_launch_failed {
+    &error($text{'manage_job_launch_failed'} || 'Hintergrund-Job konnte nicht gestartet werden.');
+}
+
+sub _manage_apply_firewall_ports {
+    my ($ports, $mode) = @_;
+    my @failed;
+    for my $p (@$ports) {
+        my $port = $p->{port};
+        if ($mode eq 'open') {
+            &firewall_open_port($port, 'tcp') or push @failed, "$port/tcp";
+            &firewall_open_port($port, 'udp') or push @failed, "$port/udp";
+        } else {
+            &firewall_close_port($port, 'tcp') or push @failed, "$port/tcp";
+            &firewall_close_port($port, 'udp') or push @failed, "$port/udp";
+        }
+    }
+    if (@failed) {
+        &error(($text{'manage_fw_failed'} || 'Firewall-Aktion fehlgeschlagen.')
+            . ' ' . &html_escape(join(', ', @failed)));
+    }
+    return 1;
+}
+
+sub _manage_launch_background_job {
+    my ($instance_id, $action, $unix_user, $launch_cmd) = @_;
+    my $job_id = &create_job($unix_user);
+    &write_job_meta($job_id, $instance_id, $action, $unix_user)
+        or do { &job_mark_launch_failed($job_id); return undef; };
+    &log_action('job_started', $job_id, {instance_id => $instance_id, action => $action});
+    my $cmd = ref($launch_cmd) eq 'CODE' ? $launch_cmd->($job_id) : $launch_cmd;
+    my $rc = &system_logged($cmd);
+    if ($rc != 0 || !&job_dispatch_verified($job_id)) {
+        &job_mark_launch_failed($job_id);
+        return undef;
+    }
+    return $job_id;
+}
+
+sub _manage_modpack_validation_errors {
+    my ($validation, $pack, $profile) = @_;
+    my @msgs;
+    for my $code (@{ $validation->{'errors'} // [] }) {
+        if ($code eq 'loader_mismatch') {
+            push @msgs, &text('mc_modpack_loader_mismatch',
+                &html_escape($pack->{'loader'} // '?'),
+                &html_escape($profile->{'loader'} // '?'));
+        } elsif ($code eq 'version_mismatch') {
+            push @msgs, &text('mc_modpack_version_mismatch',
+                &html_escape($pack->{'mc_version'} // '?'),
+                &html_escape($profile->{'mc_version'} // '?'));
+        } elsif ($code eq 'modded_pack_on_vanilla') {
+            push @msgs, $text{'mc_modpack_modded_on_vanilla'};
+        } else {
+            push @msgs, &html_escape($code);
+        }
+    }
+    return @msgs;
+}
+
+sub _manage_modpack_save_upload {
+    my ($job_dir, $upload_name, $upload_data, $unix_user) = @_;
+    return (0, 'missing') unless defined $upload_data && length($upload_data) > 0;
+    my $max = 800 * 1024 * 1024;
+    return (0, 'too_large') if length($upload_data) > $max;
+    $upload_name //= 'pack.mrpack';
+    $upload_name = basename($upload_name);
+    $upload_name =~ s/[^a-zA-Z0-9._-]//g;
+    $upload_name = 'pack.mrpack' unless $upload_name =~ /\.(mrpack|zip)\z/i;
+    my $upload_dir = "$job_dir/upload";
+    mkdir($upload_dir, 0750) or return (0, 'mkdir');
+    my $path = "$upload_dir/$upload_name";
+    open(my $fh, '>', $path) or return (0, 'write');
+    binmode($fh);
+    print $fh $upload_data;
+    close($fh);
+    if (defined $unix_user && $unix_user ne '') {
+        &chown_job_files_to_user($unix_user, $upload_dir, $path);
+    }
+    return (1, $path);
+}
+
+sub _manage_write_job_worker_secrets {
+    my ($job_dir, $unix_user) = @_;
+    return 0 unless defined $job_dir && -d $job_dir;
+    &module_config_sync_in();
+    my %keys;
+    $keys{modpack_cf_auto_resume} = &module_config_bool($config{modpack_cf_auto_resume}) ? '1' : '0';
+    for my $k (qw(curseforge_api_key modrinth_contact hangar_api_token)) {
+        my $v = $config{$k} // '';
+        $keys{$k} = $v if $v =~ /\S/;
+    }
+    return &write_job_worker_secrets($job_dir, $unix_user, \%keys);
+}
+
+sub _manage_validate_modpack_server_path {
+    my ($path, $unix_user, $server_dir) = @_;
+    my ($ok, $resolved, $err) = &validate_modpack_import_path($path, $unix_user, $server_dir);
+    return ($ok, $resolved, $err);
+}
+
+sub _manage_launch_modpack_from_path {
+    my ($instance_id, $inst, $unix_user, $server_path) = @_;
+    my (undef, undef, $server_dir) = _parse_script_info($inst);
+    my $profile = &read_mc_profile($server_dir);
+    &error($text{'mc_profile_missing'} || 'Kein Minecraft-Profil.') unless $profile;
+
+    my ($ok_path, $pack_path, $path_err) = _manage_validate_modpack_server_path(
+        $server_path, $unix_user, $server_dir);
+    unless ($ok_path) {
+        if ($path_err eq 'outside') {
+            &error($text{'mc_modpack_path_outside'} || 'Pfad liegt ausserhalb des Server-Home.');
+        } elsif ($path_err eq 'missing') {
+            &error($text{'mc_modpack_path_missing'} || 'Datei nicht gefunden.');
+        } else {
+            &error($text{'mc_modpack_path_invalid'} || 'Ungültiger Dateipfad.');
+        }
+    }
+
+    my $job_id = &create_job($unix_user);
+    my $job_dir = &_job_dir($job_id);
+    my $upload_dir = "$job_dir/upload";
+    mkdir($upload_dir, 0750) or do {
+        &delete_job($job_id);
+        &error($text{'mc_modpack_upload_failed'} || 'Upload fehlgeschlagen.');
+    };
+    my $base = basename($pack_path);
+    $base =~ s/[^a-zA-Z0-9._-]//g;
+    $base = 'pack.mrpack' unless $base =~ /\.(mrpack|zip)\z/i;
+    my $dest = "$upload_dir/$base";
+    unless (copy($pack_path, $dest)) {
+        &delete_job($job_id);
+        &error($text{'mc_modpack_upload_failed'} || 'Upload fehlgeschlagen.');
+    }
+    &chown_job_files_to_user($unix_user, $upload_dir, $dest);
+
+    return &_manage_finish_modpack_import_job(
+        $job_id, $instance_id, $inst, $unix_user, $dest, $profile, $server_dir);
+}
+
+sub _manage_finish_modpack_import_job {
+    my ($job_id, $instance_id, $inst, $unix_user, $pack_path, $profile, $server_dir) = @_;
+    my $job_dir = &_job_dir($job_id);
+
+    my $pack = &parse_modpack_file($pack_path);
+    unless ($pack) {
+        &delete_job($job_id);
+        &error($text{'mc_modpack_invalid'} || 'Ungültiges Modpack-Format.');
+    }
+
+    my $validation = &validate_modpack_against_profile($pack, $profile);
+    unless ($validation->{'ok'}) {
+        my @errs = _manage_modpack_validation_errors($validation, $pack, $profile);
+        &delete_job($job_id);
+        &error(join('<br>', @errs));
+    }
+
+    if (($pack->{'format'} // '') eq 'curseforge') {
+        unless (defined &curseforge_api_key && curseforge_api_key() =~ /\S/) {
+            &delete_job($job_id);
+            &error($text{'mc_modpack_curseforge_key_missing'});
+        }
+    }
+
+    my ($files, $skipped_client) = &modpack_files_for_server_import($pack);
+    unless (@$files) {
+        &delete_job($job_id);
+        &error($text{'mc_modpack_no_server_mods'} || 'Keine server-tauglichen Mods im Pack.');
+    }
+
+    &write_modpack_job_meta($job_dir, {
+        format         => $pack->{'format'},
+        pack_file      => $pack_path,
+        pack_name      => $pack->{'name'} // '',
+        mod_dir        => $profile->{'mod_dir'} // 'mods',
+        server_dir     => $server_dir,
+        skipped_client => $skipped_client,
+        files          => $files,
+    }, $unix_user) or do {
+        &delete_job($job_id);
+        &error($text{'mc_modpack_meta_failed'} || 'Job-Vorbereitung fehlgeschlagen.');
+    };
+
+    &write_job_meta($job_id, $instance_id, 'modpack_import', $unix_user)
+        or do { &job_mark_launch_failed($job_id); &error($text{'manage_job_launch_failed'}); };
+
+    &_manage_write_job_worker_secrets($job_dir, $unix_user);
+
+    my $worker = "$module_root/scripts/mc_modpack_install.sh";
+    my $rc = &system_logged(
+        "MODULE_ROOT='$module_root' setsid nohup bash '$worker' "
+        . quotemeta($job_dir) . ' '
+        . quotemeta($unix_user) . ' '
+        . quotemeta($server_dir) . ' &'
+    );
+    if ($rc != 0 || !&job_dispatch_verified($job_id)) {
+        &job_mark_launch_failed($job_id);
+        &error($text{'manage_job_launch_failed'});
+    }
+    return $job_id;
+}
+
+sub _manage_find_resumable_modpack_job {
+    my ($instance_id, $server_dir) = @_;
+    for my $j (&get_instance_jobs($instance_id, action => 'modpack_import')) {
+        my $st = $j->{'status'} // '';
+        next unless $st eq 'failed' || $st eq 'aborted';
+        my $jdir = &_job_dir($j->{'job_id'});
+        my ($ok, $prog) = &modpack_job_resumable(
+            $jdir, $server_dir, $st, $j->{'action'} // '');
+        next unless $ok && ref($prog) eq 'HASH';
+        return ($j->{'job_id'}, $prog);
+    }
+    return (undef, undef);
+}
+
+sub _manage_render_modpack_resume_ui {
+    my ($instance_id, $server_dir, $job_id, $prog) = @_;
+    if (!$job_id || !ref($prog)) {
+        ($job_id, $prog) = _manage_find_resumable_modpack_job($instance_id, $server_dir);
+    }
+    return unless $job_id && ref($prog) eq 'HASH';
+    my $installed = $prog->{'installed'} // 0;
+    my $total     = $prog->{'total'} // 0;
+    my $missing   = $prog->{'missing'} // ($total - $installed);
+    my $last      = $prog->{'last_installed'} // '';
+    my $phase     = $prog->{'phase'} // '';
+    my $msg;
+    if ($phase eq 'expand') {
+        $msg = &text('mc_modpack_resume_expand_status')
+            || 'Modpack-Vorbereitung unterbrochen — Metadaten-Auflösung kann fortgesetzt werden.';
+    } else {
+        $msg = &text('mc_modpack_resume_status', $installed, $total, $missing);
+        $msg = "Progress: $installed/$total mods on disk, $missing remaining."
+            unless defined $msg && $msg =~ /\S/;
+    }
+    print "<div class='alert alert-warning'>"
+        . &html_escape($msg);
+    if ($last ne '') {
+        print "<br><small>" . &html_escape(&text('mc_modpack_resume_last', $last)
+            || "Last completed: $last") . "</small>";
+    }
+    if ($phase ne 'expand') {
+        my $jdir = &_job_dir($job_id);
+        my $meta = &modpack_read_job_meta_file($jdir);
+        if (ref($meta) eq 'HASH' && &modpack_is_cf_bulk_pack_meta($meta)) {
+            print "<br><small><i>" . &html_escape(&text('mc_modpack_resume_cf_cdn_note')
+                || 'CurseForge CDN limits around mod ~95 are normal for large packs.')
+                . "</i></small>";
+            if (&modpack_cf_auto_resume_enabled()) {
+                print "<br><small><i>" . &html_escape(&text('mc_modpack_auto_resume_active')
+                    || 'Auto-Resume aktiv: Job setzt nach CDN-Pause automatisch fort.')
+                    . "</i></small>";
+            }
+        }
+    }
+    print "<br>";
+    print &ui_form_start('manage.cgi', 'post');
+    print &ui_hidden('instance_id', &html_escape($instance_id));
+    print &ui_hidden('xnavigation', '1');
+    print &ui_hidden('action', 'modpack_import_resume');
+    print &ui_hidden('job', &html_escape($job_id));
+    print &ui_submit($text{'mc_modpack_resume_btn'} || 'Download fortsetzen',
+        undef, undef, undef, 'btn-primary');
+    print " ";
+    print "<a href='jobs.cgi?action=view_output&amp;job_id="
+        . &html_escape($job_id) . "'>"
+        . &html_escape($text{'mc_modpack_resume_log'} || 'Job-Log anzeigen') . "</a>";
+    print &ui_form_end();
+    print "</div>\n";
+}
+
+sub _manage_launch_modpack_resume {
+    my ($instance_id, $inst, $unix_user, $job_id) = @_;
+    $job_id =~ s/[^0-9a-f]//g;
+    $job_id = substr($job_id, 0, 16);
+    $job_id or &error($text{'err_invalid_input'});
+    &validate_job_for_instance($job_id, $instance_id)
+        or &error($text{'err_not_found'});
+    if (&find_running_job_for_instance($instance_id, 'modpack_import')) {
+        &error($text{'mc_modpack_resume_running'}
+            || 'Modpack-Import läuft bereits.');
+    }
+    my $jmeta = &get_job_meta($job_id);
+    ($jmeta->{'action'} // '') eq 'modpack_import'
+        or &error($text{'mc_modpack_resume_invalid'}
+            || 'Job ist kein Modpack-Import.');
+    my $status = &get_job_status($job_id) // '';
+    my $job_dir = &_job_dir($job_id);
+    my (undef, undef, $server_dir) = _parse_script_info($inst);
+    my ($ok, $prog) = &modpack_job_resumable(
+        $job_dir, $server_dir, $status, $jmeta->{'action'} // '');
+    $ok or &error($text{'mc_modpack_resume_nothing'}
+        || 'Kein fortsetzbarer Modpack-Import gefunden.');
+    &restart_job_for_resume($job_id, $unix_user)
+        or &error($text{'manage_job_launch_failed'});
+    &append_job_log_line($job_id,
+        '=== Resume requested (Webmin) - starting worker...', $unix_user);
+    &_manage_write_job_worker_secrets($job_dir, $unix_user);
+    my $worker = "$module_root/scripts/mc_modpack_install.sh";
+    my $rc = &system_logged(
+        "MODULE_ROOT='$module_root' WEBCORE_MODPACK_RESUME=1 setsid nohup bash '$worker' "
+        . quotemeta($job_dir) . ' '
+        . quotemeta($unix_user) . ' '
+        . quotemeta($server_dir) . ' 1 &'
+    );
+    if ($rc != 0 || !&job_dispatch_verified($job_id)) {
+        &job_mark_launch_failed($job_id);
+        &error($text{'manage_job_launch_failed'});
+    }
+    return $job_id;
+}
+
+sub _manage_launch_modpack_import {
+    my ($instance_id, $inst, $unix_user, $upload_name, $upload_data) = @_;
+    my (undef, undef, $server_dir) = _parse_script_info($inst);
+    my $profile = &read_mc_profile($server_dir);
+    &error($text{'mc_profile_missing'} || 'Kein Minecraft-Profil.') unless $profile;
+
+    my $job_id = &create_job($unix_user);
+    my $job_dir = &_job_dir($job_id);
+    my ($saved, $save_err) = _manage_modpack_save_upload($job_dir, $upload_name, $upload_data, $unix_user);
+    unless ($saved) {
+        &delete_job($job_id);
+        if ($save_err eq 'too_large') {
+            &error($text{'mc_modpack_too_large'} || 'Modpack zu gross.');
+        }
+        &error($text{'mc_modpack_upload_failed'} || 'Upload fehlgeschlagen.');
+    }
+
+    return &_manage_finish_modpack_import_job(
+        $job_id, $instance_id, $inst, $unix_user, $save_err, $profile, $server_dir);
+}
+
+sub _manage_modpack_search_query {
+    my ($raw) = @_;
+    $raw //= '';
+    $raw =~ s/[\t\n\r\0]//g;
+    $raw =~ s/^\s+|\s+$//g;
+    return substr($raw, 0, 100);
+}
+
+sub _manage_query_urlencode {
+    my ($v) = @_;
+    $v //= '';
+    $v =~ s/([^A-Za-z0-9_\-.~])/sprintf('%%%02X', ord($1))/ge;
+    return $v;
+}
+
+sub _manage_mc_search_url_suffix {
+    my $suffix = '';
+    my $pack_q = _manage_modpack_search_query($in{'pack_q'} // '');
+    my $mod_q  = _manage_mod_search_query($in{'mod_q'} // '');
+    $suffix .= '&pack_q=' . _manage_query_urlencode($pack_q) if length($pack_q) >= 2;
+    $suffix .= '&mod_q=' . _manage_query_urlencode($mod_q) if length($mod_q) >= 2;
+    return $suffix;
+}
+
+sub _manage_ui_preserve_mc_search_hidden {
+    my $html = '';
+    my $mod_q  = _manage_mod_search_query($in{'mod_q'} // '');
+    my $pack_q = _manage_modpack_search_query($in{'pack_q'} // '');
+    $html .= &ui_hidden('mod_q', $mod_q) if length($mod_q) >= 2;
+    $html .= &ui_hidden('pack_q', $pack_q) if length($pack_q) >= 2;
+    return $html;
+}
+
+sub _manage_modpack_resolve_error_msg {
+    my ($err, $detail, $profile) = @_;
+    return &mc_modpack_error_message($err, $detail, $profile, \%text);
+}
+
+sub _manage_launch_modpack_remote {
+    my ($instance_id, $inst, $unix_user, $source, $ids_ref, $adopt) = @_;
+    my (undef, undef, $server_dir) = _parse_script_info($inst);
+    my $profile = &read_mc_profile($server_dir);
+    &error($text{'mc_profile_missing'} || 'Kein Minecraft-Profil.') unless $profile;
+
+    $source =~ s/[^a-z]//g;
+    return unless ref($ids_ref) eq 'HASH';
+
+    unless ($source eq 'modrinth' || $source eq 'curseforge') {
+        &error(&_manage_modpack_resolve_error_msg('invalid_source', {}, $profile));
+    }
+
+    my %ids_clean = (
+        project_id => $ids_ref->{'project_id'} // '',
+        version_id => $ids_ref->{'version_id'} // '',
+        file_id    => $ids_ref->{'file_id'} // '',
+        title      => $ids_ref->{'title'} // '',
+    );
+    if ($source eq 'curseforge') {
+        $ids_clean{'project_id'} =~ s/\D//g;
+        $ids_clean{'file_id'}    =~ s/\D//g if $ids_clean{'file_id'};
+    } else {
+        $ids_clean{'project_id'} =~ s/[^a-zA-Z0-9_-]//g;
+        $ids_clean{'version_id'} =~ s/[^a-zA-Z0-9_-]//g if $ids_clean{'version_id'};
+    }
+    unless ($ids_clean{'project_id'}) {
+        &error(&_manage_modpack_resolve_error_msg(
+            'invalid_project', { project_id => $ids_ref->{'project_id'} // '' }, $profile));
+    }
+
+    my %profile_snapshot = %$profile;
+
+    my $job_id = &create_job($unix_user);
+    my $job_dir = &_job_dir($job_id);
+    &write_modpack_job_meta($job_dir, {
+        remote_pending => 1,
+        remote_source  => $source,
+        remote_ids     => \%ids_clean,
+        format         => $source eq 'curseforge' ? 'curseforge' : 'modrinth',
+        mod_dir        => $profile->{'mod_dir'} // 'mods',
+        server_dir     => $server_dir,
+        profile        => \%profile_snapshot,
+        pack_name      => $ids_clean{'title'},
+        ($adopt ? (adopt_profile => 1) : ()),
+    }, $unix_user) or do {
+        &delete_job($job_id);
+        &error($text{'mc_modpack_meta_failed'} || 'Job-Vorbereitung fehlgeschlagen.');
+    };
+
+    &write_job_meta($job_id, $instance_id, 'modpack_import', $unix_user)
+        or do { &job_mark_launch_failed($job_id); &error($text{'manage_job_launch_failed'}); };
+
+    &_manage_write_job_worker_secrets($job_dir, $unix_user);
+
+    my $worker = "$module_root/scripts/mc_modpack_install.sh";
+    my $rc = &system_logged(
+        "MODULE_ROOT='$module_root' setsid nohup bash '$worker' "
+        . quotemeta($job_dir) . ' '
+        . quotemeta($unix_user) . ' '
+        . quotemeta($server_dir) . ' &'
+    );
+    if ($rc != 0 || !&job_dispatch_verified($job_id)) {
+        &job_mark_launch_failed($job_id);
+        &error($text{'manage_job_launch_failed'});
+    }
+    return $job_id;
+}
+
+sub _manage_launch_mod_install {
+    my ($instance_id, $inst, $unix_user, $source, $ids_ref) = @_;
+    my (undef, undef, $server_dir) = _parse_script_info($inst);
+    my $profile = &read_mc_profile($server_dir);
+    &error($text{'mc_profile_missing'} || 'Kein Minecraft-Profil.') unless $profile;
+
+    my ($ok, $meta, $err) = &prepare_mod_install_meta($source, $ids_ref, $profile, $server_dir);
+    unless ($ok) {
+        if ($err eq 'file_exists' || $err eq 'index_project') {
+            &error($text{'mc_mod_already_installed'} || 'Mod ist bereits installiert.');
+        } elsif ($err eq 'curseforge_key_missing') {
+            &error($text{'mc_modpack_curseforge_key_missing'});
+        } elsif ($err eq 'client_only') {
+            &error($text{'mc_mod_client_only'} || 'Nur Client-Mod — nicht für den Server geeignet.');
+        } elsif ($err eq 'resolve_failed') {
+            &error($text{'mc_mod_resolve_failed'} || 'Mod-Version konnte nicht aufgelöst werden.');
+        } else {
+            &error($text{'mc_mod_install_failed'} || 'Mod-Installation konnte nicht vorbereitet werden.');
+        }
+    }
+
+    my $job_id = &create_job($unix_user);
+    my $job_dir = &_job_dir($job_id);
+    &write_mod_install_job_meta($job_dir, $meta) or do {
+        &delete_job($job_id);
+        &error($text{'mc_mod_meta_failed'} || 'Job-Vorbereitung fehlgeschlagen.');
+    };
+    &write_job_meta($job_id, $instance_id, 'mc_mod_install', $unix_user)
+        or do { &job_mark_launch_failed($job_id); &error($text{'manage_job_launch_failed'}); };
+
+    my $rc = &system_logged(&user_worker_launch_cmd(
+        unix_user   => $unix_user,
+        module_root => $module_root,
+        worker      => "$module_root/scripts/mc_mod_install_user.sh",
+        args        => [ $job_dir, $unix_user, $server_dir ],
+    ));
+    if ($rc != 0 || !&job_dispatch_verified($job_id)) {
+        &job_mark_launch_failed($job_id);
+        &error($text{'manage_job_launch_failed'});
+    }
+    return $job_id;
+}
+
+sub _manage_mod_search_query {
+    my ($raw) = @_;
+    $raw //= '';
+    $raw =~ s/[\t\n\r\0]//g;
+    $raw =~ s/^\s+|\s+$//g;
+    return substr($raw, 0, 100);
+}
+
+sub _manage_render_mod_browser {
+    my ($inst, $instance_id, $safe_id) = @_;
+    my ($profile, $server_dir) = _manage_read_mc_profile($inst);
+    return unless $profile && $server_dir;
+    return unless &mc_mod_ui_ready($profile, $server_dir);
+
+    my $mod_q = _manage_mod_search_query($in{'mod_q'} // '');
+
+    print "<h3>" . &html_escape($text{'mc_mods_section'}) . "</h3>\n";
+    print "<p>" . &html_escape($text{'mc_mods_section_desc'}) . "</p>\n";
+    print &ui_form_start('manage.cgi', 'get');
+    print &ui_hidden('instance_id', $safe_id);
+    print &ui_hidden('xnavigation', '1');
+    if (length(_manage_modpack_search_query($in{'pack_q'} // '')) >= 2) {
+        print &ui_hidden('pack_q', _manage_modpack_search_query($in{'pack_q'} // ''));
+    }
+    print &ui_table_start('', undef, 2);
+    print &ui_table_row(
+        &html_escape($text{'mc_mods_search_label'}),
+        &ui_textbox('mod_q', $mod_q, 40, 0, undef, 'placeholder="' . &html_escape($text{'mc_mods_search_placeholder'}) . '"')
+    );
+    print &ui_table_end();
+    print &ui_submit($text{'mc_mods_search_btn'}, undef, undef, undef, 'btn-default');
+    print &ui_form_end();
+
+    return unless length($mod_q) >= 2;
+
+    my $search = &mc_mod_search($mod_q, $profile);
+    $search = { ok => 0, results => [], errors => ['search_failed'] }
+        unless ref($search) eq 'HASH';
+    for my $code (@{ $search->{'errors'} // [] }) {
+        if ($code eq 'curseforge_key_missing') {
+            print "<p><em>" . &html_escape($text{'mc_mods_cf_key_hint'}) . "</em></p>\n";
+        }
+    }
+    my $results = $search->{'results'} // [];
+    if (!@$results) {
+        print "<p>" . &html_escape($text{'mc_mods_no_results'}) . "</p>\n";
+        return;
+    }
+
+    my @rows;
+    for my $r (@$results) {
+        next unless ref($r) eq 'HASH';
+        my $src = $r->{'source'} // '';
+        my $src_label = $text{"mc_mods_source_$src"} // $src;
+        my $env = $r->{'env'} // 'unknown';
+        my $env_label = $text{"mc_mod_env_$env"} // $env;
+        my $title = &html_escape($r->{'title'} // '?');
+        my $desc = $r->{'description'} // '';
+        $desc = &html_escape(substr($desc, 0, 120)) if $desc =~ /\S/;
+
+        my $install_form = &ui_form_start('manage.cgi', 'post');
+        $install_form .= &ui_hidden('instance_id', $safe_id);
+        $install_form .= &ui_hidden('action', 'mc_mod_install');
+        $install_form .= &ui_hidden('xnavigation', '1');
+        $install_form .= &ui_hidden('mod_source', $src);
+        $install_form .= &ui_hidden('mod_project_id', $r->{'project_id'} // '');
+        $install_form .= &ui_hidden('mod_version_id', $r->{'version_id'} // '');
+        $install_form .= &ui_hidden('mod_file_id', $r->{'file_id'} // '');
+        $install_form .= &ui_hidden('mod_hangar_owner', $r->{'hangar_owner'} // '');
+        $install_form .= &ui_hidden('mod_hangar_slug', $r->{'hangar_slug'} // '');
+        $install_form .= &ui_hidden('mod_title', $r->{'title'} // '');
+        $install_form .= _manage_ui_preserve_mc_search_hidden();
+        $install_form .= &ui_submit($text{'mc_mods_install_btn'}, undef, undef, undef, 'btn-primary');
+        $install_form .= &ui_form_end();
+
+        push @rows, [
+            "$title<br><small>$desc</small>",
+            &html_escape($src_label),
+            &html_escape($env_label),
+            $install_form,
+        ];
+    }
+    print &ui_columns_table(
+        [
+            $text{'mc_mods_col_name'}    || 'Name',
+            $text{'mc_mods_col_source'}  || 'Quelle',
+            $text{'mc_mods_col_side'}    || 'Seite',
+            $text{'mc_mods_col_install'} || 'Aktion',
+        ],
+        '100%',
+        \@rows,
+    );
+}
+
+sub _manage_render_modpack_section {
+    my ($inst, $instance_id) = @_;
+    my ($mc_mod_prof, $mc_mod_dir) = _manage_read_mc_profile($inst);
+    return unless $mc_mod_prof && $mc_mod_dir;
+    return unless &mc_mod_ui_ready($mc_mod_prof, $mc_mod_dir);
+    my $safe_id = &html_escape($instance_id);
+    my $profile = &read_mc_profile($mc_mod_dir);
+    return unless $profile;
+
+    my $pack_q = _manage_modpack_search_query($in{'pack_q'} // '');
+
+    print "<h3>" . &html_escape($text{'mc_modpack_section'}) . "</h3>\n";
+    print "<p>" . &html_escape($text{'mc_modpack_section_desc'}) . "</p>\n";
+    &module_config_sync_in();
+    if (&modpack_cf_auto_resume_enabled()) {
+        print "<p><em>" . &html_escape($text{'mc_modpack_auto_resume_active'}
+            || 'Auto-Resume aktiv: CurseForge-Modpack-Jobs setzen nach Rate-Limits (~15,5 Min.) automatisch fort.')
+            . "</em></p>\n";
+    } else {
+        print "<p><small><i>" . &html_escape($text{'mc_modpack_auto_resume_off_hint'}
+            || 'Grosse CurseForge-Packs: Auto-Resume unter Integrationen aktivieren — Job wartet nach CDN-Limits und laeuft ohne Klick weiter.')
+            . "</i></small></p>\n";
+    }
+
+    print "<h4>" . &html_escape($text{'mc_modpack_search_section'}) . "</h4>\n";
+    print &ui_form_start('manage.cgi', 'get');
+    print &ui_hidden('instance_id', $safe_id);
+    print &ui_hidden('xnavigation', '1');
+    if (length(_manage_mod_search_query($in{'mod_q'} // '')) >= 2) {
+        print &ui_hidden('mod_q', _manage_mod_search_query($in{'mod_q'} // ''));
+    }
+    print &ui_table_start('', undef, 2);
+    print &ui_table_row(
+        &html_escape($text{'mc_modpack_search_label'}),
+        &ui_textbox('pack_q', $pack_q, 40, 0, undef,
+            'placeholder="' . &html_escape($text{'mc_modpack_search_placeholder'}) . '"')
+    );
+    print &ui_table_end();
+    print &ui_submit($text{'mc_modpack_search_btn'}, undef, undef, undef, 'btn-default');
+    print &ui_form_end();
+
+    if (length($pack_q) >= 2) {
+        my $search = &mc_modpack_search($pack_q, $profile);
+        $search = { ok => 0, results => [], errors => ['search_failed'] }
+            unless ref($search) eq 'HASH';
+        my $cf_only_hint_shown = 0;
+        for my $code (@{ $search->{'errors'} // [] }) {
+            if ($code eq 'curseforge_key_missing') {
+                print "<p><em>" . &html_escape($text{'mc_mods_cf_key_hint'}) . "</em></p>\n";
+            }
+            if ($code eq 'curseforge_recommended') {
+                print "<p><em>" . &html_escape($text{'mc_modpack_cf_only_hint'}) . "</em></p>\n";
+                $cf_only_hint_shown = 1;
+            }
+        }
+        my $filtered_incompatible = grep { $_ eq 'filtered_incompatible' }
+            @{ $search->{'errors'} // [] };
+        my $results = $search->{'results'} // [];
+        if (!@$results) {
+            print "<p>" . &html_escape($text{'mc_modpack_no_results'}) . "</p>\n";
+            if ($filtered_incompatible) {
+                print "<p><em>" . &html_escape($text{'mc_modpack_filtered_incompatible'}) . "</em></p>\n";
+            }
+            if (&mc_modpack_query_likely_curseforge_only($pack_q) && !$cf_only_hint_shown) {
+                print "<p><em>" . &html_escape($text{'mc_modpack_cf_only_hint'}) . "</em></p>\n";
+            }
+        } else {
+            my @rows;
+            for my $r (@$results) {
+                next unless ref($r) eq 'HASH';
+                my $src = $r->{'source'} // '';
+                my $src_label = $text{"mc_mods_source_$src"} // $src;
+                my $title = &html_escape($r->{'title'} // '?');
+                my $desc = $r->{'description'} // '';
+                $desc = &html_escape(substr($desc, 0, 120)) if $desc =~ /\S/;
+
+                my $compat_line = '';
+                my @compat_parts;
+                push @compat_parts, &html_escape($r->{'pack_mc'})
+                    if ($r->{'pack_mc'} // '') =~ /\S/;
+                push @compat_parts, &html_escape($r->{'pack_loader'})
+                    if ($r->{'pack_loader'} // '') =~ /\S/;
+                if (@compat_parts) {
+                    $compat_line = "<br><small style=\"opacity:0.75\">"
+                        . &html_escape($text{'mc_modpack_pack_target_label'} || 'Version:')
+                        . ' ' . join(' &middot; ', @compat_parts) . "</small>";
+                }
+
+                my $import_form = &ui_form_start('manage.cgi', 'post');
+                $import_form .= &ui_hidden('instance_id', $safe_id);
+                $import_form .= &ui_hidden('action', 'modpack_import_remote');
+                $import_form .= &ui_hidden('xnavigation', '1');
+                $import_form .= &ui_hidden('pack_source', $src);
+                $import_form .= &ui_hidden('pack_project_id', $r->{'project_id'} // '');
+                $import_form .= &ui_hidden('pack_version_id', $r->{'version_id'} // '');
+                $import_form .= &ui_hidden('pack_file_id', $r->{'file_id'} // '');
+                $import_form .= &ui_hidden('pack_title', $r->{'title'} // '');
+                $import_form .= _manage_ui_preserve_mc_search_hidden();
+                $import_form .= &ui_submit($text{'mc_modpack_import_search_btn'}, undef, undef, undef, 'btn-primary');
+                $import_form .= &ui_form_end();
+
+                push @rows, [
+                    "$title<br><small>$desc</small>$compat_line",
+                    &html_escape($src_label),
+                    $import_form,
+                ];
+            }
+            print &ui_columns_table(
+                [
+                    $text{'mc_mods_col_name'}    || 'Name',
+                    $text{'mc_mods_col_source'}  || 'Quelle',
+                    $text{'mc_modpack_col_import'} || 'Aktion',
+                ],
+                '100%',
+                \@rows,
+            );
+        }
+    }
+
+    print "<h4>" . &html_escape($text{'mc_modpack_path_section'}) . "</h4>\n";
+    print "<p>" . &html_escape($text{'mc_modpack_server_limit_hint'}) . "</p>\n";
+
+    my (undef, undef, $server_dir_fm) = _parse_script_info($inst);
+    my $filemin_html = '';
+    if ($server_dir_fm && -d $server_dir_fm) {
+        my $enc = _filemin_path_urlencode($server_dir_fm);
+        $filemin_html = " <a href='/filemin/?path=$enc' target='_blank'>"
+            . &html_escape($text{'mc_modpack_filemin_link'}) . "</a>";
+    }
+
+    print &ui_form_start('manage.cgi', 'post');
+    print &ui_hidden('instance_id', $safe_id);
+    print &ui_hidden('action', 'modpack_import_path');
+    print &ui_hidden('xnavigation', '1');
+    print _manage_ui_preserve_mc_search_hidden();
+    print &ui_table_start('', undef, 2);
+    my $path_ph = $text{'mc_modpack_path_placeholder'};
+    if ($server_dir_fm) {
+        $path_ph = "$server_dir_fm/modpack.mrpack";
+    }
+    print &ui_table_row(
+        &html_escape($text{'mc_modpack_path_label'}),
+        &ui_textbox('modpack_path', '', 60, 0, undef,
+            'placeholder="' . &html_escape($path_ph) . '"')
+            . "<br><small>" . &html_escape($text{'mc_modpack_path_hint'}) . $filemin_html . "</small>"
+    );
+    print &ui_table_end();
+    print &ui_submit($text{'mc_modpack_import_path_btn'}, undef, undef, undef, 'btn-primary');
+    print &ui_form_end();
+
+    my (undef, undef, $server_dir_resume) = _parse_script_info($inst);
+    &_manage_render_modpack_resume_ui($instance_id, $server_dir_resume);
+}
+
+sub _manage_inline_action_btn {
+    my ($html, $class) = @_;
+    $class //= 'btn-default';
+    return "<span style='display:inline-block;margin:0 6px 6px 0;vertical-align:middle'>$html</span>";
+}
+
+sub _manage_is_silent_job_action {
+    my ($action) = @_;
+    $action //= '';
+    $action =~ s/[^a-z_]//g;
+    return ($action =~ /^(?:start|stop|restart)$/) ? 1 : 0;
+}
+
+sub _manage_runtime_status {
+    my ($inst, $effective_source, %opts) = @_;
+    return instance_runtime_status($inst, %opts);
+}
+
+sub _manage_job_result_flash_mark {
+    my ($job_id) = @_;
+    $job_id =~ s/[^0-9a-f]//g;
+    return 0 unless length($job_id) == 16;
+    return &module_config_flash_mark("jobres_$job_id");
+}
+
+sub _manage_job_result_flash_consume {
+    my ($job_id) = @_;
+    $job_id =~ s/[^0-9a-f]//g;
+    return 0 unless length($job_id) == 16;
+    return &module_config_flash_consume("jobres_$job_id");
+}
+
+sub _manage_action_result_text {
+    my ($notice_action, $status) = @_;
+    $notice_action //= '';
+    $notice_action =~ s/[^a-z_]//g;
+    return '' unless $notice_action ne '';
+    my $suffix = ($status eq 'ok') ? '_ok' : '_failed';
+    my $key = "manage_action_${notice_action}${suffix}";
+    return $text{$key} // ($status eq 'ok'
+        ? ($text{'job_ok'} // 'OK')
+        : ($text{'manage_action_failed'} // 'Action failed.'));
+}
+
+sub _manage_redirect_poll_job {
+    my ($job_id, $inst_id, %opts) = @_;
+    $job_id or _manage_job_launch_failed();
+    my $url = "job_live.cgi?instance_id=" . &html_escape($inst_id)
+        . "&job=" . &html_escape($job_id);
+    $url .= "&next_status=" . &html_escape($opts{'next_status'}) if $opts{'next_status'};
+    $url .= "&next_action=" . &html_escape($opts{'next_action'}) if $opts{'next_action'};
+    $url .= "&xnavigation=1";
+    $url .= _manage_mc_search_url_suffix();
+    &redirect($url);
+    exit;
+}
+
+sub _manage_redirect_silent_job {
+    my ($job_id, $inst_id, %opts) = @_;
+    $job_id or _manage_job_launch_failed();
+    my $url = _manage_poll_job_instance_url($inst_id)
+        . "&silent_job=" . &html_escape($job_id);
+    $url .= "&next_status=" . &html_escape($opts{'next_status'}) if $opts{'next_status'};
+    $url .= "&next_action=" . &html_escape($opts{'next_action'}) if $opts{'next_action'};
+    $url .= "&notice_action=" . &html_escape($opts{'notice_action'}) if $opts{'notice_action'};
+    &redirect($url);
+    exit;
+}
+
+sub _manage_redirect_after_job_launch {
+    my ($job_id, $inst_id, %opts) = @_;
+    my $action = $opts{'action'};
+    delete $opts{'action'};
+    unless ($action) {
+        my $meta = &get_job_meta($job_id);
+        $action = $meta->{'action'} // '';
+    }
+    $opts{'notice_action'} //= $action if _manage_is_silent_job_action($action);
+    if (_manage_is_silent_job_action($action)) {
+        &_manage_redirect_silent_job($job_id, $inst_id, %opts);
+    } else {
+        &_manage_redirect_poll_job($job_id, $inst_id, %opts);
+    }
+}
+
+sub _manage_render_silent_job_poll {
+    my ($instance_id, $job_id, %opts) = @_;
+    $job_id =~ s/[^0-9a-f]//g;
+    return unless length($job_id) == 16;
+    &validate_job_for_instance($job_id, $instance_id) or return;
+
+    my $notice_action = $opts{'notice_action'} // '';
+    $notice_action =~ s/[^a-z_]//g;
+    unless ($notice_action) {
+        my $meta = &get_job_meta($job_id);
+        $notice_action = $meta->{'action'} // '';
+        $notice_action =~ s/[^a-z_]//g;
+    }
+
+    my $poll_q = "manage.cgi?instance_id=" . &html_escape($instance_id)
+        . "&action=poll_job&job=" . &html_escape($job_id)
+        . "&poll_format=json&silent=1";
+    $poll_q .= "&next_status=" . &html_escape($opts{'next_status'}) if $opts{'next_status'};
+    $poll_q .= "&next_action=" . &html_escape($opts{'next_action'}) if $opts{'next_action'};
+    $poll_q .= "&notice_action=" . &html_escape($notice_action) if $notice_action ne '';
+    my $poll_path = _manage_poll_job_module_path($poll_q);
+    my $manage_path = _manage_poll_job_module_path(
+        "manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1"
+        . _manage_mc_search_url_suffix(),
+    );
+    my $poll_cfg = job_log_json_for_script({
+        pollUrl       => $poll_path,
+        runningMsg    => $text{'manage_action_running'} || 'Aktion läuft…',
+        pollInterval  => 500,
+        pollErrorMsg  => $text{'manage_action_poll_error'} || 'Statusabfrage fehlgeschlagen — Seite neu laden.',
+    });
+
+    print "<div id=\"silent_job_banner\" class=\"alert alert-info\">"
+        . "<strong>" . &html_escape($text{'manage_action_running'} || 'Aktion läuft…')
+        . "</strong></div>\n";
+    print <<"EOF";
+<script>
+(function () {
+  var C = $poll_cfg;
+  var banner = document.getElementById("silent_job_banner");
+  var statusEl = document.getElementById("manage_runtime_status");
+  var timer = null;
+  var failCount = 0;
+  function finish(d) {
+    if (timer) {
+      clearInterval(timer);
+      timer = null;
+    }
+    var markUrl = C.pollUrl + (C.pollUrl.indexOf("?") >= 0 ? "&" : "?") + "mark_result=1";
+    fetch(markUrl, { credentials: "same-origin", cache: "no-store" }).catch(function () {});
+    if (banner) {
+      if (d.status === "ok") {
+        banner.className = "alert alert-success";
+        banner.innerHTML = "<strong>" + (d.notice_msg || "") + "</strong>";
+      } else if (d.status === "aborted") {
+        banner.className = "alert alert-info";
+        banner.innerHTML = "<strong>" + (d.notice_msg || "") + "</strong>";
+      } else {
+        banner.className = "alert alert-danger";
+        banner.innerHTML = "<strong>" + (d.notice_msg || "") + "</strong>";
+      }
+    }
+    if (statusEl && d.runtime_html) {
+      statusEl.innerHTML = d.runtime_html;
+    }
+    window.setTimeout(function () {
+      if (banner) banner.style.display = "none";
+    }, 4500);
+  }
+  function pollOnce() {
+    fetch(C.pollUrl, { credentials: "same-origin", cache: "no-store" })
+      .then(function (r) {
+        if (!r.ok) throw new Error("http " + r.status);
+        return r.json();
+      })
+      .then(function (d) {
+        failCount = 0;
+        if (d.status === "running") {
+          if (banner) {
+            banner.className = "alert alert-info";
+            banner.innerHTML = "<strong>" + C.runningMsg + "</strong>";
+          }
+          return;
+        }
+        finish(d);
+      })
+      .catch(function () {
+        failCount++;
+        if (banner && failCount >= 6) {
+          banner.className = "alert alert-warning";
+          banner.innerHTML = "<strong>" + (C.pollErrorMsg || "Poll failed") + "</strong>";
+        }
+      });
+  }
+  pollOnce();
+  timer = setInterval(pollOnce, C.pollInterval);
+})();
+</script>
+EOF
+}
+
+# Apply poll_job side effects when a background job finishes successfully.
+sub _manage_poll_job_on_ok {
+    my ($instance_id, $inst, $unix_user, $next_status, $next_action) = @_;
+    if ($next_status) {
+        &set_instance_status($instance_id, $next_status);
+        if ($next_status eq 'installed') {
+            my (undef, $script_name, $server_dir) = _parse_script_info($inst);
+            if ($script_name && &is_minecraft_game($script_name)) {
+                &ensure_mc_eula_file($server_dir, $unix_user);
+            }
+            if ($server_dir) {
+                &set_monitor_running($server_dir, $config_directory, $instance_id);
+                &_rebuild_monitor_cron();
+            }
+        }
+    }
+    return unless $next_action eq 'start';
+    my $inst_now = &get_instance_flexible($instance_id) || $inst;
+    my $source = _effective_instance_source($inst_now);
+    my (undef, $script_name, $server_dir) = _parse_script_info($inst_now);
+    if ($source eq 'steamcmd') {
+        my $start_job = &_manage_launch_background_job(
+            $instance_id, 'start', $unix_user,
+            sub {
+                my ($jid) = @_;
+                my $start_job_dir = _shell_safe_job_dir($jid);
+                return &_manage_steamcmd_worker_cmd('start', $start_job_dir, $unix_user, $server_dir);
+            },
+        );
+        if ($start_job) {
+            &_manage_redirect_silent_job($start_job, $instance_id, notice_action => 'start');
+        }
+        &error($text{'manage_job_launch_failed'} || 'Hintergrund-Job konnte nicht gestartet werden.');
+    }
+    &_manage_run_server_action($unix_user, 'start', $script_name, $server_dir);
+}
+
+sub _manage_poll_job_instance_url {
+    my ($instance_id) = @_;
+    return "manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1"
+        . _manage_mc_search_url_suffix();
+}
+
+sub _manage_poll_job_json {
+    my ($job_id, $status, $all_out, %opts) = @_;
+    $main::headerprinted = 1;
+    print "Content-type: application/json; charset=utf-8\n\n";
+    my %payload = (
+        status => $status,
+        output => (defined $all_out ? $all_out : ''),
+        done   => ($status ne 'running' ? 1 : 0),
+    );
+    if ($opts{'silent'}) {
+        my $notice_action = $opts{'notice_action'} // '';
+        $notice_action =~ s/[^a-z_]//g;
+        unless ($notice_action) {
+            my $meta = &get_job_meta($job_id);
+            $notice_action = $meta->{'action'} // '';
+            $notice_action =~ s/[^a-z_]//g;
+        }
+        if ($status ne 'running') {
+            $payload{'notice_msg'} = _manage_action_result_text($notice_action, $status);
+            if (my $inst = $opts{'inst'}) {
+                my $retries = 0;
+                if ($status eq 'ok') {
+                    if ($notice_action =~ /^(?:start|restart)$/) {
+                        $retries = 5;
+                    }
+                    elsif ($notice_action eq 'stop') {
+                        $retries = 3;
+                    }
+                }
+                my $rs = _manage_runtime_status(
+                    $inst, $opts{'effective_source'} // '',
+                    retries => $retries, light => 1);
+                $payload{'runtime_status'} = $rs;
+                $payload{'runtime_html'} = _runtime_status_badge_html($rs);
+            }
+        }
+    }
+    print job_log_json_utf8(\%payload);
+    exit;
+}
+
+# Minimal HTML fragment for in-page job polling (no Webmin header/footer).
+sub _manage_poll_job_partial {
+    my ($status, $all_out) = @_;
+    $main::headerprinted = 1;
+    print "Content-type: text/html; charset=utf-8\n\n";
+    if ($status eq 'running') {
+        print "<p id=\"job_status\">" . &html_escape($text{'job_running'}) . "</p>\n";
+    } elsif ($status eq 'ok') {
+        print "<p id=\"job_status\" data-done=\"ok\" style=\"color:green\"><strong>"
+            . &html_escape($text{'job_ok'}) . "</strong></p>\n";
+    } else {
+        print "<p id=\"job_status\" data-done=\"failed\" style=\"color:red\"><strong>"
+            . &html_escape($text{'job_failed'}) . "</strong></p>\n";
+    }
+    my $out = (defined $all_out && $all_out ne '') ? $all_out : '';
+    print &job_log_view_page_css();
+    print &job_log_view_block($out, id => 'job_out');
+    exit;
+}
+
+sub _manage_poll_job_module_path {
+    my ($path_query) = @_;
+    my $mn = $module_name // $main::module_name // 'linuxgsm-webcore';
+    $mn =~ s/[^a-zA-Z0-9_-]//g;
+    return "/$mn/$path_query";
+}
+
+# Link into Webmin's xterm module (same stack as htop/SSH-like terminal).
+sub _manage_xterm_job_dir_url {
+    my ($job_dir) = @_;
+    return undef unless defined $job_dir && $job_dir =~ m|^/|;
+    my $enc = $job_dir;
+    $enc =~ s/([^A-Za-z0-9\-_.~\/])/sprintf("%%%02X", ord($1))/ge;
+    return "/xterm/index.cgi?dir=$enc&xnavigation=1";
 }
 
 sub _enqueue_install_game_job {
@@ -164,6 +1492,8 @@ sub _enqueue_install_game_job {
     my $preclean = $opts{'preclean'} ? 1 : 0;
     my $source = _effective_instance_source($reg);
     my (undef, $script_name, $server_dir) = _parse_script_info($reg);
+    $script_name = _manage_executable_script_name($server_dir, $script_name)
+        if $source ne 'steamcmd';
     if ($source eq 'steamcmd' && ($reg->{'source'} // '') ne 'steamcmd') {
         &register_instance($instance_id, $reg->{'user'}, $reg->{'script'}, {
             source => 'steamcmd',
@@ -171,9 +1501,11 @@ sub _enqueue_install_game_job {
     }
     my $job_id = &create_job($unix_user);
     my $job_dir = _shell_safe_job_dir($job_id);
-    write_job_meta($job_id, $instance_id, $job_action, $unix_user);
+    &write_job_meta($job_id, $instance_id, $job_action, $unix_user)
+        or do { &job_mark_launch_failed($job_id); return undef; };
     &log_action('job_started', $job_id, {instance_id => $instance_id, action => $job_action});
 
+    my $rc;
     if ($source eq 'steamcmd') {
         my $app_id = $reg->{'steam_app_id'} // '';
         if (!$app_id) {
@@ -183,22 +1515,157 @@ sub _enqueue_install_game_job {
         }
         $app_id =~ s/[^0-9]//g;
         my $steamcmd_path = &detect_steamcmd() // 'steamcmd';
-        my $prefix = $preclean ? "rm -rf '$server_dir/serverfiles' && " : '';
-        my $cmd = "MODULE_ROOT='$module_root' STEAMCMD_PATH='$steamcmd_path' setsid nohup bash -lc \"$prefix" .
-                  "bash '$module_root/scripts/steamcmd_install.sh' '$job_dir' '$unix_user' '$server_dir' '$app_id' '' '$script_name'\" >/dev/null 2>&1 &";
+        my $preclean_arg = $preclean ? '1' : '';
+        my $cmd = "MODULE_ROOT='$module_root' STEAMCMD_PATH='$steamcmd_path' setsid nohup bash -lc "
+            . "\"bash '$module_root/scripts/steamcmd_install.sh' '$job_dir' '$unix_user' '$server_dir' "
+            . "'$app_id' '' '$script_name' '$preclean_arg'\" &";
         &log_debug("$job_action steamcmd: module_root=$module_root steamcmd=$steamcmd_path server_dir=$server_dir app_id=$app_id preclean=$preclean cmd=$cmd");
-        &system_logged($cmd);
+        $rc = &system_logged($cmd);
     } else {
-        my $cmd2 = "MODULE_ROOT='$module_root' setsid nohup bash '$module_root/scripts/game_action.sh' '$job_dir' '$unix_user' '$server_dir' '$script_name' install >/dev/null 2>&1 &";
+        my $cmd2 = &user_worker_launch_cmd(
+            unix_user   => $unix_user,
+            module_root => $module_root,
+            worker      => "$module_root/scripts/game_action_user.sh",
+            args        => [ $job_dir, $unix_user, $server_dir, $script_name, 'install' ],
+        );
         &log_debug("$job_action lgsm: module_root=$module_root server_dir=$server_dir cmd=$cmd2");
-        &system_logged($cmd2);
+        $rc = &system_logged($cmd2);
+    }
+
+    if ($rc != 0 || !&job_dispatch_verified($job_id)) {
+        &job_mark_launch_failed($job_id);
+        return undef;
     }
 
     return $job_id;
 }
 
+# One-time ROOT dependency bootstrap (apt) for a new instance. After this the
+# whole runtime is user-native and never touches apt. See provision_deps.sh.
+sub _manage_launch_provision_deps {
+    my ($instance_id, $inst, $unix_user) = @_;
+    my (undef, $script_name, $server_dir) = _parse_script_info($inst);
+    my $source   = _effective_instance_source($inst);
+    my $game_key = $inst->{'cached_game'} || $inst->{'game'} || $script_name || '';
+    $game_key =~ s/[^a-zA-Z0-9_.\-]//g;
+
+    my %gmeta = &load_games_meta();
+    my $app_id = $inst->{'steam_app_id'} // '';
+    if ((!defined $app_id || $app_id eq '') && $game_key && ref($gmeta{$game_key}) eq 'HASH') {
+        $app_id = $gmeta{$game_key}{'steam_app_id'} // '';
+    }
+    $app_id =~ s/[^0-9]//g;
+    my $runtime = (ref($gmeta{$game_key}) eq 'HASH') ? ($gmeta{$game_key}{'runtime'} // '') : '';
+    $runtime =~ s/[^a-z0-9_]//g;
+
+    my $job_id = &create_job($unix_user);
+    my $job_dir = _shell_safe_job_dir($job_id);
+    &write_job_meta($job_id, $instance_id, 'provision_deps', $unix_user)
+        or do { &job_mark_launch_failed($job_id); return undef; };
+
+    my $cmd = "MODULE_ROOT='$module_root' setsid nohup bash '$module_root/scripts/provision_deps.sh' "
+        . "'$job_dir' '$unix_user' '$server_dir' '$game_key' '$source' '$app_id' '$runtime' &";
+    &log_debug("provision_deps: game=$game_key source=$source app_id=$app_id runtime=$runtime");
+    my $rc = &system_logged($cmd);
+    if ($rc != 0 || !&job_dispatch_verified($job_id)) {
+        &job_mark_launch_failed($job_id);
+        return undef;
+    }
+    return $job_id;
+}
+
+# --- Pending modpack-first chain -----------------------------------------
+# The modpack import needs base tools (curl/unzip) from provision_deps. We stash
+# the chosen pack under $config_directory and launch it once, right after the
+# deps job lands back on the instance page (job_notice=ok). JS-independent.
+sub _manage_pending_modpack_path {
+    my ($instance_id) = @_;
+    my $id = $instance_id // '';
+    $id =~ s/[^a-zA-Z0-9_.\-]//g;
+    return undef unless length $id;
+    my $dir = $config_directory || $main::config_directory;
+    return undef unless defined $dir && $dir ne '';
+    return "$dir/.pending_modpack_$id";
+}
+
+sub _manage_collect_pack_params {
+    my $src = $in{'pack_source'} // '';
+    $src =~ s/[^a-z]//g;
+    my $pid = $in{'pack_project_id'} // '';
+    my $fid = $in{'pack_file_id'} // '';
+    $fid =~ s/\D//g;
+    my $vid = $in{'pack_version_id'} // '';
+    $vid =~ s/[^a-zA-Z0-9_-]//g;
+    my $tit = $in{'pack_title'} // '';
+    $tit =~ s/[\t\n\r\0]//g;
+    $tit = substr($tit, 0, 128);
+    my $adopt = ($in{'pack_adopt'} // '') eq '1' ? 1 : 0;
+    if ($src eq 'curseforge') {
+        $pid =~ s/\D//g;
+    } else {
+        $pid =~ s/[^a-zA-Z0-9_-]//g;
+    }
+    return (
+        source     => $src,
+        project_id => $pid,
+        file_id    => $fid,
+        version_id => $vid,
+        title      => $tit,
+        adopt      => $adopt,
+    );
+}
+
+sub _manage_stash_pending_modpack {
+    my ($instance_id, $params) = @_;
+    my $path = _manage_pending_modpack_path($instance_id) or return 0;
+    require JSON::PP;
+    open(my $fh, '>', $path) or return 0;
+    print {$fh} JSON::PP::encode_json($params) or do { close($fh); return 0; };
+    close($fh) or return 0;
+    chmod(0600, $path);
+    return 1;
+}
+
+sub _manage_consume_pending_modpack {
+    my ($instance_id) = @_;
+    my $path = _manage_pending_modpack_path($instance_id) or return undef;
+    return undef unless -f $path;
+    open(my $fh, '<', $path) or return undef;
+    local $/;
+    my $raw = <$fh>;
+    close($fh);
+    unlink($path);
+    require JSON::PP;
+    my $data = eval { JSON::PP::decode_json($raw) };
+    return (ref($data) eq 'HASH') ? $data : undef;
+}
+
+# Launch a stashed modpack import once the deps bootstrap has finished.
+sub _manage_maybe_launch_pending_modpack {
+    my ($instance_id, $inst, $unix_user) = @_;
+    my $path = _manage_pending_modpack_path($instance_id);
+    return unless defined $path && -f $path;
+    # Never stack on top of a still-running job (e.g. deps not truly done).
+    return if &find_running_job_for_instance($instance_id);
+    my $pending = _manage_consume_pending_modpack($instance_id);
+    return unless ref($pending) eq 'HASH';
+    return unless $pending->{'source'} && (($pending->{'project_id'} // '') ne '');
+    my $job = &_manage_launch_modpack_remote(
+        $instance_id, $inst, $unix_user, $pending->{'source'},
+        {
+            project_id => $pending->{'project_id'},
+            file_id    => $pending->{'file_id'} // '',
+            version_id => $pending->{'version_id'} // '',
+            title      => $pending->{'title'} // '',
+        },
+        ($pending->{'adopt'} ? 1 : 0),
+    );
+    &_manage_redirect_poll_job($job, $instance_id) if $job;
+}
+
 my $instance_id = &sanitize_input($in{'instance_id'} || $in{'user'} || '');
 my $inst = &get_instance_flexible($instance_id) or &error($text{'err_not_found'});
+$inst = _manage_reconcile_mc_instance_status($inst, $instance_id);
 my $unix_user = $inst->{'user'};
 my $effective_source = _effective_instance_source($inst);
 my $is_fresh  = ($inst->{'instance_status'} // 'installed') ne 'installed';
@@ -214,14 +1681,10 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
     }
 
     if ($action eq 'fw_open') {
-        # Open every port-typed field (game/query/beacon for UE5).
         my (undef, $sn_fw, $sd_fw) = _parse_script_info($inst);
         my %cfg_fw = $sn_fw && $sd_fw ? &_parse_lgsm_config($sd_fw, $sn_fw) : ();
         my $ports = _collect_instance_ports($sn_fw, \%cfg_fw);
-        for my $p (@$ports) {
-            &firewall_open_port($p->{port}, 'tcp');
-            &firewall_open_port($p->{port}, 'udp');
-        }
+        &_manage_apply_firewall_ports($ports, 'open');
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
         exit;
     }
@@ -229,10 +1692,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         my (undef, $sn_fw, $sd_fw) = _parse_script_info($inst);
         my %cfg_fw = $sn_fw && $sd_fw ? &_parse_lgsm_config($sd_fw, $sn_fw) : ();
         my $ports = _collect_instance_ports($sn_fw, \%cfg_fw);
-        for my $p (@$ports) {
-            &firewall_close_port($p->{port}, 'tcp');
-            &firewall_close_port($p->{port}, 'udp');
-        }
+        &_manage_apply_firewall_ports($ports, 'close');
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
         exit;
     }
@@ -243,10 +1703,8 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
 
         my $config_file = "$script_dir/lgsm/config-lgsm/$script_name/$script_name.cfg";
         my $default_cfg = "$script_dir/lgsm/config-default/config-lgsm/$script_name/_default.cfg";
-        my $backup_cfg  = "$default_cfg.bak";
 
-        &error("Invalid config path") unless
-            $config_file =~ m|^/[a-zA-Z0-9_./()\-]+/lgsm/config-lgsm/[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+\.cfg$|;
+        &validate_config_target($config_file);
         &error("Invalid default path") unless
             $default_cfg =~ m|^/[a-zA-Z0-9_./()\-]+/lgsm/config-default/config-lgsm/[a-zA-Z0-9_-]+/_default\.cfg$|;
 
@@ -311,13 +1769,12 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
             push @output_lines, "$k=\"$form_overrides{$k}\"" unless $seen{$k};
         }
 
-        # Ensure lgsm/config-lgsm/$script_name/ exists
-        &system_logged("su -s /bin/bash -c \"mkdir -p \Q$script_dir\E/lgsm/config-lgsm/$script_name\" $unix_user");
+        # Ensure lgsm/config-lgsm/$script_name/ exists (single su with write)
+        my $cfg_content = join("\n", @output_lines) . "\n";
+        $cfg_content = &apply_instance_profile_to_cfg_content($cfg_content, $script_name, $script_dir);
 
-        &_write_file_as_user($config_file, join("\n", @output_lines) . "\n", $unix_user);
-
-        # Backup _default.cfg so LGSM regenerates it cleanly on next run
-        rename($default_cfg, $backup_cfg) if -f $default_cfg;
+        &_write_file_as_user($config_file, $cfg_content, $unix_user,
+            mkdir => "$script_dir/lgsm/config-lgsm/$script_name");
 
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
         exit;
@@ -348,12 +1805,10 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
             delete $common_vals->{$key};  # remove from common regardless
         }
 
-        # Ensure $script subdir exists
-        &system_logged("su -s /bin/bash -c \"mkdir -p \Q$script_dir\E/lgsm/config-lgsm/$script_name\" $unix_user");
-
-        # Write $script.cfg
+        # Ensure $script subdir exists (single su with write)
         my $script_content = join('', map { exists $script_vals->{$_} ? "$_=\"$script_vals->{$_}\"\n" : () } @$script_order);
-        &_write_file_as_user($script_path, $script_content, $unix_user);
+        &_write_file_as_user($script_path, $script_content, $unix_user,
+            mkdir => "$script_dir/lgsm/config-lgsm/$script_name");
 
         # Write back common.cfg; delete if nothing remains
         my @remaining = grep { exists $common_vals->{$_} } @$common_order;
@@ -385,76 +1840,71 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
             my %cfg_ctx = &_parse_lgsm_config($script_dir, $script_name);
             my $hint    = &get_game_config_path($script_name);
             $cfg_path = &resolve_game_server_config_path($script_dir, $script_name, \%cfg_ctx, $hint);
-            &error("Invalid game config path") unless $cfg_path =~ m|^\Q$script_dir\E/|;
+            $cfg_path = &validate_game_config_path($script_dir, $cfg_path);
         } else {
             $cfg_path = "$script_dir/lgsm/config-lgsm/common.cfg";
         }
         &validate_config_target($cfg_path) unless $cfg_file_key eq 'game';
 
-        # Ensure the parent directory exists
+        # Ensure the parent directory exists (combined with write below)
         (my $cfg_dir = $cfg_path) =~ s|/[^/]+$||;
-        &system_logged("su -s /bin/bash -c \"mkdir -p \Q$cfg_dir\E\" $unix_user");
 
         if ($cfg_file_key eq 'game') {
             unless (-f $cfg_path) {
-                # LGSM games can be bootstrapped via a quick start/stop cycle.
-                # Non-LGSM (steamcmd/wine) MUST NOT — that would launch wine in
-                # the CGI foreground without a job/screen. The user gets a
-                # clear error instead and starts the server normally.
                 if ($effective_source eq 'steamcmd') {
                     &error($text{'config_editor_game_missing_steamcmd'}
                         || $text{'config_editor_game_missing'});
                 }
-                &run_server_action($unix_user, 'start', $script_name, $script_dir);
-                sleep 2;
-                &run_server_action($unix_user, 'stop', $script_name, $script_dir);
+                &_manage_dispatch_game_config_bootstrap($instance_id, $inst, $unix_user);
             }
             -f $cfg_path or &error($text{'config_editor_game_missing'});
             my $new_content;
             if (int($in{'raw_mode'} || 0)) {
                 $new_content = $in{'game_config_raw'} // '';
             } else {
-                my $raw_base = $in{'game_config_original'} // '';
-                my $fmt = &detect_game_config_format($cfg_path, $raw_base);
+                my $raw_base = &read_game_config_raw($cfg_path);
+                if ($raw_base eq '' && ($in{'game_config_original'} // '') ne '') {
+                    $raw_base = &normalize_game_config_text($in{'game_config_original'});
+                }
+                my ($base_vals, $base_order, $fmt) =
+                    &parse_game_config_values($script_name, $cfg_path, $raw_base);
                 if ($fmt eq 'json') {
-                    my ($jvals, $jorder) = &parse_json_config($raw_base);
                     my %updates;
                     for my $param (keys %in) {
                         next unless $param =~ /^field_(.+)$/;
                         my $key = $1;
                         my $val = $in{$param};
                         $val = '' unless defined $val;
-                        # Browsers don't submit unchecked checkboxes; we rely
-                        # on the server's existing JSON value type — anything
-                        # present here is an updated value.
                         $updates{$key} = $val;
                     }
                     $new_content = &update_json_config($raw_base, \%updates);
                 }
                 elsif ($fmt eq 'properties') {
-                    my ($prop_vals, $prop_order) = &parse_properties_file($raw_base);
-                    for my $key (@$prop_order) {
-                        $prop_vals->{$key} = $in{"field_$key"}
-                            if exists $in{"field_$key"};
+                    my %prop_vals = %{$base_vals || {}};
+                    for my $param (keys %in) {
+                        next unless $param =~ /^field_(.+)$/;
+                        my $key = $1;
+                        $prop_vals{$key} = $in{$param} if exists $in{$param};
                     }
-                    $new_content = &update_properties_file($raw_base, $prop_vals);
+                    $new_content = &update_properties_file($raw_base, \%prop_vals);
                 } else {
-                    my ($opt_vals, $opt_order) = &parse_option_settings_from_ini($raw_base);
+                    my %opt_vals = %{$base_vals || {}};
+                    my @opt_order = @{$base_order || []};
                     for my $param (keys %in) {
                         next unless $param =~ /^field_(\w+)$/;
                         my $key = $1;
                         my $val = $in{$param} // '';
-                        $opt_vals->{$key} = $val;
-                        push @$opt_order, $key unless grep { $_ eq $key } @$opt_order;
+                        $opt_vals{$key} = $val;
+                        push @opt_order, $key unless grep { $_ eq $key } @opt_order;
                     }
-                    $new_content = &update_option_settings_in_ini($raw_base, $opt_vals, $opt_order);
+                    $new_content = &update_option_settings_in_ini($raw_base, \%opt_vals, \@opt_order);
                 }
             }
-            &_write_file_as_user($cfg_path, $new_content, $unix_user);
+            &_write_file_as_user($cfg_path, $new_content, $unix_user, mkdir => $cfg_dir);
         } elsif (int($in{'raw_mode'} || 0)) {
             # Raw mode: filter content and write as game user
             my $raw_lines = &filter_raw_config($in{'config_raw'} // '');
-            &_write_file_as_user($cfg_path, join("\n", @$raw_lines) . "\n", $unix_user);
+            &_write_file_as_user($cfg_path, join("\n", @$raw_lines) . "\n", $unix_user, mkdir => $cfg_dir);
         } else {
             # Form mode: read current file, apply field_* overrides, write back as game user
             my ($cur_vals, $cur_order, undef) = &read_config_file($cfg_path);
@@ -470,7 +1920,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
             }
 
             my $form_content = join('', map { exists $cur_vals->{$_} ? "$_=\"$cur_vals->{$_}\"\n" : () } @$cur_order);
-            &_write_file_as_user($cfg_path, $form_content, $unix_user);
+            &_write_file_as_user($cfg_path, $form_content, $unix_user, mkdir => $cfg_dir);
         }
 
         &log_action('config_saved', $instance_id, {config_type => $cfg_file_key});
@@ -570,7 +2020,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         ) == 0 or &error("Failed creating FTP user");
         &register_instance($instance_id, $unix_user, $inst->{'script'}, {
             sftp_user => $ftp_user,
-        });
+        }) or &error($text{'ftp_register_failed'} || $text{'wizard_register_failed'});
         &save_ftp_password($config_directory, $instance_id, $ftp_pass);
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
         exit;
@@ -583,78 +2033,266 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         &ftpasswd_delete_user(file => $auth_file, name => $ftp_user);
         &register_instance($instance_id, $unix_user, $inst->{'script'}, {
             sftp_user => '',
-        });
+        }) or &error($text{'ftp_register_failed'} || $text{'wizard_register_failed'});
         &delete_ftp_password($config_directory, $instance_id);
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
         exit;
     }
     elsif ($action eq 'save_steam_account') {
-        &can_create() or &error($text{'err_acl_admin_only'} || 'Access denied');
         my $sa = $in{'steam_account'} // '';
         $sa =~ s/[^a-zA-Z0-9_\-]//g;
         $sa = substr($sa, 0, 64);
         &register_instance($instance_id, $unix_user, $inst->{'script'}, {
             steam_account => $sa,
-        });
+        }) or &error($text{'wizard_register_failed'});
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
         exit;
     }
+    elsif ($action eq 'provision_deps') {
+        &_manage_redirect_if_job_running($instance_id, 'provision_deps');
+        # Optional modpack-first chain: stash the chosen pack so it auto-starts
+        # once deps are done (see _manage_maybe_launch_pending_modpack).
+        my $then = $in{'then'} // '';
+        $then =~ s/[^a-z_]//g;
+        if ($then eq 'modpack') {
+            my %pack = _manage_collect_pack_params();
+            if ($pack{'source'} && $pack{'project_id'} ne '') {
+                _manage_stash_pending_modpack($instance_id, \%pack);
+            }
+        }
+        my $job_id = &_manage_launch_provision_deps($instance_id, $inst, $unix_user);
+        $job_id or _manage_job_launch_failed();
+        &_manage_redirect_poll_job($job_id, $instance_id);
+    }
     elsif ($action eq 'setup_lgsm') {
+        &_manage_redirect_if_job_running($instance_id, 'setup_lgsm');
         my $reg = &get_registered_instance($instance_id) or &error($text{'err_not_found'});
         my $script_path = $reg->{'script'} // '';
         my $script_name = (split('/', $script_path))[-1] // '';
         (my $server_dir = $script_path) =~ s|/[^/]+$||;
         $script_name =~ s/[^a-zA-Z0-9_-]//g;
+        my $lgsm_short = defined &resolve_lgsm_game_shortname
+            ? &resolve_lgsm_game_shortname($script_name) : $script_name;
+        my $verify_script = defined &resolve_lgsm_game_script
+            ? &resolve_lgsm_game_script($script_name) : $script_name;
+        $verify_script =~ s/[^a-zA-Z0-9_-]//g;
+        $lgsm_short =~ s/[^a-zA-Z0-9_-]//g;
 
-        my $job_id = &create_job($unix_user);
-        my $job_dir = _shell_safe_job_dir($job_id);
-        my $worker = "$module_root/scripts/setup_lgsm.sh";
-        write_job_meta($job_id, $instance_id, 'setup_lgsm', $unix_user);
-        &log_action('job_started', $job_id, {instance_id => $instance_id, action => 'setup_lgsm'});
-        &system_logged("setsid nohup bash '$worker' '$job_dir' '$unix_user' '$server_dir' '$script_name' >/dev/null 2>&1 &");
-        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&action=poll_job&job=" . &html_escape($job_id) . "&next_status=lgsm_ready&xnavigation=1");
-        exit;
+        my $worker = "$module_root/scripts/setup_lgsm_user.sh";
+        my $job_id = &_manage_launch_background_job(
+            $instance_id, 'setup_lgsm', $unix_user,
+            sub {
+                my ($jid) = @_;
+                return &user_worker_launch_cmd(
+                    unix_user   => $unix_user,
+                    module_root => $module_root,
+                    worker      => $worker,
+                    args        => [ &_job_dir($jid), $unix_user, $server_dir, $lgsm_short, $verify_script ],
+                );
+            },
+        );
+        &_manage_redirect_poll_job($job_id, $instance_id, next_status => 'lgsm_ready');
+    }
+    elsif ($action eq 'mc_java_setup') {
+        &_manage_redirect_if_job_running($instance_id, 'mc_java_setup');
+        my (undef, $script_name, $server_dir) = _parse_script_info($inst);
+        my $profile = &read_mc_profile($server_dir);
+        &error($text{'mc_profile_missing'} || 'Kein Minecraft-Profil (.mcprofile.json).') unless $profile;
+        my $lgsm_script = $profile->{'lgsm_script'} // $script_name;
+        $lgsm_script =~ s/[^a-zA-Z0-9_-]//g;
+        my $job_id = &_manage_launch_background_job(
+            $instance_id, 'mc_java_setup', $unix_user,
+            sub {
+                my ($jid) = @_;
+                return &user_worker_launch_cmd(
+                    unix_user   => $unix_user,
+                    module_root => $module_root,
+                    worker      => "$module_root/scripts/mc_java_install_user.sh",
+                    args        => [ &_job_dir($jid), $unix_user, $server_dir, $lgsm_script ],
+                );
+            },
+        );
+        &_manage_redirect_poll_job($job_id, $instance_id, next_status => 'mc_ready');
+    }
+    elsif ($action eq 'mc_loader_setup') {
+        &_manage_redirect_if_job_running($instance_id, 'mc_loader_setup');
+        my (undef, $script_name, $server_dir) = _parse_script_info($inst);
+        my $profile = &read_mc_profile($server_dir);
+        &error($text{'mc_profile_missing'} || 'Kein Minecraft-Profil (.mcprofile.json).') unless $profile;
+        my $loader = $profile->{'loader'} // '';
+        &error($text{'mc_loader_not_modded'} || 'Dieser Loader wird nicht über Mod-Loader-Setup installiert.')
+            unless &mc_loader_is_modded($loader);
+        my $lgsm_script = $profile->{'lgsm_script'} // $script_name;
+        $lgsm_script =~ s/[^a-zA-Z0-9_-]//g;
+        my $job_id = &_manage_launch_background_job(
+            $instance_id, 'mc_loader_setup', $unix_user,
+            sub {
+                my ($jid) = @_;
+                return &user_worker_launch_cmd(
+                    unix_user   => $unix_user,
+                    module_root => $module_root,
+                    worker      => "$module_root/scripts/mc_loader_install_user.sh",
+                    args        => [ &_job_dir($jid), $unix_user, $server_dir, $lgsm_script ],
+                );
+            },
+        );
+        &_manage_redirect_poll_job($job_id, $instance_id, next_status => 'installed');
+    }
+    elsif ($action eq 'modpack_import') {
+        my (undef, undef, $server_dir) = _parse_script_info($inst);
+        &read_mc_profile($server_dir)
+            or &error($text{'mc_profile_missing'} || 'Kein Minecraft-Profil.');
+        my $upload_data = $in{'modpack_file'};
+        my $upload_name = $in{'modpack_file_filename'} // $in{'modpack_upload_filename'} // 'pack.mrpack';
+        unless (defined $upload_data && length($upload_data) > 0) {
+            &error($text{'mc_modpack_upload_missing'} || 'Keine Datei ausgewählt.');
+        }
+        my $job_id = &_manage_launch_modpack_import(
+            $instance_id, $inst, $unix_user, $upload_name, $upload_data);
+        &_manage_redirect_poll_job($job_id, $instance_id);
+    }
+    elsif ($action eq 'modpack_import_path') {
+        my (undef, undef, $server_dir) = _parse_script_info($inst);
+        &read_mc_profile($server_dir)
+            or &error($text{'mc_profile_missing'} || 'Kein Minecraft-Profil.');
+        my $path = $in{'modpack_path'} // '';
+        $path =~ s/[\t\n\r\0]//g;
+        $path = substr($path, 0, 512);
+        my $job_id = &_manage_launch_modpack_from_path(
+            $instance_id, $inst, $unix_user, $path);
+        &_manage_redirect_poll_job($job_id, $instance_id);
+    }
+    elsif ($action eq 'modpack_import_remote') {
+        my (undef, undef, $server_dir) = _parse_script_info($inst);
+        &read_mc_profile($server_dir)
+            or &error($text{'mc_profile_missing'} || 'Kein Minecraft-Profil.');
+        my $source = $in{'pack_source'} // '';
+        $source =~ s/[^a-z]//g;
+        my %ids = (
+            project_id   => $in{'pack_project_id'} // '',
+            version_id   => $in{'pack_version_id'} // '',
+            file_id      => $in{'pack_file_id'} // '',
+            title        => $in{'pack_title'} // '',
+        );
+        for my $k (keys %ids) {
+            $ids{$k} =~ s/[\t\n\r\0]//g;
+            $ids{$k} = substr($ids{$k}, 0, 128);
+        }
+        if ($source eq 'curseforge') {
+            $ids{'project_id'} =~ s/\D//g if $ids{'project_id'};
+        } else {
+            $ids{'project_id'} =~ s/[^a-zA-Z0-9_-]//g if $ids{'project_id'};
+        }
+        $ids{'version_id'} =~ s/[^a-zA-Z0-9_-]//g if $ids{'version_id'};
+        $ids{'file_id'}    =~ s/\D//g if $ids{'file_id'};
+        my $adopt = (($in{'pack_adopt'} // '') eq '1') ? 1 : 0;
+        my $job_id = &_manage_launch_modpack_remote(
+            $instance_id, $inst, $unix_user, $source, \%ids, $adopt);
+        &_manage_redirect_poll_job($job_id, $instance_id);
+    }
+    elsif ($action eq 'modpack_import_resume') {
+        my $resume_job = $in{'job'} // '';
+        $resume_job =~ s/[^0-9a-f]//g;
+        $resume_job = substr($resume_job, 0, 16);
+        unless ($resume_job) {
+            my (undef, undef, $sd) = _parse_script_info($inst);
+            ($resume_job, undef) = _manage_find_resumable_modpack_job($instance_id, $sd);
+        }
+        $resume_job or &error($text{'mc_modpack_resume_nothing'}
+            || 'Kein fortsetzbarer Modpack-Import gefunden.');
+        my $job_id = &_manage_launch_modpack_resume(
+            $instance_id, $inst, $unix_user, $resume_job);
+        &_manage_redirect_poll_job($job_id, $instance_id);
+    }
+    elsif ($action eq 'mc_mod_install') {
+        my (undef, undef, $server_dir) = _parse_script_info($inst);
+        &read_mc_profile($server_dir)
+            or &error($text{'mc_profile_missing'} || 'Kein Minecraft-Profil.');
+        my $source = $in{'mod_source'} // '';
+        $source =~ s/[^a-z]//g;
+        my %ids = (
+            project_id   => $in{'mod_project_id'} // '',
+            version_id   => $in{'mod_version_id'} // '',
+            file_id      => $in{'mod_file_id'} // '',
+            hangar_owner => $in{'mod_hangar_owner'} // '',
+            hangar_slug  => $in{'mod_hangar_slug'} // '',
+            title        => $in{'mod_title'} // '',
+        );
+        for my $k (keys %ids) {
+            $ids{$k} =~ s/[\t\n\r\0]//g;
+            $ids{$k} = substr($ids{$k}, 0, 128);
+        }
+        $ids{'project_id'} =~ s/[^a-zA-Z0-9_-]//g if $ids{'project_id'};
+        $ids{'version_id'} =~ s/[^a-zA-Z0-9_-]//g if $ids{'version_id'};
+        $ids{'file_id'}    =~ s/\D//g if $ids{'file_id'};
+        $ids{'hangar_owner'} =~ s/[^a-zA-Z0-9_-]//g if $ids{'hangar_owner'};
+        $ids{'hangar_slug'}  =~ s/[^a-zA-Z0-9_-]//g if $ids{'hangar_slug'};
+        my $job_id = &_manage_launch_mod_install($instance_id, $inst, $unix_user, $source, \%ids);
+        &_manage_redirect_poll_job($job_id, $instance_id);
     }
     elsif ($action eq 'install_game') {
-        &can_create() or &error($text{'err_acl_admin_only'} || 'Access denied');
+        my (undef, undef, $server_dir) = _parse_script_info($inst);
+        my $profile = $server_dir ? &read_mc_profile($server_dir) : undef;
+        if ($profile && &mc_loader_is_modded($profile->{'loader'} // '')) {
+            &error($text{'mc_loader_use_modded_setup'}
+                || 'Für Fabric/Forge/NeoForge bitte Java-Setup und Mod-Loader-Installation verwenden.');
+        }
+        &_manage_redirect_if_job_running($instance_id, 'install_game');
         my $reg = &get_registered_instance($instance_id) or &error($text{'err_not_found'});
+        my $source = _effective_instance_source($reg);
+        if ($source ne 'steamcmd') {
+            my (undef, $script_name, $server_dir) = _parse_script_info($reg);
+            my $exec = _manage_executable_script_name($server_dir, $script_name);
+            unless (-x "$server_dir/$exec") {
+                &error($text{'setup_lgsm_required'}
+                    || 'LGSM-Skript fehlt — bitte zuerst „LGSM einrichten“ ausführen.');
+            }
+        }
         my $job_id = _enqueue_install_game_job($instance_id, $reg, $unix_user);
-        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id)
-            . "&action=poll_job&job=" . &html_escape($job_id)
-            . "&next_status=installed&xnavigation=1");
-        exit;
+        &_manage_redirect_poll_job($job_id, $instance_id, next_status => 'installed');
     }
     elsif ($action eq 'update') {
         my $source = $effective_source;
         my ($script_path, $script_name, $server_dir) = _parse_script_info($inst);
-
-        my $job_id = &create_job($unix_user);
-        my $job_dir = _shell_safe_job_dir($job_id);
-        write_job_meta($job_id, $instance_id, 'update', $unix_user);
-        &log_action('job_started', $job_id, {instance_id => $instance_id, action => 'update'});
-
-        if ($source eq 'steamcmd') {
-            my $steamcmd_path = &detect_steamcmd() // 'steamcmd';
-            &system_logged("MODULE_ROOT='$module_root' STEAMCMD_PATH='$steamcmd_path' setsid nohup bash '$module_root/scripts/steamcmd_control.sh' update '$job_dir' '$unix_user' '$server_dir' >/dev/null 2>&1 &");
-        } else {
-            &system_logged("MODULE_ROOT='$module_root' setsid nohup bash '$module_root/scripts/game_action.sh' '$job_dir' '$unix_user' '$server_dir' '$script_name' update >/dev/null 2>&1 &");
-        }
-        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&action=poll_job&job=" . &html_escape($job_id) . "&xnavigation=1");
-        exit;
+        my $job_id = &_manage_launch_background_job(
+            $instance_id, 'update', $unix_user,
+            sub {
+                my ($jid) = @_;
+                my $job_dir = _shell_safe_job_dir($jid);
+                if ($source eq 'steamcmd') {
+                    my $steamcmd_path = &detect_steamcmd() // 'steamcmd';
+                    return &_manage_steamcmd_worker_cmd('update', $job_dir, $unix_user, $server_dir,
+                        steamcmd_path => $steamcmd_path);
+                }
+                return &user_worker_launch_cmd(
+                    unix_user   => $unix_user,
+                    module_root => $module_root,
+                    worker      => "$module_root/scripts/game_action_user.sh",
+                    args        => [ $job_dir, $unix_user, $server_dir, $script_name, 'update' ],
+                );
+            },
+        );
+        &_manage_redirect_poll_job($job_id, $instance_id);
     }
     elsif ($action eq 'validate') {
         my $script_name = (split('/', $inst->{'script'}))[-1];
         (my $server_dir = $inst->{'script'}) =~ s|/[^/]+$||;
         $script_name =~ s/[^a-zA-Z0-9_-]//g;
-
-        my $job_id = &create_job($unix_user);
-        my $job_dir = _shell_safe_job_dir($job_id);
-        write_job_meta($job_id, $instance_id, 'validate', $unix_user);
-        &log_action('job_started', $job_id, {instance_id => $instance_id, action => 'validate'});
-        my $worker = "$module_root/scripts/game_action.sh";
-        &system_logged("MODULE_ROOT='$module_root' setsid nohup bash '$worker' '$job_dir' '$unix_user' '$server_dir' '$script_name' validate >/dev/null 2>&1 &");
-        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&action=poll_job&job=" . &html_escape($job_id) . "&xnavigation=1");
-        exit;
+        my $worker = "$module_root/scripts/game_action_user.sh";
+        my $job_id = &_manage_launch_background_job(
+            $instance_id, 'validate', $unix_user,
+            sub {
+                my ($jid) = @_;
+                my $job_dir = _shell_safe_job_dir($jid);
+                return &user_worker_launch_cmd(
+                    unix_user   => $unix_user,
+                    module_root => $module_root,
+                    worker      => $worker,
+                    args        => [ $job_dir, $unix_user, $server_dir, $script_name, 'validate' ],
+                );
+            },
+        );
+        &_manage_redirect_poll_job($job_id, $instance_id);
     }
     elsif ($action eq 'reinstall') {
         my $source = $effective_source;
@@ -668,23 +2306,37 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
             my $script_name = (split('/', $inst->{'script'}))[-1];
             (my $server_dir = $inst->{'script'}) =~ s|/[^/]+$||;
             $script_name =~ s/[^a-zA-Z0-9_-]//g;
-            $job_id = &create_job($unix_user);
-            my $job_dir = _shell_safe_job_dir($job_id);
-            write_job_meta($job_id, $instance_id, 'reinstall', $unix_user);
-            &log_action('job_started', $job_id, {instance_id => $instance_id, action => 'reinstall'});
-            my $worker = "$module_root/scripts/game_action.sh";
-            &system_logged("MODULE_ROOT='$module_root' setsid nohup bash '$worker' '$job_dir' '$unix_user' '$server_dir' '$script_name' reinstall >/dev/null 2>&1 &");
+            my $worker = "$module_root/scripts/game_action_user.sh";
+            $job_id = &_manage_launch_background_job(
+                $instance_id, 'reinstall', $unix_user,
+                sub {
+                    my ($jid) = @_;
+                    my $job_dir = _shell_safe_job_dir($jid);
+                    return &user_worker_launch_cmd(
+                        unix_user   => $unix_user,
+                        module_root => $module_root,
+                        worker      => $worker,
+                        args        => [ $job_dir, $unix_user, $server_dir, $script_name, 'reinstall' ],
+                    );
+                },
+            );
         }
-        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&action=poll_job&job=" . &html_escape($job_id) . "&xnavigation=1");
-        exit;
+        &_manage_redirect_poll_job($job_id, $instance_id);
     }
     elsif ($action eq 'abort_job') {
         my $job_id = $in{'job'} // '';
         $job_id =~ s/[^0-9a-f]//g;
+        $job_id = substr($job_id, 0, 16);
         $job_id or &error($text{'err_invalid_input'});
-        abort_job($job_id);
+        my $jmeta = &get_job_meta($job_id);
+        my $juser = $jmeta->{'unix_user'} // $unix_user;
+        &append_job_log_line($job_id, '=== Job aborted by user (Webmin) ===', $juser);
+        &abort_job($job_id);
         &log_action('job_aborted', $job_id, {instance_id => $instance_id});
-        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
+        &module_config_flash_mark("jobabort_$job_id")
+            or &error($text{'manage_job_launch_failed'} || 'Job abort failed.');
+        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id)
+            . "&xnavigation=1&job_aborted=" . &html_escape($job_id));
         exit;
     }
     elsif ($action eq 'init_game_config') {
@@ -694,6 +2346,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         my %cfg_ctx  = &_parse_lgsm_config($script_dir, $script_name);
         my $hint     = &get_game_config_path($script_name);
         my $cfg_path = &resolve_game_server_config_path($script_dir, $script_name, \%cfg_ctx, $hint);
+        $cfg_path = &validate_game_config_path($script_dir, $cfg_path) if $cfg_path ne '';
 
         # Bootstrap is only safe for LGSM scripts (which return immediately).
         # For SteamCMD/Wine games './<script> start' would launch wine in the
@@ -705,85 +2358,139 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         }
 
         unless (-f $cfg_path) {
-            &run_server_action($unix_user, 'start', $script_name, $script_dir);
-            sleep 2;
-            &run_server_action($unix_user, 'stop', $script_name, $script_dir);
+            &_manage_dispatch_game_config_bootstrap($instance_id, $inst, $unix_user);
         }
 
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) .
                   "&config_file=game&config_view=game&xnavigation=1");
         exit;
     }
-    elsif ($action eq 'restart' && $effective_source eq 'steamcmd') {
-        # Restart must not fork stop+start in parallel — RocksDB/Wine need a clean teardown first.
-        # steamcmd_control.sh has no combined restart action; run stop synchronously, then start detached.
-        my (undef, undef, $server_dir) = _parse_script_info($inst);
-        unless (_steamcmd_server_binary_exists($server_dir)) {
-            &error($text{'err_invalid_action'});
-        }
-        my $jid_stop = &create_job($unix_user);
-        my $job_dir_stop = _shell_safe_job_dir($jid_stop);
-        write_job_meta($jid_stop, $instance_id, 'stop', $unix_user);
-        &log_action('job_started', $jid_stop, {instance_id => $instance_id, action => 'stop'});
-        &system_logged("MODULE_ROOT='$module_root' bash '$module_root/scripts/steamcmd_control.sh' stop '$job_dir_stop' '$unix_user' '$server_dir' >/dev/null 2>&1");
-        sleep 5;
-        my $jid_start = &create_job($unix_user);
-        my $job_dir_start = _shell_safe_job_dir($jid_start);
-        write_job_meta($jid_start, $instance_id, 'start', $unix_user);
-        &log_action('job_started', $jid_start, {instance_id => $instance_id, action => 'start'});
-        &system_logged("MODULE_ROOT='$module_root' setsid nohup bash '$module_root/scripts/steamcmd_control.sh' start '$job_dir_start' '$unix_user' '$server_dir' >/dev/null 2>&1 &");
-        &_ensure_monitor_cron();
-        &set_monitor_running($server_dir, $config_directory, $instance_id);
-        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
-        exit;
-    }
-    elsif ($action eq 'start' || $action eq 'stop') {
+    elsif ($action eq 'start' || $action eq 'stop' || $action eq 'restart') {
+        &_manage_redirect_if_job_running($instance_id, $action);
         my $source = $effective_source;
         my ($script_path, $script_name, $server_dir) = _parse_script_info($inst);
 
+        if ($action eq 'start' && &is_minecraft_game($script_name)) {
+            my $profile = &read_mc_profile($server_dir);
+            &error($text{'mc_eula_required'} || 'Die Minecraft EULA muss im Wizard bestätigt werden.')
+                unless &mc_profile_has_eula_acceptance($profile);
+            &ensure_mc_eula_file($server_dir, $unix_user)
+                or &error($text{'mc_eula_write_failed'} || 'eula.txt konnte nicht geschrieben werden.');
+            my $pending = $profile ? &mc_pending_setup_steps($profile, $server_dir) : [];
+            if (@$pending) {
+                &error($text{'mc_setup_incomplete_start'}
+                    || 'Server-Setup unvollständig — bitte zuerst Java/Mod-Loader installieren.');
+            }
+        }
+
         if ($source eq 'steamcmd') {
+            if ($action eq 'restart' && !_steamcmd_server_binary_exists($server_dir)) {
+                &error($text{'err_invalid_action'});
+            }
             if ($action eq 'start' && !_steamcmd_server_binary_exists($server_dir)) {
                 my $job_id = _enqueue_install_game_job($instance_id, $inst, $unix_user);
-                &redirect("manage.cgi?instance_id=" . &html_escape($instance_id)
-                    . "&action=poll_job&job=" . &html_escape($job_id)
-                    . "&next_status=installed&next_action=start&xnavigation=1");
-                exit;
+                &_manage_redirect_poll_job($job_id, $instance_id, next_status => 'installed', next_action => 'start');
             }
-            my $job_id = &create_job($unix_user);
-            my $job_dir = _shell_safe_job_dir($job_id);
-            write_job_meta($job_id, $instance_id, $action, $unix_user);
-            &log_action('job_started', $job_id, {instance_id => $instance_id, action => $action});
-            &system_logged("MODULE_ROOT='$module_root' setsid nohup bash '$module_root/scripts/steamcmd_control.sh' '$action' '$job_dir' '$unix_user' '$server_dir' >/dev/null 2>&1 &");
+            if ($action eq 'restart') {
+                my $job_id = &_manage_launch_background_job(
+                    $instance_id, 'restart', $unix_user,
+                    sub {
+                        my ($jid) = @_;
+                        my $job_dir = _shell_safe_job_dir($jid);
+                        return &_manage_steamcmd_worker_cmd('restart', $job_dir, $unix_user, $server_dir);
+                    },
+                );
+                $job_id or _manage_job_launch_failed();
+                &set_monitor_running($server_dir, $config_directory, $instance_id);
+                &_rebuild_monitor_cron();
+                &_manage_redirect_after_job_launch($job_id, $instance_id,
+                    action => 'restart', notice_action => 'restart');
+            } else {
+            my $job_id = &_manage_launch_background_job(
+                $instance_id, $action, $unix_user,
+                sub {
+                    my ($jid) = @_;
+                    my $job_dir = _shell_safe_job_dir($jid);
+                    return &_manage_steamcmd_worker_cmd($action, $job_dir, $unix_user, $server_dir);
+                },
+            );
+            $job_id or _manage_job_launch_failed();
             if ($action eq 'stop') {
                 &set_monitor_paused($server_dir, $config_directory, $instance_id);
             } else {
-                &_ensure_monitor_cron();
                 &set_monitor_running($server_dir, $config_directory, $instance_id);
             }
-            &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
-            exit;
+            &_rebuild_monitor_cron();
+            my %launch_opts = (action => $action);
+            &_manage_redirect_after_job_launch($job_id, $instance_id, %launch_opts);
+            }
         } else {
-            &run_server_action($unix_user, $action, $script_name, $server_dir);
+            $script_name = _manage_executable_script_name($server_dir, $script_name);
+            my $job_id = &_manage_launch_background_job(
+                $instance_id, $action, $unix_user,
+                sub {
+                    my ($jid) = @_;
+                    my $job_dir = _shell_safe_job_dir($jid);
+                    return &user_worker_launch_cmd(
+                        unix_user   => $unix_user,
+                        module_root => $module_root,
+                        worker      => "$module_root/scripts/game_action_user.sh",
+                        args        => [ $job_dir, $unix_user, $server_dir, $script_name, $action ],
+                    );
+                },
+            );
+            $job_id or _manage_job_launch_failed();
             if ($action eq 'stop') {
                 &set_monitor_paused($server_dir, $config_directory, $instance_id);
             } else {
-                &_ensure_monitor_cron();
                 &set_monitor_running($server_dir, $config_directory, $instance_id);
             }
-            &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
-            exit;
+            &_rebuild_monitor_cron();
+            my %launch_opts = (action => $action);
+            $launch_opts{'notice_action'} = 'restart' if ($in{'action'} // '') eq 'restart';
+            &_manage_redirect_after_job_launch($job_id, $instance_id, %launch_opts);
         }
     }
     elsif ($action eq 'monitor_reset') {
         my (undef, undef, $server_dir) = _parse_script_info($inst);
-        &_ensure_monitor_cron();
         &set_monitor_running($server_dir, $config_directory, $instance_id);
+        &_rebuild_monitor_cron();
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
         exit;
     }
     elsif ($action eq 'monitor_disable') {
         my (undef, undef, $server_dir) = _parse_script_info($inst);
         &set_monitor_disabled($server_dir, $config_directory, $instance_id);
+        &_rebuild_monitor_cron();
+        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
+        exit;
+    }
+    elsif ($action eq 'save_schedule') {
+        my (undef, undef, $server_dir) = _parse_script_info($inst);
+        my $cur = &read_restart_schedule($server_dir);
+        my $enabled = &module_config_bool($in{'schedule_enabled'});
+        my $time = $in{'schedule_time'} // '04:00';
+        $time =~ s/[^0-9:]//g;
+        &error($text{'schedule_save_failed'} || 'Schedule could not be saved.')
+            unless &validate_schedule_time($time);
+        my %new = (
+            enabled            => $enabled ? 1 : 0,
+            time               => $time,
+            last_run           => $cur->{'last_run'} // 0,
+            last_skip_at       => $cur->{'last_skip_at'} // 0,
+            last_schedule_job  => $cur->{'last_schedule_job'} // '',
+        );
+        &write_restart_schedule($server_dir, \%new, $unix_user)
+            or &error($text{'schedule_save_failed'} || 'Schedule could not be saved.');
+        my $verify = &read_restart_schedule($server_dir);
+        unless (($verify->{'enabled'} // 0) == ($enabled ? 1 : 0)
+            && ($verify->{'time'} // '') eq $time) {
+            &error($text{'schedule_save_failed'} || 'Schedule could not be saved.');
+        }
+        &_rebuild_schedule_cron()
+            or &error($text{'schedule_cron_rebuild_failed'} || $text{'schedule_save_failed'});
+        &module_config_flash_mark("schedule_save_$instance_id")
+            or &error($text{'schedule_save_failed'} || 'Schedule could not be saved.');
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
         exit;
     }
@@ -798,7 +2505,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         if ($effective_source eq 'steamcmd') {
             &error($text{'err_invalid_action'} . " ($action)");
         }
-        &run_server_action($unix_user, $action, $script_name, $script_dir);
+        &_manage_run_server_action($unix_user, $action, $script_name, $script_dir);
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
         exit;
     }
@@ -815,68 +2522,149 @@ if (($in{'action'} // '') eq 'poll_job') {
     $next_action =~ s/[^a-z_]//g;
 
     &timeout_check_job($job_id);
+    &validate_job_for_instance($job_id, $instance_id)
+        or &error($text{'err_not_found'});
     my $status = &get_job_status($job_id) // 'unknown';
-    my ($all_out, undef) = &get_job_output($job_id, 0);  # always read all output from start
+    my $all_out = &get_job_output_display($job_id);
 
-    if ($status eq 'ok' && $next_status) {
-        &set_instance_status($instance_id, $next_status);
-    }
-    if ($status eq 'ok' && $next_action eq 'start') {
-        my $inst_now = &get_instance_flexible($instance_id) || $inst;
-        my $source = _effective_instance_source($inst_now);
-        my (undef, $script_name, $server_dir) = _parse_script_info($inst_now);
-        if ($source eq 'steamcmd') {
-            my $start_job = &create_job($unix_user);
-            my $start_job_dir = _shell_safe_job_dir($start_job);
-            write_job_meta($start_job, $instance_id, 'start', $unix_user);
-            &log_action('job_started', $start_job, {instance_id => $instance_id, action => 'start'});
-            &system_logged("MODULE_ROOT='$module_root' setsid nohup bash '$module_root/scripts/steamcmd_control.sh' start '$start_job_dir' '$unix_user' '$server_dir' >/dev/null 2>&1 &");
-            &redirect("manage.cgi?instance_id=" . &html_escape($instance_id)
-                . "&action=poll_job&job=" . &html_escape($start_job) . "&xnavigation=1");
-            exit;
-        } else {
-            &run_server_action($unix_user, 'start', $script_name, $server_dir);
+    my $json_poll = (($in{'poll_format'} // '') eq 'json');
+
+    # JSON polls must return before on_ok redirect (job_live.cgi fetch).
+    if ($json_poll) {
+        if ($status eq 'ok') {
+            my $apply_status = $next_status;
+            unless ($apply_status) {
+                my $meta = &get_job_meta($job_id);
+                $apply_status = _manage_next_status_for_action($meta->{'action'});
+            }
+            &set_instance_status($instance_id, $apply_status) if $apply_status;
         }
+        if (($in{'mark_result'} // '') eq '1' && $status =~ /^(?:ok|failed|aborted)$/) {
+            &_manage_job_result_flash_mark($job_id);
+        }
+        my $notice_action = $in{'notice_action'} // '';
+        $notice_action =~ s/[^a-z_]//g;
+        &_manage_poll_job_json($job_id, $status, $all_out,
+            silent            => (($in{'silent'} // '') eq '1'),
+            notice_action     => $notice_action,
+            inst              => $inst,
+            effective_source  => $effective_source,
+        );
     }
+
+    if ($status eq 'ok' && !$json_poll) {
+        unless ($next_status) {
+            my $meta = &get_job_meta($job_id);
+            $next_status = _manage_next_status_for_action($meta->{'action'});
+        }
+        &_manage_poll_job_on_ok($instance_id, $inst, $unix_user, $next_status, $next_action);
+    }
+    if (($in{'poll_partial'} // '') eq '1') {
+        &_manage_poll_job_partial($status, $all_out);
+    }
+
+    if ($status eq 'ok') {
+        &_manage_job_result_flash_mark($job_id);
+        &redirect(_manage_poll_job_instance_url($instance_id)
+            . "&action_result=" . &html_escape($job_id));
+        exit;
+    }
+
+    my $poll_q = "manage.cgi?instance_id=$instance_id&action=poll_job&job=$job_id"
+        . ($next_status ? "&next_status=$next_status" : '')
+        . ($next_action ? "&next_action=$next_action" : '');
+    my $poll_json_path    = _manage_poll_job_module_path("${poll_q}&poll_format=json");
+    my $poll_refresh_path = _manage_poll_job_module_path("${poll_q}&xnavigation=1");
+    my $manage_path       = _manage_poll_job_module_path("manage.cgi?instance_id=$instance_id&xnavigation=1");
+    my $job_dir_path    = &_job_dir($job_id);
+    my $xterm_url       = _manage_xterm_job_dir_url($job_dir_path);
 
     &header($text{'job_output_title'}, '');
-    print "<h3>" . &html_escape($text{'job_output_title'}) . "</h3>\n";
+    print &job_log_view_page_css();
+    print &job_log_view_page_open('fill');
+    print &job_log_view_toolbar_open();
+    if (($in{'job_live_fallback'} // '') eq '1') {
+        print "<p style=\"color:orange\"><strong>"
+            . &html_escape($text{'job_live_fallback'}) . "</strong></p>\n";
+        print "<p><a href=\"integrations.cgi?xnavigation=1#live_log\">"
+            . &html_escape($text{'job_live_ws_setup_hint'}) . "</a></p>\n";
+    }
+    print "<h3 style=\"margin-top:0\">" . &html_escape($text{'job_output_title'}) . "</h3>\n";
 
     if ($status eq 'running') {
-        my $poll_url = "manage.cgi?instance_id=" . &html_escape($instance_id)
-            . "&action=poll_job&job=" . &html_escape($job_id)
-            . "&next_status=" . &html_escape($next_status)
-            . "&next_action=" . &html_escape($next_action)
-            . "&xnavigation=1";
-        print "<meta http-equiv=\"refresh\" content=\"3;url=$poll_url\">\n";
-        print "<p>" . &html_escape($text{'job_running'}) . "</p>\n";
+        print "<p id=\"job_status\"><span class=\"lgsm-job-pulse\" aria-hidden=\"true\"></span>"
+            . &html_escape($text{'job_running'}) . "</p>\n";
+        print "<p id=\"job_poll_hint\"><small><i>"
+            . &html_escape($text{'job_poll_updating'} || 'Ausgabe wird aktualisiert…')
+            . "</i></small></p>\n";
+        if ($xterm_url) {
+            print "<p><a href=\"" . &html_escape($xterm_url)
+                . "\" target=\"_blank\" rel=\"noopener\">"
+                . &html_escape($text{'job_open_terminal'} || 'Im Webmin-Terminal öffnen')
+                . "</a><br><small>"
+                . &html_escape($text{'job_terminal_tail_hint'}
+                    || 'Startet im Job-Ordner — dort: tail -f output für Live-Log wie htop.')
+                . "</small></p>\n";
+        }
+        print &ui_form_start('manage.cgi', 'get');
+        print &ui_hidden('instance_id', &html_escape($instance_id));
+        print &ui_hidden('xnavigation', '1');
+        print &ui_submit($text{'job_back_to_instance'} || 'Zur Instanz', undef, undef, undef, 'btn-default');
+        print &ui_form_end();
         print &ui_form_start('manage.cgi', 'post', undef,
             "onsubmit=\"return confirm('" . &html_escape($text{'jobs_abort_confirm'} || 'Abbrechen?') . "')\"");
         print &ui_hidden('instance_id', &html_escape($instance_id));
+        print &ui_hidden('xnavigation', '1');
         print &ui_hidden('action', 'abort_job');
         print &ui_hidden('job', &html_escape($job_id));
         print &ui_submit($text{'jobs_abort_btn'} || 'Abbrechen', undef, undef, undef, 'btn-danger');
         print &ui_form_end();
-    } elsif ($status eq 'ok') {
-        print "<p style='color:green'>" . &html_escape($text{'job_ok'}) . "</p>\n";
-        print "<p><a href=\"manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1\">&larr; Zur&uuml;ck</a></p>\n";
     } else {
         my $hint_key = &get_job_error_hint($job_id);
-        print "<p style='color:red'>" . &html_escape($text{'job_failed'}) . "</p>\n";
+        print "<p id=\"job_status\" style='color:red'>" . &html_escape($text{'job_failed'}) . "</p>\n";
         if ($hint_key) {
             print "<p><strong>" . &html_escape($text{'job_hint_title'}) . ":</strong> "
                 . &html_escape($text{$hint_key} // $hint_key) . "</p>\n";
         }
-        print "<p><a href=\"manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1\">&larr; Zur&uuml;ck</a></p>\n";
+        my $jmeta_fail = &get_job_meta($job_id);
+        if (($jmeta_fail->{'action'} // '') eq 'modpack_import') {
+            my (undef, undef, $sd_poll) = _parse_script_info($inst);
+            my ($ok_res, $prog_res) = &modpack_job_resumable(
+                &_job_dir($job_id), $sd_poll, $status, $jmeta_fail->{'action'} // '');
+            if ($ok_res) {
+                &_manage_render_modpack_resume_ui($instance_id, $sd_poll, $job_id, $prog_res);
+            }
+        }
+        print &ui_form_start('manage.cgi', 'get');
+        print &ui_hidden('instance_id', &html_escape($instance_id));
+        print &ui_hidden('xnavigation', '1');
+        print &ui_submit($text{'job_back_to_instance'} || 'Zur Instanz', undef, undef, undef, 'btn-primary');
+        print &ui_form_end();
     }
+    print &job_log_view_toolbar_close();
 
-    print "<h3>" . &html_escape($text{'job_output_title'} || 'Ausgabe') . "</h3>\n";
-    if (defined $all_out && $all_out ne '') {
-        print "<pre id='job_out' style='background:#111;color:#eee;padding:8px;overflow:auto;max-height:500px'>"
-            . &html_escape($all_out) . "</pre>\n";
-        print "<script>var p=document.getElementById('job_out');if(p)p.scrollTop=p.scrollHeight;</script>\n";
-    } elsif ($status eq 'running') {
-        print "<p style='color:gray'><i>Warte auf Worker-Ausgabe…</i></p>\n";
+    print &job_log_view_block(
+        defined $all_out && $all_out ne '' ? $all_out : '', id => 'job_out', live => 1);
+    print &job_log_view_page_close();
+    print &job_log_live_page_js();
+
+    if ($status eq 'running') {
+        print &job_log_live_poll_client_js(
+            poll_url             => $poll_json_path,
+            manage_url           => $manage_path,
+            refresh_url          => $poll_refresh_path,
+            out_id               => 'job_out',
+            status_id            => 'job_status',
+            hint_id              => 'job_poll_hint',
+            wait_msg             => $text{'job_waiting_output'} || 'Warte auf Worker-Ausgabe…',
+            ok_msg               => $text{'job_ok'},
+            fail_msg             => $text{'job_failed'},
+            running_msg          => $text{'job_running'},
+            fallback_msg         => $text{'job_poll_fallback'} || 'Fallback: Seiten-Refresh…',
+            poll_interval        => 2000,
+            redirect_delay       => 800,
+            enable_meta_fallback => 1,
+        );
     }
     &footer('', '');
     exit;
@@ -934,7 +2722,10 @@ if (($in{'action'} // '') eq 'monitor') {
     my $auto_refresh = (($in{'auto_refresh'} // '') eq '1' && ($in{'manual'} // '') eq '1') ? 1 : 0;
 
     &header($text{'manage_monitor_title'}, '');
+    print &job_log_view_page_css();
+    print &job_log_view_page_open();
     print "<h3>" . &html_escape($text{'manage_monitor_title'}) . "</h3>\n";
+    print &job_log_view_toolbar_open();
     print &ui_form_start('manage.cgi', 'get');
     print &ui_hidden('instance_id', &html_escape($instance_id));
     print &ui_hidden('action', 'monitor');
@@ -944,6 +2735,7 @@ if (($in{'action'} // '') eq 'monitor') {
     print " ";
     print &ui_submit($text{'manage_monitor_refresh_btn'}, undef, undef, undef, 'btn-default');
     print &ui_form_end();
+    print &job_log_view_toolbar_close();
 
     if (!$log_file) {
         print "<p>" . &html_escape($text{'manage_monitor_no_log'}) . "</p>\n";
@@ -984,40 +2776,139 @@ if (($in{'action'} // '') eq 'monitor') {
         if ($auto_refresh) {
             print "<meta http-equiv=\"refresh\" content=\"2;url=$refresh_url\">\n";
         }
-        print "<pre style='background:#111;color:#eee;padding:8px;height:500px;overflow:auto'>"
-            . &html_escape($tail) . "</pre>\n";
+        print &job_log_view_block($tail, id => 'monitor_log');
     }
+    print &job_log_view_page_close();
     &footer('', '');
     exit;
 }
 
-# Setup-Phase for fresh/lgsm_ready instances
+# Modpack-first chain: after verified provision_deps success, auto-start stashed import.
+if (!&user_is_readonly($instance_id)) {
+    my $chain_job = $in{'action_result'} // '';
+    $chain_job =~ s/[^0-9a-f]//g;
+    $chain_job = substr($chain_job, 0, 16);
+    if ($chain_job ne '' && &validate_job_for_instance($chain_job, $instance_id)) {
+        my $chain_meta = &get_job_meta($chain_job);
+        my $chain_st   = &get_job_status($chain_job) // '';
+        if ($chain_st eq 'ok' && ($chain_meta->{'action'} // '') eq 'provision_deps') {
+            &_manage_maybe_launch_pending_modpack($instance_id, $inst, $unix_user);
+        }
+    }
+}
+
+# Setup-Phase for fresh/lgsm_ready/mc_ready instances
 if ($is_fresh) {
     my $istatus = $inst->{'instance_status'} // 'fresh';
     my $source  = _effective_instance_source($inst);
+    my ($mc_prof, $server_dir_setup) = _manage_read_mc_profile($inst);
+    my $reg = &get_registered_instance($instance_id);
+    my $cached_game = $reg->{'cached_game'} // '';
     &header($text{'setup_phase_title'}, '');
     print "<h3>" . &html_escape($text{'setup_phase_title'}) . "</h3>\n";
 
+    if ($mc_prof) {
+        print "<p><strong>" . &html_escape($text{'mc_profile_section'}) . ":</strong> "
+            . &html_escape(&mc_loader_label($mc_prof->{'loader'}, $current_lang // 'de'))
+            . " / " . &html_escape($mc_prof->{'mc_version'} // '')
+            . " / Java " . int($mc_prof->{'java_major'} // 0) . "</p>\n";
+    } elsif ($cached_game && &is_minecraft_game($cached_game)) {
+        print "<p style='color:#b45309'>&#x26A0; "
+            . &html_escape($text{'setup_mc_profile_missing'}) . "</p>\n";
+    }
+
+    my $modded = $mc_prof && &mc_loader_is_modded($mc_prof->{'loader'} // '');
+
+    &_manage_render_active_job_notice($instance_id);
+
     if ($source eq 'steamcmd') {
-        # steamcmd games skip LGSM setup — install directly via SteamCMD
         print &ui_form_start('manage.cgi', 'post');
         print &ui_hidden('instance_id', &html_escape($instance_id));
         print &ui_hidden('action', 'install_game');
         print &ui_submit($text{'setup_install_game_btn'} || 'Spiel installieren', undef, undef, undef, 'btn-primary');
         print &ui_form_end();
     } elsif ($istatus eq 'fresh') {
-        print &ui_form_start('manage.cgi', 'post');
-        print &ui_hidden('instance_id', &html_escape($instance_id));
-        print &ui_hidden('action', 'setup_lgsm');
-        print &ui_submit($text{'setup_install_lgsm_btn'}, undef, undef, undef, 'btn-primary');
-        print &ui_form_end();
+        print "<ol>\n";
+        print "<li>" . &html_escape($text{'setup_step_lgsm'}) . " — "
+            . &html_escape($text{'setup_step_pending'}) . "</li>\n";
+        if ($modded) {
+            print "<li>" . &html_escape($text{'setup_step_java'}) . "</li>\n";
+            print "<li>" . &html_escape($text{'setup_step_loader'}) . "</li>\n";
+        } elsif ($mc_prof) {
+            print "<li>" . &html_escape($text{'setup_step_java'}) . "</li>\n";
+            print "<li>" . &html_escape($text{'setup_step_install_game'}) . "</li>\n";
+        }
+        print "</ol>\n";
+        unless (&_manage_setup_action_running($instance_id, 'setup_lgsm')) {
+            print &ui_form_start('manage.cgi', 'post');
+            print &ui_hidden('instance_id', &html_escape($instance_id));
+            print &ui_hidden('action', 'setup_lgsm');
+            print &ui_submit($text{'setup_install_lgsm_btn'}, undef, undef, undef, 'btn-primary');
+            print &ui_form_end();
+        }
     } elsif ($istatus eq 'lgsm_ready') {
-        print "<p style='color:green'>&#x2705; LGSM installiert.</p>\n";
-        print &ui_form_start('manage.cgi', 'post');
-        print &ui_hidden('instance_id', &html_escape($instance_id));
-        print &ui_hidden('action', 'install_game');
-        print &ui_submit($text{'setup_install_game_btn'}, undef, undef, undef, 'btn-primary');
-        print &ui_form_end();
+        print "<ol>\n";
+        print "<li>&#x2705; " . &html_escape($text{'setup_step_lgsm'}) . "</li>\n";
+        if ($modded) {
+            print "<li>" . &html_escape($text{'setup_step_java'}) . " — "
+                . &html_escape($text{'setup_step_next'}) . "</li>\n";
+            print "<li>" . &html_escape($text{'setup_step_loader'}) . "</li>\n";
+        } elsif ($mc_prof) {
+            print "<li>" . &html_escape($text{'setup_step_java'}) . " — "
+                . &html_escape($text{'setup_step_next'}) . "</li>\n";
+            print "<li>" . &html_escape($text{'setup_step_install_game'}) . "</li>\n";
+        } else {
+            print "<li>" . &html_escape($text{'setup_step_install_game'}) . " — "
+                . &html_escape($text{'setup_step_next'}) . "</li>\n";
+        }
+        print "</ol>\n";
+        if ($mc_prof && !&_manage_setup_action_running($instance_id, 'mc_java_setup')) {
+            print &ui_form_start('manage.cgi', 'post');
+            print &ui_hidden('instance_id', &html_escape($instance_id));
+            print &ui_hidden('action', 'mc_java_setup');
+            print &ui_submit($text{'mc_setup_java_btn'}, undef, undef, undef, 'btn-primary');
+            print &ui_form_end();
+        } elsif (!$mc_prof && !&_manage_setup_action_running($instance_id, 'install_game')) {
+            print &ui_form_start('manage.cgi', 'post');
+            print &ui_hidden('instance_id', &html_escape($instance_id));
+            print &ui_hidden('action', 'install_game');
+            print &ui_submit($text{'setup_install_game_btn'}, undef, undef, undef, 'btn-primary');
+            print &ui_form_end();
+        }
+    } elsif ($istatus eq 'mc_ready') {
+        print "<ol>\n";
+        print "<li>&#x2705; " . &html_escape($text{'setup_step_lgsm'}) . "</li>\n";
+        print "<li>&#x2705; " . &html_escape($text{'setup_step_java'}) . "</li>\n";
+        if ($modded) {
+            print "<li>" . &html_escape($text{'setup_step_loader'}) . " — "
+                . &html_escape($text{'setup_step_next'}) . "</li>\n";
+        } else {
+            print "<li>" . &html_escape($text{'setup_step_install_game'}) . " — "
+                . &html_escape($text{'setup_step_next'}) . "</li>\n";
+        }
+        print "</ol>\n";
+        &_manage_render_active_job_notice($instance_id);
+        if ($modded && !&_manage_setup_action_running($instance_id, 'mc_loader_setup')) {
+            print &ui_form_start('manage.cgi', 'post');
+            print &ui_hidden('instance_id', &html_escape($instance_id));
+            print &ui_hidden('action', 'mc_loader_setup');
+            print &ui_submit($text{'mc_setup_loader_btn'}, undef, undef, undef, 'btn-primary');
+            print &ui_form_end();
+        } elsif (!$modded && !&_manage_setup_action_running($instance_id, 'install_game')) {
+            print &ui_form_start('manage.cgi', 'post');
+            print &ui_hidden('instance_id', &html_escape($instance_id));
+            print &ui_hidden('action', 'install_game');
+            print &ui_submit($text{'setup_install_game_btn'}, undef, undef, undef, 'btn-primary');
+            print &ui_form_end();
+        }
+    }
+
+    unless (&user_is_readonly($instance_id)) {
+        &_manage_render_instance_jobs_table($instance_id, 5);
+        if ($mc_prof && $server_dir_setup && &mc_mod_ui_ready($mc_prof, $server_dir_setup)) {
+            &_manage_render_modpack_section($inst, $instance_id);
+            &_manage_render_mod_browser($inst, $instance_id, &html_escape($instance_id));
+        }
     }
 
     &footer('', '');
@@ -1027,21 +2918,120 @@ if ($is_fresh) {
 my $safe_id = &html_escape($instance_id);
 &header("$text{'manage_title'}: $safe_id", '');
 
+my $action_result_job = $in{'action_result'} // '';
+$action_result_job =~ s/[^0-9a-f]//g;
+$action_result_job = substr($action_result_job, 0, 16);
+if ($action_result_job ne '' && &_manage_job_result_flash_consume($action_result_job)) {
+    if (&validate_job_for_instance($action_result_job, $instance_id)) {
+        my $result_status = &get_job_status($action_result_job) // 'unknown';
+        my $notice_action = $in{'notice_action'} // '';
+        $notice_action =~ s/[^a-z_]//g;
+        unless ($notice_action) {
+            my $meta = &get_job_meta($action_result_job);
+            $notice_action = $meta->{'action'} // '';
+            $notice_action =~ s/[^a-z_]//g;
+        }
+        my $msg = _manage_action_result_text($notice_action, $result_status);
+        if ($result_status eq 'ok') {
+            print "<div class='alert alert-success'>" . &html_escape($msg) . "</div>\n";
+        } else {
+            print "<div class='alert alert-danger'>" . &html_escape($msg) . "</div>\n";
+        }
+    }
+}
+
+my $job_aborted_id = $in{'job_aborted'} // '';
+$job_aborted_id =~ s/[^0-9a-f]//g;
+$job_aborted_id = substr($job_aborted_id, 0, 16);
+if ($job_aborted_id ne ''
+    && &module_config_flash_consume("jobabort_$job_aborted_id")
+    && &validate_job_for_instance($job_aborted_id, $instance_id)) {
+    print "<div class='alert alert-info'>"
+        . &html_escape($text{'job_aborted_ok'} || 'Job abgebrochen.')
+        . "</div>\n";
+}
+
+{
+    my $flash_id = $instance_id // '';
+    $flash_id =~ s/[^a-zA-Z0-9_-]//g;
+    if ($flash_id ne '' && &module_config_flash_consume("monitor_restart_$flash_id")) {
+        my $sd_flash = $inst->{'script'} // '';
+        $sd_flash =~ s|/[^/]+$||;
+        &sync_monitor_job_pointers();
+        my $mon_flash = &read_monitor_state($sd_flash, $config_directory, $instance_id);
+        my $lr_ts = &monitor_format_restart_time($mon_flash->{'last_restart_at'});
+        $lr_ts = '—' unless $lr_ts ne '';
+        my $banner = &text('manage_monitor_restart_banner', $lr_ts);
+        $banner = "Der Server wurde automatisch durch Monitoring neugestartet ($lr_ts)."
+            unless defined $banner && $banner =~ /\S/;
+        my $banner_html = &html_escape($banner);
+        my $lr_job = $mon_flash->{'last_restart_job'} // '';
+        $lr_job =~ s/[^0-9a-f]//g;
+        if (length($lr_job) == 16) {
+            my $log_url = "jobs.cgi?action=view_output&amp;job_id="
+                . &html_escape($lr_job);
+            $banner_html .= ' <a href="' . $log_url . '">'
+                . &html_escape($text{'jobs_view_log'} || 'Log') . '</a>';
+        }
+        print "<div class='alert alert-success'>" . $banner_html . "</div>\n";
+    }
+    if ($flash_id ne '' && &module_config_flash_consume("schedule_save_$flash_id")) {
+        print "<div class='alert alert-success'>"
+            . &html_escape($text{'schedule_saved_ok'} || 'Geplanter Neustart gespeichert.')
+            . "</div>\n";
+    }
+}
+
+my $silent_job_id = $in{'silent_job'} // '';
+$silent_job_id =~ s/[^0-9a-f]//g;
+$silent_job_id = substr($silent_job_id, 0, 16);
+my $silent_polling = ($silent_job_id ne '');
+unless ($silent_polling) {
+    unless (&user_is_readonly($instance_id)) {
+        &_manage_render_active_job_notice($instance_id);
+    }
+} else {
+    my %silent_opts;
+    my $na = $in{'notice_action'} // '';
+    $na =~ s/[^a-z_]//g;
+    $silent_opts{'notice_action'} = $na if $na ne '';
+    my $ns = $in{'next_status'} // '';
+    $ns =~ s/[^a-z_]//g;
+    $silent_opts{'next_status'} = $ns if $ns ne '';
+    my $nact = $in{'next_action'} // '';
+    $nact =~ s/[^a-z_]//g;
+    $silent_opts{'next_action'} = $nact if $nact ne '';
+    &_manage_render_silent_job_poll($instance_id, $silent_job_id, %silent_opts);
+}
+
 # Parse LGSM config to check _has_user_config
 my $script_dir_for_cfg = $inst->{'script'};
 $script_dir_for_cfg =~ s|/[^/]+$||;
 my $script_name_for_cfg = (split('/', $inst->{'script'}))[-1];
 my %cfg = &_parse_lgsm_config($script_dir_for_cfg, $script_name_for_cfg);
 my $source_for_status = $effective_source;
-my $runtime_status = $source_for_status eq 'steamcmd'
-    ? &_detect_status_steamcmd($script_dir_for_cfg)
-    : (($inst->{'instance_status'} && $inst->{'instance_status'} ne 'installed')
-        ? $inst->{'instance_status'}
-        : ($inst->{'status'} // 'unknown'));
+my $runtime_status = _manage_runtime_status($inst, $source_for_status, light => 1);
 
 # Server-Info table
 print &ui_table_start($text{'manage_title'}, "width=100%", 2);
 print &ui_table_row($text{'manage_game'},   &html_escape($inst->{'game'}));
+my (undef, undef, $server_dir_info) = _parse_script_info($inst);
+if ($server_dir_info) {
+    my $mc_info = &read_mc_profile($server_dir_info);
+    if ($mc_info) {
+        print &ui_table_row($text{'mc_profile_loader'},
+            &html_escape(&mc_loader_label($mc_info->{'loader'}, $current_lang // 'de')));
+        print &ui_table_row($text{'mc_profile_version'}, &html_escape($mc_info->{'mc_version'} // ''));
+        if ($mc_info->{'loader_version'}) {
+            print &ui_table_row($text{'mc_profile_loader_version'},
+                &html_escape($mc_info->{'loader_version'}));
+        } elsif (&mc_loader_is_modded($mc_info->{'loader'} // '')) {
+            print &ui_table_row($text{'mc_profile_loader_version'},
+                &html_escape($text{'mc_loader_version_auto'} || 'Automatisch (neueste stabile)'));
+        }
+        print &ui_table_row($text{'mc_profile_java'}, 'Java ' . int($mc_info->{'java_major'} // 0));
+    }
+}
 # Show every port-typed field so the user sees the full game/query/beacon set
 # for multi-port games (UE5). Single-port games still render as one row.
 my $info_ports = _collect_instance_ports($script_name_for_cfg, \%cfg);
@@ -1052,13 +3042,42 @@ if (@$info_ports == 1) {
         print &ui_table_row(&html_escape($p->{label}), $p->{port});
     }
 }
-print &ui_table_row($text{'manage_status'}, _runtime_status_badge_html($runtime_status));
-my $mon_state = &read_monitor_state($script_dir_for_cfg, $config_directory, $instance_id);
+{
+    my $game_port = 0;
+    if (@$info_ports) {
+        my ($main) = grep { ($_->{key} // '') eq 'port' } @$info_ports;
+        $game_port = $main ? int($main->{port}) : int($info_ports->[0]{port});
+    }
+    my $connect = &instance_direct_connect_endpoint(\%cfg, $game_port);
+    if ($connect ne '') {
+        print &ui_table_row(
+            $text{'manage_direct_connect'},
+            '<code>' . &html_escape($connect) . '</code>',
+        );
+    }
+}
+print &ui_table_row($text{'manage_status'},
+    "<span id=\"manage_runtime_status\">" . _runtime_status_badge_html($runtime_status) . "</span>");
+my $mon_state;
+{
+    &sync_monitor_job_pointers();
+    $mon_state = &read_monitor_state($script_dir_for_cfg, $config_directory, $instance_id);
+}
 my $mon_status_key = 'monitor_status_' . ($mon_state->{'status'} // 'running');
 my $mon_label = $text{$mon_status_key} || $mon_state->{'status'};
 print &ui_table_row($text{'monitor_col'}, &html_escape($mon_label));
+if (($mon_state->{'last_restart_at'} // 0) > 0) {
+    my $lr_html = &_manage_last_run_row_html(
+        $mon_state->{'last_restart_at'}, 'monitor_last_restart',
+        $mon_state->{'last_restart_job'}, $instance_id);
+    print &ui_table_row($text{'monitor_last_restart_col'}, $lr_html);
+}
 
 if ($runtime_status eq 'online' || $runtime_status eq 'running') {
+    my $mem_gb = &instance_memory_display_gb($inst->{'user'} // '');
+    if ($mem_gb ne '') {
+        print &ui_table_row($text{'manage_memory'}, &html_escape($mem_gb));
+    }
     my $qfield = &get_game_query_port_field($script_name_for_cfg);
     if ($qfield) {
         my $qport = int($cfg{$qfield} // 0);
@@ -1075,6 +3094,61 @@ if ($runtime_status eq 'online' || $runtime_status eq 'running') {
 }
 print &ui_table_row($text{'manage_script'}, &html_escape($inst->{'script'}));
 print &ui_table_end();
+
+# Minecraft setup continuation (also when instance_status=installed but files missing)
+{
+    my ($mc_setup_prof, $mc_setup_dir) = _manage_read_mc_profile($inst);
+    if ($mc_setup_prof) {
+        my $pending = &mc_pending_setup_steps($mc_setup_prof, $mc_setup_dir);
+        if (@$pending) {
+            &_manage_render_active_job_notice($instance_id);
+            print "<h3>" . &html_escape($text{'setup_incomplete_title'}) . "</h3>\n";
+            print "<ol>\n";
+            if (grep { $_ eq 'java' } @$pending) {
+                print "<li>" . &html_escape($text{'setup_step_java'}) . " — "
+                    . &html_escape($text{'setup_step_next'}) . "</li>\n";
+            } else {
+                print "<li>&#x2705; " . &html_escape($text{'setup_step_java'}) . "</li>\n";
+            }
+            if (grep { $_ eq 'loader' } @$pending) {
+                print "<li>" . &html_escape($text{'setup_step_loader'}) . " — "
+                    . &html_escape($text{'setup_step_next'}) . "</li>\n";
+            } elsif (&mc_loader_is_modded($mc_setup_prof->{'loader'} // '')) {
+                print "<li>&#x2705; " . &html_escape($text{'setup_step_loader'}) . "</li>\n";
+            }
+            if (grep { $_ eq 'install' } @$pending) {
+                print "<li>" . &html_escape($text{'setup_step_install_game'}) . " — "
+                    . &html_escape($text{'setup_step_next'}) . "</li>\n";
+            } elsif (&mc_loader_phase1_ready($mc_setup_prof->{'loader'} // '')) {
+                print "<li>&#x2705; " . &html_escape($text{'setup_step_install_game'}) . "</li>\n";
+            }
+            print "</ol>\n";
+            if (grep { $_ eq 'java' } @$pending
+                && !&_manage_setup_action_running($instance_id, 'mc_java_setup')) {
+                print &ui_form_start('manage.cgi', 'post');
+                print &ui_hidden('instance_id', $safe_id);
+                print &ui_hidden('action', 'mc_java_setup');
+                print &ui_submit($text{'mc_setup_java_btn'}, undef, undef, undef, 'btn-primary');
+                print &ui_form_end();
+            } elsif (grep { $_ eq 'loader' } @$pending
+                && !&_manage_setup_action_running($instance_id, 'mc_loader_setup')) {
+                print &ui_form_start('manage.cgi', 'post');
+                print &ui_hidden('instance_id', $safe_id);
+                print &ui_hidden('action', 'mc_loader_setup');
+                print &ui_submit($text{'mc_setup_loader_btn'}, undef, undef, undef, 'btn-primary');
+                print &ui_form_end();
+            } elsif (grep { $_ eq 'install' } @$pending
+                && !&_manage_setup_action_running($instance_id, 'install_game')) {
+                print &ui_form_start('manage.cgi', 'post');
+                print &ui_hidden('instance_id', $safe_id);
+                print &ui_hidden('action', 'install_game');
+                print &ui_submit($text{'setup_install_game_btn'}, undef, undef, undef, 'btn-primary');
+                print &ui_form_end();
+            }
+            print "<p><small>" . &html_escape($text{'setup_incomplete_hint'}) . "</small></p>\n";
+        }
+    }
+}
 
 # Firewall section — show open/closed status per port. Use AND semantics:
 # the toggle button reflects "are *all* ports open?" so a single click can re-open
@@ -1107,7 +3181,7 @@ if ($effective_source eq 'steamcmd' && $script_name_for_cfg eq 'windrose') {
     print "<p><small>" . &html_escape($text{'manage_fw_windrose_ephemeral_hint'}) . "</small></p>\n";
 }
 
-if (&is_admin()) {
+if (&user_can_operate($instance_id)) {
     my $mon_s = $mon_state->{'status'} // 'running';
     if ($mon_s eq 'failed' || $mon_s eq 'paused') {
         print &ui_form_start('manage.cgi', 'post');
@@ -1130,51 +3204,103 @@ if (&is_admin()) {
         print &ui_submit($text{'monitor_reset_btn'}, undef, undef, undef, 'btn-success');
         print &ui_form_end();
     }
-}
 
-# Control buttons
-print "<p>\n";
-foreach my $action (qw(start stop restart)) {
-    print &ui_form_start("manage.cgi", "post");
-    print &ui_hidden("instance_id", $safe_id);
-    print &ui_hidden("action",      $action);
-    print &ui_submit($text{"manage_$action"});
+    my $sched = &read_restart_schedule($script_dir_for_cfg);
+    my $sched_tz = &schedule_system_timezone();
+    $sched_tz = 'localtime' unless defined $sched_tz && $sched_tz ne '';
+    print "<h4>" . &html_escape($text{'schedule_title'} || 'Geplanter Neustart') . "</h4>\n";
+    print &ui_form_start('manage.cgi', 'post');
+    print &ui_hidden('instance_id', $safe_id);
+    print &ui_hidden('action', 'save_schedule');
+    print &ui_table_start();
+    print &ui_table_row(
+        $text{'schedule_enabled_label'} || 'Aktiv',
+        &ui_checkbox('schedule_enabled', 1,
+            $text{'schedule_enabled_hint'} || 'Täglich neu starten', $sched->{'enabled'}),
+    );
+    print &ui_table_row(
+        $text{'schedule_time_label'} || 'Uhrzeit',
+        &ui_textbox('schedule_time', $sched->{'time'}, 5, 0, 'placeholder="04:00"'),
+    );
+    print &ui_table_row(
+        $text{'schedule_timezone_label'} || 'Zeitzone',
+        &html_escape(&text('schedule_timezone_value', $sched_tz)),
+    );
+    if (($sched->{'last_run'} // 0) > 0) {
+        my $lr_html = &_manage_last_run_row_html(
+            $sched->{'last_run'}, 'schedule_last_run',
+            $sched->{'last_schedule_job'}, $instance_id);
+        print &ui_table_row($text{'schedule_last_run_col'} || 'Letzter Lauf', $lr_html);
+    }
+    print &ui_table_end();
+    print &ui_submit($text{'schedule_save_btn'} || 'Speichern', undef, undef, undef, 'btn-primary');
     print &ui_form_end();
-    print " ";
+    print "<p><small>" . &html_escape($text{'schedule_skip_hint'}
+        || 'Neustart nur wenn der Server online ist; sonst wird übersprungen und protokolliert.')
+        . "</small></p>\n";
 }
-print "</p>\n";
 
-# Update/Validate
-print &ui_form_start('manage.cgi', 'post');
-print &ui_hidden('instance_id', $safe_id);
-print &ui_hidden('action', 'update');
-print &ui_submit($text{'manage_update_btn'}, undef, undef, undef, 'btn-default');
-print &ui_form_end();
+# Control buttons — server group + maintenance row
+print "<h4>" . &html_escape($text{'manage_controls_server'}) . "</h4>\n";
+print "<div style='margin:4px 0 12px 0'>\n";
+foreach my $action (qw(start stop restart)) {
+    my $btn_class = ($action eq 'start') ? 'btn-success'
+                  : ($action eq 'stop')  ? 'btn-default'
+                  :                        'btn-warning';
+    my $form = &ui_form_start('manage.cgi', 'post');
+    $form .= &ui_hidden('instance_id', $safe_id);
+    $form .= &ui_hidden('action', $action);
+    $form .= &ui_submit($text{"manage_$action"}, undef, undef, undef, $btn_class);
+    $form .= &ui_form_end();
+    print &_manage_inline_action_btn($form);
+}
+print "</div>\n";
 
-print &ui_form_start('manage.cgi', 'post');
-print &ui_hidden('instance_id', $safe_id);
-print &ui_hidden('action', 'validate');
-print &ui_submit($text{'manage_validate_btn'}, undef, undef, undef, 'btn-default');
-print &ui_form_end();
+print "<h4>" . &html_escape($text{'manage_controls_maintenance'}) . "</h4>\n";
+print "<div style='margin:4px 0 12px 0'>\n";
+{
+    my $form = &ui_form_start('manage.cgi', 'post');
+    $form .= &ui_hidden('instance_id', $safe_id);
+    $form .= &ui_hidden('action', 'update');
+    $form .= &ui_submit($text{'manage_update_btn'}, undef, undef, undef, 'btn-default');
+    $form .= &ui_form_end();
+    print &_manage_inline_action_btn($form);
+}
+{
+    my $form = &ui_form_start('manage.cgi', 'post');
+    $form .= &ui_hidden('instance_id', $safe_id);
+    $form .= &ui_hidden('action', 'validate');
+    $form .= &ui_submit($text{'manage_validate_btn'}, undef, undef, undef, 'btn-default');
+    $form .= &ui_form_end();
+    print &_manage_inline_action_btn($form);
+}
+my $monitor_link = "<a href=\"manage.cgi?instance_id=$safe_id&amp;action=monitor&amp;xnavigation=1\""
+    . " class=\"btn btn-default\">" . &html_escape($text{'manage_monitor_btn'}) . "</a>";
+print &_manage_inline_action_btn($monitor_link);
+{
+    my $form = &ui_form_start('manage.cgi', 'post');
+    $form .= &ui_hidden('instance_id', $safe_id);
+    $form .= &ui_hidden('action', 'reinstall');
+    $form .= &ui_submit($text{'manage_reinstall_btn'}, undef, undef, undef, 'btn-danger');
+    $form .= &ui_form_end();
+    print &_manage_inline_action_btn($form);
+}
+print "</div>\n";
 
-# Monitor link
-print "<a href=\"manage.cgi?instance_id=" . $safe_id . "&action=monitor\" class=\"btn btn-default\">"
-    . &html_escape($text{'manage_monitor_btn'}) . "</a>\n";
+# Modpack import + mod browser (below server controls)
+&_manage_render_modpack_section($inst, $instance_id);
+&_manage_render_mod_browser($inst, $instance_id, $safe_id);
 
-# Reinstall (destructive)
-print &ui_form_start('manage.cgi', 'post');
-print &ui_hidden('instance_id', $safe_id);
-print &ui_hidden('action', 'reinstall');
-print &ui_submit($text{'manage_reinstall_btn'}, undef, undef, undef, 'btn-danger');
-print &ui_form_end();
-
-print "<p>\n";
-print &ui_form_start("manage.cgi", "post");
-print &ui_hidden("instance_id", $safe_id);
-print &ui_hidden("action", "delete_instance");
-print &ui_submit($text{'manage_delete_btn'}, undef, 0, undef, 'btn-danger');
-print &ui_form_end();
-print "</p>\n";
+if (&is_admin()) {
+    print "<p>\n";
+    print &ui_form_start("manage.cgi", "post", undef,
+        "onsubmit=\"return confirm('" . &html_escape($text{'manage_delete_confirm'} || 'Instanz wirklich unwiderruflich löschen?') . "')\"");
+    print &ui_hidden("instance_id", $safe_id);
+    print &ui_hidden("action", "delete_instance");
+    print &ui_submit($text{'manage_delete_btn'}, undef, 0, undef, 'btn-danger');
+    print &ui_form_end();
+    print "</p>\n";
+}
 
 # FTP section
 {
@@ -1241,7 +3367,7 @@ print "</p>\n";
     }
 
     if ($sa && $sa_status ne 'ok') {
-        print &ui_form_start('steam_settings.cgi', 'get');
+        print &ui_form_start('integrations.cgi', 'get');
         print &ui_hidden('action',   'relogin_form');
         print &ui_hidden('instance', &html_escape($instance_id));
         print &ui_submit($text{'steam_relogin_btn'}, undef, undef, undef, 'btn-warning');
@@ -1295,6 +3421,32 @@ if (!$cfg{_has_instance_config}) {
         );
     }
     my $qf_lang = $current_lang // 'en';
+    my $prof_over = &get_instance_profile_cfg_overrides($script_name_for_cfg, $script_dir_for_cfg);
+    my $mc_prof_qf = &read_mc_profile($script_dir_for_cfg);
+
+    if ($mc_prof_qf && ref($prof_over) eq 'HASH' && keys %$prof_over) {
+        print "<h4>" . &html_escape($text{'manage_fix_profile_section'}) . "</h4>\n";
+        print &ui_table_start('', undef, 2);
+        print &ui_table_row($text{'mc_profile_loader'},
+            &html_escape(&mc_loader_label($mc_prof_qf->{'loader'}, $qf_lang)));
+        print &ui_table_row($text{'mc_profile_version'},
+            &html_escape($mc_prof_qf->{'mc_version'} // ''));
+        if ($prof_over->{'serverversion'}) {
+            print &ui_table_row($text{'manage_fix_profile_serverversion'},
+                '<code>' . &html_escape($prof_over->{'serverversion'}) . '</code>');
+        }
+        if ($prof_over->{'executable'}) {
+            print &ui_table_row($text{'manage_fix_profile_executable'},
+                '<code>' . &html_escape($prof_over->{'executable'}) . '</code>');
+        }
+        print &ui_table_end();
+        if (!&mc_loader_phase1_ready($mc_prof_qf->{'loader'} // '')) {
+            print "<p><small>" . &html_escape($text{'manage_fix_profile_modded_note'}) . "</small></p>\n";
+        } else {
+            print "<p><small>" . &html_escape($text{'manage_fix_profile_apply_note'}) . "</small></p>\n";
+        }
+    }
+
     print &ui_form_start("manage.cgi", "post");
     print &ui_hidden("instance_id", $safe_id);
     print &ui_hidden("action", "fix_config");
@@ -1305,9 +3457,9 @@ if (!$cfg{_has_instance_config}) {
         my $key = $f->{'key'};
         my $label = $qf_lang eq 'de' ? ($f->{'label_de'} // $f->{'label_en'} // $key)
                                      : ($f->{'label_en'} // $f->{'label_de'} // $key);
-        # Prefill priority: existing cfg value > inst struct (for port/game) > games_meta default.
-        my $val = $cfg{$key};
-        if (!defined $val || $val eq '') {
+        # Prefill: profile overrides > existing cfg > inst struct > games_meta default.
+        my $val = $prof_over->{$key} // $cfg{$key};
+        if (!defined $val || $val eq '' || $val eq 'latest') {
             if ($key eq 'port')          { $val = int($inst->{'port'}) || ($f->{'default'} // ''); }
             elsif ($key eq 'gamename')   { $val = (($inst->{'game'} // 'unknown') eq 'unknown') ? ($f->{'default'} // '') : $inst->{'game'}; }
             else                         { $val = $f->{'default'} // ''; }
@@ -1333,6 +3485,10 @@ if (!$cfg{_has_instance_config}) {
     my $game_cfg_hint = &get_game_config_path($script_name_for_cfg);
     my $game_cfg_path = &resolve_game_server_config_path(
         $script_dir_for_cfg, $script_name_for_cfg, \%cfg, $game_cfg_hint);
+    if ($game_cfg_path ne '') {
+        eval { $game_cfg_path = &validate_game_config_path($script_dir_for_cfg, $game_cfg_path); 1 }
+            or do { $game_cfg_path = ''; };
+    }
     my $server_root_path = $script_dir_for_cfg;
     my $fileman_path = $server_root_path;
     $fileman_path =~ s/([^A-Za-z0-9\-_.~\/])/sprintf("%%%02X", ord($1))/ge;
@@ -1343,16 +3499,14 @@ if (!$cfg{_has_instance_config}) {
     my $game_cfg_exists = 0;
     if ($game_cfg_path && -f $game_cfg_path) {
         $game_cfg_exists = 1;
-        if (open(my $gfh, '<', $game_cfg_path)) {
-            local $/;
-            $game_raw = <$gfh>;
-            close($gfh);
-        }
+        $game_raw = &read_game_config_raw($game_cfg_path);
     }
     my @game_fields = &get_game_fields($script_name_for_cfg);
     my $profile_name = &get_game_display_name($script_name_for_cfg);
 
     my $lang = $current_lang // 'en';
+    my $game_tab_label = &get_game_config_label($script_name_for_cfg, $lang);
+    $game_tab_label = $text{'config_editor_game_btn'} unless $game_tab_label ne '';
     # Open the <details> block when the user navigated to the editor
     my $open_attr = defined($in{'config_file'}) ? ' open' : '';
 
@@ -1404,7 +3558,7 @@ JS
           &html_escape($text{'config_editor_instance_btn'}) . "'> ";
     print "<input type='button' class='ui_submit' id='cfg_btn_game' ".
           "onclick=\"lgsmShowConfigView('game')\" value='" .
-          &html_escape($text{'config_editor_game_btn'}) . "'>";
+          &html_escape($game_tab_label) . "'>";
     print "</p>\n";
 
     # Common LGSM config panel
@@ -1514,21 +3668,8 @@ JS
             print &ui_form_end();
         }
     } else {
-        # Choose parser based on file format. Prefer the explicit games_meta
-        # hint over content sniffing — the JSON heuristic in particular needs
-        # to win over the .properties fallback for files that legitimately
-        # contain "key=value" lines elsewhere.
-        my $game_fmt = &get_game_config_format($script_name_for_cfg)
-                    || &detect_game_config_format($game_cfg_path, $game_raw);
-        my ($game_vals, $game_order);
-        if ($game_fmt eq 'json') {
-            ($game_vals, $game_order) = &parse_json_config($game_raw);
-        }
-        elsif ($game_fmt eq 'properties') {
-            ($game_vals, $game_order) = &parse_properties_file($game_raw);
-        } else {
-            ($game_vals, $game_order) = &parse_option_settings_from_ini($game_raw);
-        }
+        my ($game_vals, $game_order, undef) =
+            &parse_game_config_values($script_name_for_cfg, $game_cfg_path, $game_raw);
         # Known fields from games_meta (game config section) for labelled display
         my @gcf = &get_game_config_fields($script_name_for_cfg);
         my %gcf_map = map { $_->{'key'} => $_ } @gcf;
@@ -1543,13 +3684,22 @@ JS
         print &ui_hidden("config_file", "game");
         print &ui_hidden("config_view", "game");
         print &ui_hidden("game_config_original", $game_raw);
-        print "<p>" . &html_escape($text{'config_editor_game_notice'}) . "</p>\n";
+        if ($script_name_for_cfg =~ /^pw(?:server)?$/i) {
+            print "<p>" . &html_escape($text{'config_editor_pw_world_notice'}) . "</p>\n";
+            my $wopt = &find_palworld_world_option_sav($script_dir_for_cfg);
+            if ($wopt ne '') {
+                print "<p><em>" . &html_escape(&text('config_editor_pw_worldoption_hint', $wopt))
+                    . "</em></p>\n";
+            }
+        } else {
+            print "<p>" . &html_escape($text{'config_editor_game_notice'}) . "</p>\n";
+        }
         print "<p><label>";
         print "<input type='checkbox' id='raw_mode_cb_game' name='raw_mode' value='1' ";
         print "onchange=\"lgsmToggleRaw('game', this)\"> ";
         print "$text{'config_editor_raw_mode'}</label></p>\n";
         print "<div id='cfg_form_div_game'>\n";
-        print &ui_table_start($text{'config_editor_game_btn'}, "width=100%", 2);
+        print &ui_table_start($game_tab_label, "width=100%", 2);
         if (@known_shown || @extra_keys) {
             # Labelled known fields first
             for my $f (@known_shown) {
@@ -1605,66 +3755,7 @@ JS
 
 # Per-instance job list (operators and admins only)
 unless (&user_is_readonly($instance_id)) {
-    my @inst_jobs = grep { ($_->{instance_id} // '') eq $instance_id }
-                    get_all_jobs();
-    @inst_jobs = @inst_jobs[0..4] if @inst_jobs > 5;
-
-    if (@inst_jobs) {
-        print "<h3>" . &html_escape($text{'jobs_title'} || 'Jobs') . "</h3>\n";
-        my %job_action_labels = (
-            install_game    => $text{'jobs_action_install_game'}    || 'Spiel installieren',
-            setup_lgsm      => $text{'jobs_action_setup_lgsm'}      || 'LGSM einrichten',
-            update          => $text{'jobs_action_update'}         || 'Update',
-            validate        => $text{'jobs_action_validate'}       || 'Dateien prüfen',
-            reinstall       => $text{'jobs_action_reinstall'}      || 'Neu installieren',
-            start           => $text{'jobs_action_start'}         || 'Starten',
-            stop            => $text{'jobs_action_stop'}          || 'Stoppen',
-            monitor_restart => $text{'jobs_action_monitor_restart'} || 'Neustart (Monitoring)',
-        );
-        my %status_icons = (
-            running => '&#x23F3;',
-            ok      => '&#x2705;',
-            failed  => '&#x1F534;',
-            aborted => '&#x1F6AB;',
-        );
-        my @rows;
-        for my $job (@inst_jobs) {
-            my $jid    = $job->{job_id};
-            my $status = $job->{status};
-            my $ts     = $job->{started_at} || 0;
-            my @lt     = localtime($ts);
-            my $ts_str = $ts ? sprintf('%02d:%02d', $lt[2], $lt[1]) : '—';
-            my $st_icon = $status_icons{$status} // '';
-            my $out_cell = '—';
-            if ($status eq 'running') {
-                $out_cell = "<a href='manage.cgi?instance_id=" . &html_escape($instance_id)
-                    . "&amp;action=poll_job&amp;job=" . &html_escape($jid) . "'>Live</a>";
-            } elsif ($status eq 'ok' || $status eq 'failed' || $status eq 'aborted') {
-                # Successful jobs used to show only "—" here, so fast SteamCMD updates
-                # looked like they produced no log. output/ is kept until auto-cleanup.
-                $out_cell = "<a href='jobs.cgi?action=view_output&amp;job_id="
-                    . &html_escape($jid) . "'>Log</a>";
-            }
-            my $act_label = $job_action_labels{ $job->{action} // '' }
-                // $job->{action} // '—';
-            push @rows, [
-                &html_escape($act_label),
-                $ts_str,
-                "$st_icon " . &html_escape($status),
-                $out_cell,
-            ];
-        }
-        print &ui_columns_table(
-            [
-                $text{'jobs_col_action'}  || 'Aktion',
-                $text{'jobs_col_started'} || 'Gestartet',
-                $text{'jobs_col_status'}  || 'Status',
-                $text{'jobs_col_output'}  || 'Ausgabe',
-            ],
-            "100%",
-            \@rows,
-        );
-    }
+    &_manage_render_instance_jobs_table($instance_id, 5);
 }
 
 &footer('index.cgi', $text{'index_title'});

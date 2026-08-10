@@ -8,13 +8,25 @@ my $SFTP_END    = '# LinuxGSM-WebCore SFTP END';
 
 # Configure SFTP-only chroot access for a game user.
 # Adds a Match block to sshd_config if not already present.
+# Set a random SFTP password (separate from system account)
+sub _sftp_set_password {
+    my ($user, $pass) = @_;
+    return 0 unless defined $user && $user =~ /\S/;
+    return 0 unless defined $pass;
+    open(my $ch, '|-', 'chpasswd') or return 0;
+    print {$ch} "$user:$pass\n";
+    close($ch) or return 0;
+    return $? == 0 ? 1 : 0;
+}
+
 sub setup_sftp_user {
     my ($user) = @_;
+    our %text;
     $user = &sanitize_input($user);
 
-    # Set a random SFTP password (separate from system account)
     my $sftp_pass = &generate_sftp_password();
-    &system_logged("echo '$user:$sftp_pass' | chpasswd");
+    &_sftp_set_password($user, $sftp_pass)
+        or &error($text{'err_invalid_input'} // 'Failed to set SFTP password');
 
     # Add SSH chroot block if not already configured
     unless (&sftp_configured($user)) {

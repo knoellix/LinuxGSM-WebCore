@@ -2,7 +2,7 @@
 # t/test_config_editor.pl — Tests for src/lib/config_editor.pl
 use strict;
 use warnings;
-use Test::More tests => 27;
+use Test::More tests => 48;
 use File::Temp qw(tempdir tempfile);
 use FindBin qw($Bin);
 use lib "$Bin/..";
@@ -30,15 +30,29 @@ my $tmpdir = tempdir(CLEANUP => 1);
 # Test 1: valid common.cfg path accepted
 {
     $last_error = '';
-    my $ok = eval { &validate_config_target('/home/mc/lgsm/config-lgsm/common.cfg'); 1 };
-    ok($ok, 'validate_config_target: common.cfg accepted');
+    my $tmp = tempdir(CLEANUP => 1);
+    require File::Path;
+    File::Path::make_path("$tmp/lgsm/config-lgsm");
+    my $cfg = "$tmp/lgsm/config-lgsm/common.cfg";
+    open my $fh, '>', $cfg or die $!;
+    print $fh "port=\"27015\"\n";
+    close $fh;
+    my $resolved = eval { &validate_config_target($cfg); };
+    ok($resolved && $resolved =~ /common\.cfg$/, 'validate_config_target: common.cfg accepted');
 }
 
 # Test 2: valid instance cfg accepted
 {
     $last_error = '';
-    my $ok = eval { &validate_config_target('/home/mc/lgsm/config-lgsm/mcserver/mcserver.cfg'); 1 };
-    ok($ok, 'validate_config_target: instance cfg accepted');
+    my $tmp = tempdir(CLEANUP => 1);
+    require File::Path;
+    File::Path::make_path("$tmp/lgsm/config-lgsm/mcserver");
+    my $cfg = "$tmp/lgsm/config-lgsm/mcserver/mcserver.cfg";
+    open my $fh, '>', $cfg or die $!;
+    print $fh "port=\"27015\"\n";
+    close $fh;
+    my $resolved = eval { &validate_config_target($cfg); };
+    ok($resolved && $resolved =~ /mcserver\.cfg$/, 'validate_config_target: instance cfg accepted');
 }
 
 # Test 3: _default.cfg rejected
@@ -217,14 +231,29 @@ my $tmpdir = tempdir(CLEANUP => 1);
         'resolve_game_server_config_path: relative static hint resolves under script_dir');
 }
 
-# Test 20b: static hint (absolute) is returned verbatim
+# Test 20b: absolute static hint outside server tree is rejected (I12)
 {
     my %cfg = ();
     my $path = &resolve_game_server_config_path(
         '/home/foo/bar', 'fooserver', \%cfg,
         '/etc/fooserver/config.json');
-    is($path, '/etc/fooserver/config.json',
-        'resolve_game_server_config_path: absolute static hint preserved');
+    is($path, '', 'resolve_game_server_config_path: absolute hint outside server rejected');
+}
+
+# Test 20b2: absolute static hint under script_dir is accepted
+{
+    my $tmp = tempdir(CLEANUP => 1);
+    my $server = "$tmp/pw-1";
+    require File::Path;
+    File::Path::make_path("$server/serverfiles/cfg");
+    my $cfg_file = "$server/serverfiles/cfg/game.json";
+    open my $fh, '>', $cfg_file or die $!;
+    print $fh "{}\n";
+    close $fh;
+    my %cfg = ();
+    my $path = &resolve_game_server_config_path(
+        $server, 'pwserver', \%cfg, $cfg_file);
+    is($path, $cfg_file, 'resolve_game_server_config_path: absolute hint under server ok');
 }
 
 # Test 20c: empty hint falls through to LGSM resolution
@@ -280,4 +309,110 @@ my $tmpdir = tempdir(CLEANUP => 1);
     my $out = &update_option_settings_in_ini($raw, \%vals, \@order);
     like($out, qr/OptionSettings=\(Difficulty=Hard,PublicPort=9000\)/,
         'update_option_settings_in_ini: option settings updated');
+}
+
+# Test 28: Palworld INI section header is not mistaken for JSON
+{
+    my $raw = "[/Script/Pal.PalGameWorldSettings]\nOptionSettings=(Difficulty=None,PublicPort=8211)\n";
+    is(&detect_game_config_format(undef, $raw), 'ini_option_settings',
+        'detect_game_config_format: Palworld INI not detected as JSON');
+}
+
+# Test 29: .ini path hint selects ini_option_settings even when empty
+{
+    is(&detect_game_config_format('/game/PalWorldSettings.ini', ''), 'ini_option_settings',
+        'detect_game_config_format: .ini path hint');
+}
+
+# Test 30: parse long single-line OptionSettings (Palworld production shape)
+{
+    my $raw = "[/Script/Pal.PalGameWorldSettings]\n"
+        . "OptionSettings=(Difficulty=None,ServerName=\"Default Palworld Server\",PublicPort=8211,BanListURL=\"https://api.palworldgame.com/api/banlist.txt\")\n";
+    my ($vals, $order) = &parse_option_settings_from_ini($raw);
+    is($vals->{'ServerName'}, 'Default Palworld Server', 'parse_option_settings: quoted ServerName');
+    is($vals->{'PublicPort'}, '8211', 'parse_option_settings: PublicPort');
+    is($vals->{'BanListURL'}, 'https://api.palworldgame.com/api/banlist.txt',
+        'parse_option_settings: URL value preserved');
+    ok((grep { $_ eq 'Difficulty' } @$order), 'parse_option_settings: order includes Difficulty');
+}
+
+# Test 31: resolve_game_config_format prefers OptionSettings over wrong meta hint
+{
+    require './src/lib/games_meta.pl';
+    no warnings 'redefine';
+    *main::get_game_config_format = sub { return 'properties' };
+    my $raw = "[/Script/Pal.PalGameWorldSettings]\nOptionSettings=(ServerName=\"PW\",PublicPort=8211)\n";
+    is(&resolve_game_config_format('pwserver', '/x/PalWorldSettings.ini', $raw),
+        'ini_option_settings', 'resolve: OptionSettings content wins over properties meta');
+}
+
+# Test 32: parse_game_config_values fills Palworld fields when mis-tagged properties
+{
+    no warnings 'redefine';
+    *main::get_game_config_format = sub { return 'properties' };
+    my $raw = "[/Script/Pal.PalGameWorldSettings]\nOptionSettings=(ServerName=\"PW\",PublicPort=8211)\n";
+    my ($vals, $order, $fmt) = &parse_game_config_values('pwserver', '/x/PalWorldSettings.ini', $raw);
+    is($fmt, 'ini_option_settings', 'parse_game_config_values: resolved ini');
+    is($vals->{'ServerName'}, 'PW', 'parse_game_config_values: ServerName from OptionSettings');
+    is($vals->{'PublicPort'}, '8211', 'parse_game_config_values: PublicPort');
+}
+
+# Test 33: read_game_config_raw normalizes BOM + CRLF
+{
+    my $file = "$tmpdir/bom.ini";
+    my $content = "\x{FEFF}[/Script/Pal.PalGameWorldSettings]\r\nOptionSettings=(ServerName=\"X\",PublicPort=8211)\r\n";
+    open(my $fh, '>:raw', $file) or die $!;
+    print {$fh} $content;
+    close($fh);
+    my $raw = &read_game_config_raw($file);
+    like($raw, qr/OptionSettings=\(ServerName="X",PublicPort=8211\)/, 'read_game_config_raw: BOM/CRLF stripped');
+    my ($vals, $order) = &parse_option_settings_from_ini($raw);
+    is($vals->{'ServerName'}, 'X', 'read_game_config_raw: parse after normalize');
+}
+
+# Test 40: truncated OptionSettings (missing closing paren) still parses known keys
+{
+    my $raw = "[/Script/Pal.PalGameWorldSettings]\n"
+        . "OptionSettings=(Difficulty=None,ServerName=Keks,ServerPassword=pepega,PublicPort=8211,RCONEnabled=false,BanListURL=https:\n";
+    my ($vals, $order, $fmt) = &parse_game_config_values('pwserver', '/x/PalWorldSettings.ini', $raw);
+    is($fmt, 'ini_option_settings', 'truncated: format detected');
+    is($vals->{'ServerName'}, 'Keks', 'truncated: ServerName');
+    is($vals->{'ServerPassword'}, 'pepega', 'truncated: ServerPassword');
+    is($vals->{'PublicPort'}, '8211', 'truncated: PublicPort');
+}
+
+# Test 44: fix_config must not mutate LGSM _default.cfg (C2 regression)
+{
+    open my $fh, '<', 'src/manage.cgi' or die $!;
+    local $/;
+    my $src = <$fh>;
+    close $fh;
+    ok($src !~ /rename\s*\(\s*\$default_cfg/, 'fix_config: no rename of _default.cfg');
+    like($src, qr/elsif \(\$action eq 'fix_config'\).*validate_config_target\(\$config_file\)/s,
+        'fix_config: validate_config_target before write');
+}
+
+# Test 46: validate_game_config_path rejects path outside server tree
+{
+    $last_error = '';
+    my $ok = eval {
+        &validate_game_config_path('/home/mc/srv', '/etc/passwd');
+        1;
+    };
+    ok(!$ok && $last_error eq 'invalid input', 'validate_game_config_path: outside tree rejected');
+}
+
+# Test 47: validate_game_config_path accepts path under server dir
+{
+    $last_error = '';
+    my $tmp = tempdir(CLEANUP => 1);
+    my $server = "$tmp/pw-1";
+    require File::Path;
+    File::Path::make_path("$server/serverfiles/Pal/Saved/Config/LinuxServer");
+    my $ini = "$server/serverfiles/Pal/Saved/Config/LinuxServer/PalWorldSettings.ini";
+    open my $fh, '>', $ini or die $!;
+    print $fh "[/Script/Pal.PalGameWorldSettings]\n";
+    close $fh;
+    my $resolved = eval { &validate_game_config_path($server, $ini); };
+    ok($resolved && $resolved =~ /PalWorldSettings\.ini$/, 'validate_game_config_path: ini under server ok');
 }

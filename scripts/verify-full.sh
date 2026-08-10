@@ -4,27 +4,48 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-echo "[verify-full] perl syntax checks"
+# shellcheck source=lib/term_ui.sh
+. "$ROOT_DIR/scripts/lib/term_ui.sh"
+
+tui_section "[verify-full] perl syntax checks"
 for file in src/*.cgi src/lib/*.pl t/*.pl; do
   [ -f "$file" ] || continue
-  perl -I. -c "$file" >/dev/null
-  echo "  ok  $file"
+  perl -I. -c "$file" >/dev/null 2>&1
+  tui_ok "$file"
 done
 
-echo "[verify-full] complete perl test suite"
+tui_section "[verify-full] complete perl test suite"
 for test_file in t/test_*.pl; do
   [ -f "$test_file" ] || continue
-  perl "$test_file"
+  if perl "$test_file" >/dev/null 2>&1; then
+    tui_ok "$test_file"
+  else
+    tui_fail "$test_file"
+    perl "$test_file" || true
+    exit 1
+  fi
 done
 
 if [ -f "t/test_port_resolver.sh" ]; then
-  echo "[verify-full] bash port resolver test"
-  bash "t/test_port_resolver.sh"
+  tui_section "[verify-full] bash port resolver test"
+  if bash "t/test_port_resolver.sh" >/dev/null 2>&1; then
+    tui_ok "t/test_port_resolver.sh"
+  else
+    tui_fail "t/test_port_resolver.sh"
+    bash "t/test_port_resolver.sh" || true
+    exit 1
+  fi
 fi
 
 if [ -f "t/test_build.sh" ]; then
-  echo "[verify-full] build smoke test"
-  bash "t/test_build.sh"
+  tui_section "[verify-full] build smoke test"
+  if bash "t/test_build.sh" >/dev/null 2>&1; then
+    tui_ok "t/test_build.sh"
+  else
+    tui_fail "t/test_build.sh"
+    bash "t/test_build.sh" || true
+    exit 1
+  fi
 fi
 
-echo "[verify-full] completed"
+tui_done "[verify-full] completed"

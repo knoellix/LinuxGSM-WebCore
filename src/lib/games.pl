@@ -93,4 +93,28 @@ sub _write_cache {
     close $fh;
 }
 
+# Resolve wizard/registry key (LGSM CSV shortname or script basename) to script name.
+# Example: pw -> pwserver, mc -> mcserver, pwserver -> pwserver.
+sub resolve_lgsm_game_script {
+    my ($key) = @_;
+    return '' unless defined $key && $key =~ /\S/;
+    for my $g (&get_game_list()) {
+        return $g->{'script'} if ($g->{'shortname'} // '') eq $key;
+        return $g->{'script'} if ($g->{'script'} // '') eq $key;
+    }
+    return $key;
+}
+
+# Inverse of resolve_lgsm_game_script — LGSM shortname for linuxgsm.sh.
+# Example: pwserver -> pw, pw -> pw.
+sub resolve_lgsm_game_shortname {
+    my ($key) = @_;
+    return '' unless defined $key && $key =~ /\S/;
+    for my $g (&get_game_list()) {
+        return $g->{'shortname'} if ($g->{'shortname'} // '') eq $key;
+        return $g->{'shortname'} if ($g->{'script'} // '') eq $key;
+    }
+    return $key;
+}
+
 1;
