@@ -1,38 +1,64 @@
 name: Language / UI string
-description: Missing, wrong, or inconsistent DE/EN UI text
+description: Fix DE/EN text, or propose Spanish (or another) translation
 title: "[lang] "
 labels: ["language"]
 body:
+  - type: markdown
+    attributes:
+      value: |
+        Shipped UI today: **German (`de`) + English (`en`)** (`src/lang/de`, `src/lang/en`).
+
+        This form also works for **Spanish** or any **new language** — when we add a locale later, many keys will be missing at first; open issues (or PRs) with translations here.
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What kind of contribution?
+      options:
+        - Fix / improve existing string (de or en)
+        - Missing key in de or en (parity)
+        - Spanish (es) translation / addition
+        - New language (not yet in the module)
+    validations:
+      required: true
   - type: dropdown
     id: lang
     attributes:
-      label: Language
+      label: Language code
       options:
         - de
         - en
-        - both / key parity
+        - es
+        - both / key parity (de+en)
+        - other (name it below)
     validations:
       required: true
+  - type: input
+    id: other_lang
+    attributes:
+      label: Other language (if not in the list)
+      description: e.g. fr, pt-BR, nl — leave empty when using de/en/es
+      placeholder: fr
   - type: input
     id: key
     attributes:
       label: Lang key (if known)
-      description: e.g. manage_title — leave empty if unknown
+      description: e.g. manage_title — leave empty if unknown; for a full locale, say “full file / many keys”
       placeholder: manage_something
   - type: textarea
     id: where
     attributes:
       label: Where in the UI
-      description: Page / action / screenshot description
+      description: Page / action / screenshot description (or “N/A — new locale pack”)
     validations:
       required: true
   - type: textarea
     id: current
     attributes:
-      label: Current text (wrong or missing)
+      label: Current text (wrong, missing, or empty)
   - type: textarea
     id: suggested
     attributes:
-      label: Suggested DE and/or EN text
+      label: Suggested text
+      description: Paste DE/EN/ES (or other) wording. For many keys, a short table `key = value` or a gist/PR link is fine.
     validations:
       required: true
