@@ -123,6 +123,82 @@ subtest 'mod_set_enabled and delete' => sub {
     ok(!exists $idx->{'mods/Foo.jar'}, 'index key removed');
 };
 
+subtest 'filter sort paginate installed mods' => sub {
+    my @mods = (
+        { basename => 'Zeta.jar',   title => 'Zeta Mod',       enabled => 1 },
+        { basename => 'Alpha.jar',  title => 'Alpha Mod',      enabled => 0 },
+        { basename => 'Beta.jar',   title => 'Something Beta', enabled => 1 },
+        { basename => 'Gamma.jar',  title => 'Gamma',          enabled => 0 },
+    );
+
+    my $all = filter_installed_mods(\@mods, {});
+    is(scalar @$all, 4, 'filter empty opts returns all');
+
+    my $en = filter_installed_mods(\@mods, { status => 'enabled' });
+    is(scalar @$en, 2, 'filter enabled count');
+    ok((grep { $_->{basename} eq 'Zeta.jar' } @$en), 'enabled includes Zeta');
+    ok(!(grep { $_->{basename} eq 'Alpha.jar' } @$en), 'enabled excludes Alpha');
+
+    my $dis = filter_installed_mods(\@mods, { status => 'disabled' });
+    is(scalar @$dis, 2, 'filter disabled count');
+    ok((grep { $_->{basename} eq 'Alpha.jar' } @$dis), 'disabled includes Alpha');
+
+    my $by_title = filter_installed_mods(\@mods, { q => 'alpha mod' });
+    is(scalar @$by_title, 1, 'filter q matches title');
+    is($by_title->[0]{basename}, 'Alpha.jar', 'title match basename');
+
+    my $by_base = filter_installed_mods(\@mods, { q => 'beta.jar' });
+    is(scalar @$by_base, 1, 'filter q matches basename');
+    is($by_base->[0]{basename}, 'Beta.jar', 'basename match');
+
+    my $combo = filter_installed_mods(\@mods, { q => 'a', status => 'enabled' });
+    is(scalar @$combo, 2, 'filter q + enabled');
+    ok((grep { $_->{basename} eq 'Beta.jar' } @$combo), 'combo includes Beta');
+    ok(!(grep { $_->{basename} eq 'Alpha.jar' } @$combo), 'combo excludes disabled Alpha');
+
+    my $name_asc = sort_installed_mods(\@mods, 'name', 'asc');
+    my @names_asc = map { $_->{basename} } @$name_asc;
+    is_deeply(\@names_asc, [qw(Alpha.jar Gamma.jar Beta.jar Zeta.jar)], 'sort name asc by title');
+
+    my $name_desc = sort_installed_mods(\@mods, 'name', 'desc');
+    my @names_desc = map { $_->{basename} } @$name_desc;
+    is_deeply(\@names_desc, [qw(Zeta.jar Beta.jar Gamma.jar Alpha.jar)], 'sort name desc by title');
+
+    my $stat_asc = sort_installed_mods(\@mods, 'status', 'asc');
+    ok(!$stat_asc->[0]{enabled}, 'sort status asc disabled first');
+    ok($stat_asc->[-1]{enabled}, 'sort status asc enabled last');
+
+    my $stat_desc = sort_installed_mods(\@mods, 'status', 'desc');
+    ok($stat_desc->[0]{enabled}, 'sort status desc enabled first');
+    ok(!$stat_desc->[-1]{enabled}, 'sort status desc disabled last');
+
+    my ($s1, $t1, $p1) = paginate_installed_mods(\@mods, 1, 2);
+    is($t1, 4, 'page1 total');
+    is($p1, 2, 'page1 pages');
+    is(scalar @$s1, 2, 'page1 slice size');
+    is($s1->[0]{basename}, $mods[0]{basename}, 'page1 first item unchanged order');
+
+    my ($s2, $t2, $p2) = paginate_installed_mods(\@mods, 2, 2);
+    is(scalar @$s2, 2, 'page2 slice size');
+
+    my ($s3, $t3, $p3) = paginate_installed_mods(\@mods, 3, 2);
+    is($p3, 2, 'page3 pages unchanged');
+    is(scalar @$s3, 2, 'page3 clamped to last page');
+
+    my ($s_clamp, $t_clamp, $p_clamp) = paginate_installed_mods(\@mods, 99, 2);
+    is(scalar @$s_clamp, 2, 'page clamp high returns last page slice');
+    is($s_clamp->[0]{basename}, $s2->[0]{basename}, 'clamped page matches page2');
+
+    my ($s_def, $t_def, $p_def) = paginate_installed_mods(\@mods, 1);
+    is($t_def, 4, 'default per_page total');
+    is($p_def, 1, 'default per_page single page');
+
+    my ($s_empty, $t_empty, $p_empty) = paginate_installed_mods([], 1, 10);
+    is($t_empty, 0, 'empty total');
+    is($p_empty, 1, 'empty still one page');
+    is(scalar @$s_empty, 0, 'empty slice');
+};
+
 subtest 'curseforge file record cache' => sub {
     curseforge_clear_file_cache();
     my $calls = 0;

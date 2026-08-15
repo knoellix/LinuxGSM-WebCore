@@ -539,6 +539,91 @@ sub list_installed_mods {
     return \@mods;
 }
 
+sub _mc_mods_display_name {
+    my ($mod) = @_;
+    return '' unless ref($mod) eq 'HASH';
+    my $title = $mod->{'title'} // '';
+    return $title if $title =~ /\S/;
+    return $mod->{'basename'} // '';
+}
+
+sub filter_installed_mods {
+    my ($mods, $opts) = @_;
+    $mods = [] unless ref($mods) eq 'ARRAY';
+    $opts = {} unless ref($opts) eq 'HASH';
+    my @out = @$mods;
+
+    my $status = lc($opts->{'status'} // 'all');
+    $status = 'all' unless $status =~ /\A(?:all|enabled|disabled)\z/;
+    if ($status eq 'enabled') {
+        @out = grep { ref($_) eq 'HASH' && ($_->{'enabled'} // 0) } @out;
+    } elsif ($status eq 'disabled') {
+        @out = grep { ref($_) eq 'HASH' && !($_->{'enabled'} // 0) } @out;
+    }
+
+    my $q = $opts->{'q'} // '';
+    $q =~ s/[\t\n\r\0]//g;
+    $q =~ s/^\s+|\s+$//g;
+    if ($q ne '') {
+        my $ql = lc($q);
+        @out = grep {
+            ref($_) eq 'HASH' && do {
+                my $name = lc(_mc_mods_display_name($_));
+                my $base = lc($_->{'basename'} // '');
+                index($name, $ql) >= 0 || index($base, $ql) >= 0;
+            };
+        } @out;
+    }
+
+    return \@out;
+}
+
+sub sort_installed_mods {
+    my ($mods, $key, $dir) = @_;
+    $mods = [] unless ref($mods) eq 'ARRAY';
+    $key = lc($key // 'name');
+    $key = 'name' unless $key =~ /\A(?:name|status)\z/;
+    $dir = lc($dir // 'asc');
+    $dir = 'asc' unless $dir =~ /\A(?:asc|desc)\z/;
+    my @sorted = @$mods;
+    my $cmp = sub {
+        my ($a, $b) = @_;
+        return 0 unless ref($a) eq 'HASH' && ref($b) eq 'HASH';
+        my $r;
+        if ($key eq 'status') {
+            my $ea = ($a->{'enabled'} // 0) ? 1 : 0;
+            my $eb = ($b->{'enabled'} // 0) ? 1 : 0;
+            $r = $ea <=> $eb;
+            $r = lc($a->{'basename'} // '') cmp lc($b->{'basename'} // '') if $r == 0;
+        } else {
+            $r = lc(_mc_mods_display_name($a)) cmp lc(_mc_mods_display_name($b));
+            $r = lc($a->{'basename'} // '') cmp lc($b->{'basename'} // '') if $r == 0;
+        }
+        return $dir eq 'desc' ? -$r : $r;
+    };
+    @sorted = sort { $cmp->($a, $b) } @sorted;
+    return \@sorted;
+}
+
+sub paginate_installed_mods {
+    my ($mods, $page, $per_page) = @_;
+    $mods = [] unless ref($mods) eq 'ARRAY';
+    $per_page = 50 unless defined $per_page && $per_page =~ /^\d+$/ && $per_page > 0;
+    my $total = scalar @$mods;
+    my $pages = $total > 0 ? int(($total + $per_page - 1) / $per_page) : 1;
+    $pages = 1 if $pages < 1;
+    $page = 1 unless defined $page && $page =~ /^\d+$/ && $page > 0;
+    $page = $pages if $page > $pages;
+    my $start = ($page - 1) * $per_page;
+    my @slice;
+    if ($total && $start <= $#$mods) {
+        my $last = $start + $per_page - 1;
+        $last = $#$mods if $last > $#$mods;
+        @slice = @{$mods}[$start .. $last];
+    }
+    return (\@slice, $total, $pages);
+}
+
 sub _mc_mods_direct_as_user {
     my ($unix_user) = @_;
     return 1 if !defined $unix_user || $unix_user eq '';
