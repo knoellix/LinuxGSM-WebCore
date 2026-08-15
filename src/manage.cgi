@@ -615,7 +615,11 @@ sub _manage_mod_search_query {
 }
 
 sub _manage_render_mods_page_link {
-    my ($instance_id) = @_;
+    my ($inst, $instance_id) = @_;
+    my ($profile, $server_dir) = _manage_read_mc_profile($inst);
+    return unless $profile && $server_dir;
+    return unless &mc_mod_ui_ready($profile, $server_dir);
+
     my $safe_id = &html_escape($instance_id);
     print "<h3>" . &html_escape($text{'mc_mods_page_title'} || 'Mods') . "</h3>\n";
     print "<p>" . &html_escape($text{'manage_mods_page_desc'}
@@ -2305,9 +2309,7 @@ if ($is_fresh) {
 
     unless (&user_is_readonly($instance_id)) {
         &_manage_render_instance_jobs_table($instance_id, 5);
-        if ($mc_prof && $server_dir_setup && &mc_mod_ui_ready($mc_prof, $server_dir_setup)) {
-            &_manage_render_mods_page_link($instance_id);
-        }
+        &_manage_render_mods_page_link($inst, $instance_id);
     }
 
     &footer('', '');
@@ -2693,7 +2695,7 @@ print &_manage_inline_action_btn($monitor_link);
 print "</div>\n";
 
 # Mods page link (below server controls)
-&_manage_render_mods_page_link($instance_id);
+&_manage_render_mods_page_link($inst, $instance_id);
 
 if (&is_admin()) {
     print "<p>\n";
