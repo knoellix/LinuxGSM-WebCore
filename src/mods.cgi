@@ -2,6 +2,7 @@
 use strict;
 use warnings;
 use File::Basename qw(dirname basename);
+use File::Copy qw(copy);
 
 do '../web-lib.pl';
 do '../ui-lib.pl';
@@ -125,6 +126,366 @@ sub _mods_hidden_mod_search_state {
     $mod_q = _mods_mod_search_query($mod_q // '');
     return '' unless length($mod_q) >= 2;
     return &ui_hidden('mod_q', $mod_q);
+}
+
+sub _mods_pack_search_query {
+    my ($raw) = @_;
+    $raw //= '';
+    $raw =~ s/[\t\n\r\0]//g;
+    $raw =~ s/^\s+|\s+$//g;
+    return substr($raw, 0, 100);
+}
+
+sub _mods_hidden_pack_search_state {
+    my ($pack_q) = @_;
+    $pack_q = _mods_pack_search_query($pack_q // '');
+    return '' unless length($pack_q) >= 2;
+    return &ui_hidden('pack_q', $pack_q);
+}
+
+sub _mods_hidden_mc_search_state {
+    my ($mod_q, $pack_q) = @_;
+    return _mods_hidden_mod_search_state($mod_q)
+        . _mods_hidden_pack_search_state($pack_q);
+}
+
+sub _mods_modpack_resolve_error_msg {
+    my ($err, $detail, $profile) = @_;
+    return &mc_modpack_error_message($err, $detail, $profile, \%text);
+}
+
+sub _mods_modpack_validation_errors {
+    my ($validation, $pack, $profile) = @_;
+    my @msgs;
+    for my $code (@{ $validation->{'errors'} // [] }) {
+        if ($code eq 'loader_mismatch') {
+            push @msgs, &text('mc_modpack_loader_mismatch',
+                &html_escape($pack->{'loader'} // '?'),
+                &html_escape($profile->{'loader'} // '?'));
+        } elsif ($code eq 'version_mismatch') {
+            push @msgs, &text('mc_modpack_version_mismatch',
+                &html_escape($pack->{'mc_version'} // '?'),
+                &html_escape($profile->{'mc_version'} // '?'));
+        } elsif ($code eq 'modded_pack_on_vanilla') {
+            push @msgs, $text{'mc_modpack_modded_on_vanilla'};
+        } else {
+            push @msgs, &html_escape($code);
+        }
+    }
+    return @msgs;
+}
+
+sub _mods_write_job_worker_secrets {
+    my ($job_dir, $unix_user) = @_;
+    return 0 unless defined $job_dir && -d $job_dir;
+    &module_config_sync_in();
+    my %keys;
+    $keys{modpack_cf_auto_resume} = &module_config_bool($config{modpack_cf_auto_resume}) ? '1' : '0';
+    for my $k (qw(curseforge_api_key modrinth_contact hangar_api_token)) {
+        my $v = $config{$k} // '';
+        $keys{$k} = $v if $v =~ /\S/;
+    }
+    return &write_job_worker_secrets($job_dir, $unix_user, \%keys);
+}
+
+sub _mods_validate_modpack_server_path {
+    my ($path, $unix_user, $server_dir) = @_;
+    my ($ok, $resolved, $err) = &validate_modpack_import_path($path, $unix_user, $server_dir);
+    return ($ok, $resolved, $err);
+}
+
+sub _mods_finish_modpack_import_job {
+    my ($job_id, $instance_id, $inst, $unix_user, $pack_path, $profile, $server_dir) = @_;
+    my $job_dir = &_job_dir($job_id);
+
+    my $pack = &parse_modpack_file($pack_path);
+    unless ($pack) {
+        &delete_job($job_id);
+        &error($text{'mc_modpack_invalid'} || 'Invalid modpack format.');
+    }
+
+    my $validation = &validate_modpack_against_profile($pack, $profile);
+    unless ($validation->{'ok'}) {
+        my @errs = _mods_modpack_validation_errors($validation, $pack, $profile);
+        &delete_job($job_id);
+        &error(join('<br>', @errs));
+    }
+
+    if (($pack->{'format'} // '') eq 'curseforge') {
+        unless (defined &curseforge_api_key && curseforge_api_key() =~ /\S/) {
+            &delete_job($job_id);
+            &error($text{'mc_modpack_curseforge_key_missing'});
+        }
+    }
+
+    my ($files, $skipped_client) = &modpack_files_for_server_import($pack);
+    unless (@$files) {
+        &delete_job($job_id);
+        &error($text{'mc_modpack_no_server_mods'} || 'No server-compatible mods in pack.');
+    }
+
+    &write_modpack_job_meta($job_dir, {
+        format                => $pack->{'format'},
+        pack_file             => $pack_path,
+        pack_name             => $pack->{'name'} // '',
+        pack_loader           => $pack->{'loader'} // '',
+        pack_loader_version   => $pack->{'loader_version'} // '',
+        pack_mc_version       => $pack->{'mc_version'} // '',
+        mod_dir               => $profile->{'mod_dir'} // 'mods',
+        server_dir            => $server_dir,
+        skipped_client        => $skipped_client,
+        files                 => $files,
+        profile               => { %$profile },
+        validation_warnings   => [ @{ $validation->{'warnings'} // [] } ],
+    }, $unix_user) or do {
+        &delete_job($job_id);
+        &error($text{'mc_modpack_meta_failed'} || 'Job preparation failed.');
+    };
+
+    &write_job_meta($job_id, $instance_id, 'modpack_import', $unix_user)
+        or do { &job_mark_launch_failed($job_id); _mods_job_launch_failed(); };
+
+    _mods_write_job_worker_secrets($job_dir, $unix_user);
+
+    my $rc = &system_logged(&user_worker_launch_cmd(
+        unix_user   => $unix_user,
+        module_root => $module_root,
+        worker      => "$module_root/scripts/mc_modpack_install.sh",
+        args        => [ $job_dir, $unix_user, $server_dir ],
+    ));
+    if ($rc != 0 || !&job_dispatch_verified($job_id)) {
+        &job_mark_launch_failed($job_id);
+        _mods_job_launch_failed();
+    }
+    return $job_id;
+}
+
+sub _mods_launch_modpack_from_path {
+    my ($instance_id, $inst, $unix_user, $server_path) = @_;
+    my (undef, undef, $server_dir) = _parse_script_info($inst);
+    my $profile = &read_mc_profile($server_dir);
+    &error($text{'mc_profile_missing'} || 'No Minecraft profile.') unless $profile;
+
+    my ($ok_path, $pack_path, $path_err) = _mods_validate_modpack_server_path(
+        $server_path, $unix_user, $server_dir);
+    unless ($ok_path) {
+        if ($path_err eq 'outside') {
+            &error($text{'mc_modpack_path_outside'} || 'Path is outside server home.');
+        } elsif ($path_err eq 'missing') {
+            &error($text{'mc_modpack_path_missing'} || 'File not found.');
+        } else {
+            &error($text{'mc_modpack_path_invalid'} || 'Invalid file path.');
+        }
+    }
+
+    my $job_id = &create_job($unix_user);
+    my $job_dir = &_job_dir($job_id);
+    my $upload_dir = "$job_dir/upload";
+    mkdir($upload_dir, 0750) or do {
+        &delete_job($job_id);
+        &error($text{'mc_modpack_upload_failed'} || 'Modpack import failed.');
+    };
+    my $base = basename($pack_path);
+    $base =~ s/[^a-zA-Z0-9._-]//g;
+    $base = 'pack.mrpack' unless $base =~ /\.(mrpack|zip)\z/i;
+    my $dest = "$upload_dir/$base";
+    unless (copy($pack_path, $dest)) {
+        &delete_job($job_id);
+        &error($text{'mc_modpack_upload_failed'} || 'Modpack import failed.');
+    }
+    &chown_job_files_to_user($unix_user, $upload_dir, $dest);
+
+    return _mods_finish_modpack_import_job(
+        $job_id, $instance_id, $inst, $unix_user, $dest, $profile, $server_dir);
+}
+
+sub _mods_launch_modpack_remote {
+    my ($instance_id, $inst, $unix_user, $source, $ids_ref, $adopt) = @_;
+    my (undef, undef, $server_dir) = _parse_script_info($inst);
+    my $profile = &read_mc_profile($server_dir);
+    &error($text{'mc_profile_missing'} || 'No Minecraft profile.') unless $profile;
+
+    $source =~ s/[^a-z]//g;
+    return unless ref($ids_ref) eq 'HASH';
+
+    unless ($source eq 'modrinth' || $source eq 'curseforge') {
+        &error(_mods_modpack_resolve_error_msg('invalid_source', {}, $profile));
+    }
+
+    my %ids_clean = (
+        project_id => $ids_ref->{'project_id'} // '',
+        version_id => $ids_ref->{'version_id'} // '',
+        file_id    => $ids_ref->{'file_id'} // '',
+        title      => $ids_ref->{'title'} // '',
+    );
+    if ($source eq 'curseforge') {
+        $ids_clean{'project_id'} =~ s/\D//g;
+        $ids_clean{'file_id'}    =~ s/\D//g if $ids_clean{'file_id'};
+    } else {
+        $ids_clean{'project_id'} =~ s/[^a-zA-Z0-9_-]//g;
+        $ids_clean{'version_id'} =~ s/[^a-zA-Z0-9_-]//g if $ids_clean{'version_id'};
+    }
+    unless ($ids_clean{'project_id'}) {
+        &error(_mods_modpack_resolve_error_msg(
+            'invalid_project', { project_id => $ids_ref->{'project_id'} // '' }, $profile));
+    }
+
+    my %profile_snapshot = %$profile;
+
+    my $job_id = &create_job($unix_user);
+    my $job_dir = &_job_dir($job_id);
+    &write_modpack_job_meta($job_dir, {
+        remote_pending => 1,
+        remote_source  => $source,
+        remote_ids     => \%ids_clean,
+        format         => $source eq 'curseforge' ? 'curseforge' : 'modrinth',
+        mod_dir        => $profile->{'mod_dir'} // 'mods',
+        server_dir     => $server_dir,
+        profile        => \%profile_snapshot,
+        pack_name      => $ids_clean{'title'},
+        ($adopt ? (adopt_profile => 1) : ()),
+    }, $unix_user) or do {
+        &delete_job($job_id);
+        &error($text{'mc_modpack_meta_failed'} || 'Job preparation failed.');
+    };
+
+    &write_job_meta($job_id, $instance_id, 'modpack_import', $unix_user)
+        or do { &job_mark_launch_failed($job_id); _mods_job_launch_failed(); };
+
+    _mods_write_job_worker_secrets($job_dir, $unix_user);
+
+    my $rc = &system_logged(&user_worker_launch_cmd(
+        unix_user   => $unix_user,
+        module_root => $module_root,
+        worker      => "$module_root/scripts/mc_modpack_install.sh",
+        args        => [ $job_dir, $unix_user, $server_dir ],
+    ));
+    if ($rc != 0 || !&job_dispatch_verified($job_id)) {
+        &job_mark_launch_failed($job_id);
+        _mods_job_launch_failed();
+    }
+    return $job_id;
+}
+
+sub _mods_find_resumable_modpack_job {
+    my ($instance_id, $server_dir) = @_;
+    for my $j (&get_instance_jobs($instance_id, action => 'modpack_import')) {
+        my $st = $j->{'status'} // '';
+        next unless $st eq 'failed' || $st eq 'aborted';
+        my $jdir = &_job_dir($j->{'job_id'});
+        my ($ok, $prog) = &modpack_job_resumable(
+            $jdir, $server_dir, $st, $j->{'action'} // '');
+        next unless $ok && ref($prog) eq 'HASH';
+        return ($j->{'job_id'}, $prog);
+    }
+    return (undef, undef);
+}
+
+sub _mods_render_modpack_resume_ui {
+    my ($instance_id, $server_dir, $job_id, $prog, $pack_q, $q, $status, $sort, $dir, $page, $mod_q) = @_;
+    if (!$job_id || !ref($prog)) {
+        ($job_id, $prog) = _mods_find_resumable_modpack_job($instance_id, $server_dir);
+    }
+    return unless $job_id && ref($prog) eq 'HASH';
+    my $installed = $prog->{'installed'} // 0;
+    my $total     = $prog->{'total'} // 0;
+    my $missing   = $prog->{'missing'} // ($total - $installed);
+    my $last      = $prog->{'last_installed'} // '';
+    my $phase     = $prog->{'phase'} // '';
+    my $msg;
+    if ($phase eq 'expand') {
+        $msg = &text('mc_modpack_resume_expand_status')
+            || 'Modpack preparation interrupted - metadata resolution can continue.';
+    } else {
+        $msg = &text('mc_modpack_resume_status', $installed, $total, $missing);
+        $msg = "Progress: $installed/$total mods on disk, $missing remaining."
+            unless defined $msg && $msg =~ /\S/;
+    }
+    print "<div class='alert alert-warning'>"
+        . &html_escape($msg);
+    if ($last ne '') {
+        print "<br><small>" . &html_escape(&text('mc_modpack_resume_last', $last)
+            || "Last completed: $last") . "</small>";
+    }
+    if ($phase ne 'expand') {
+        my $jdir = &_job_dir($job_id);
+        my $meta = &modpack_read_job_meta_file($jdir);
+        if (ref($meta) eq 'HASH' && &modpack_is_cf_bulk_pack_meta($meta)) {
+            print "<br><small><i>" . &html_escape(&text('mc_modpack_resume_cf_cdn_note')
+                || 'CurseForge CDN limits around mod ~95 are normal for large packs.')
+                . "</i></small>";
+            if (&modpack_cf_auto_resume_enabled()) {
+                print "<br><small><i>" . &html_escape(&text('mc_modpack_auto_resume_active')
+                    || 'Auto-resume enabled: job continues automatically after CDN pauses.')
+                    . "</i></small>";
+            }
+        }
+    }
+    print "<br>";
+    print &ui_form_start('mods.cgi', 'post');
+    print &ui_hidden('instance_id', &html_escape($instance_id));
+    print &ui_hidden('xnavigation', '1');
+    print _mods_hidden_list_state($q, $status, $sort, $dir, $page);
+    print _mods_hidden_mc_search_state($mod_q, $pack_q);
+    print &ui_hidden('action', 'modpack_import_resume');
+    print &ui_hidden('job', &html_escape($job_id));
+    print &ui_submit($text{'mc_modpack_resume_btn'} || 'Continue download',
+        undef, undef, undef, 'btn-primary');
+    print " ";
+    print "<a href='jobs.cgi?action=view_output&amp;job_id="
+        . &html_escape($job_id) . "'>"
+        . &html_escape($text{'mc_modpack_resume_log'} || 'View job log') . "</a>";
+    print &ui_form_end();
+    print "</div>\n";
+}
+
+sub _mods_launch_modpack_resume {
+    my ($instance_id, $inst, $unix_user, $job_id) = @_;
+    $job_id =~ s/[^0-9a-f]//g;
+    $job_id = substr($job_id, 0, 16);
+    $job_id or &error($text{'err_invalid_input'});
+    &validate_job_for_instance($job_id, $instance_id)
+        or &error($text{'err_not_found'});
+    if (&find_running_job_for_instance($instance_id, 'modpack_import')) {
+        &error($text{'mc_modpack_resume_running'}
+            || 'Modpack import already running.');
+    }
+    my $jmeta = &get_job_meta($job_id);
+    ($jmeta->{'action'} // '') eq 'modpack_import'
+        or &error($text{'mc_modpack_resume_invalid'}
+            || 'Job is not a modpack import.');
+    my $status = &get_job_status($job_id) // '';
+    my $job_dir = &_job_dir($job_id);
+    my (undef, undef, $server_dir) = _parse_script_info($inst);
+    my ($ok, $prog) = &modpack_job_resumable(
+        $job_dir, $server_dir, $status, $jmeta->{'action'} // '');
+    $ok or &error($text{'mc_modpack_resume_nothing'}
+        || 'No resumable modpack import found.');
+    &restart_job_for_resume($job_id, $unix_user)
+        or _mods_job_launch_failed();
+    &append_job_log_line($job_id,
+        '=== Resume requested (Webmin) - starting worker...', $unix_user);
+    _mods_write_job_worker_secrets($job_dir, $unix_user);
+    my $rc = &system_logged(&user_worker_launch_cmd(
+        unix_user   => $unix_user,
+        module_root => $module_root,
+        worker      => "$module_root/scripts/mc_modpack_install.sh",
+        args        => [ $job_dir, $unix_user, $server_dir, 1 ],
+        env         => { WEBCORE_MODPACK_RESUME => 1 },
+    ));
+    if ($rc != 0 || !&job_dispatch_verified($job_id)) {
+        &job_mark_launch_failed($job_id);
+        _mods_job_launch_failed();
+    }
+    return $job_id;
+}
+
+sub _mods_page_return_target {
+    my ($instance_id, $q, $status, $sort, $dir, $page, $mod_q, $pack_q) = @_;
+    my $target = _mods_list_url($instance_id, $q, $status, $sort, $dir, $page);
+    $target .= '&mod_q=' . _mods_query_urlencode($mod_q) if length($mod_q) >= 2;
+    $target .= '&pack_q=' . _mods_query_urlencode($pack_q) if length($pack_q) >= 2;
+    return $target;
 }
 
 sub _mods_versions_for_source {
@@ -314,11 +675,12 @@ $dir = 'asc' unless $dir =~ /\A(?:asc|desc)\z/;
 my $page = $in{'page'} // 1;
 $page = ($page =~ /^\d+$/ && $page > 0) ? int($page) : 1;
 my $mod_q = _mods_mod_search_query($in{'mod_q'} // '');
+my $pack_q = _mods_pack_search_query($in{'pack_q'} // '');
 
 &user_can_manage($instance_id)
     or &error($text{'err_acl_admin_only'} || 'Access denied');
 
-if ($action ne '' && $action !~ /^(?:monitor|start|stop|mod_enable|mod_disable|mod_delete|mod_versions|mod_search_versions|mc_mod_install)$/) {
+if ($action ne '' && $action !~ /^(?:monitor|start|stop|mod_enable|mod_disable|mod_delete|mod_versions|mod_search_versions|mc_mod_install|modpack_import_path|modpack_import_remote|modpack_import_resume)$/) {
     &error($text{'err_invalid_action'} || 'Invalid action');
 }
 if ($action ne '' && $action ne 'monitor' && &user_is_readonly($instance_id)) {
@@ -422,8 +784,8 @@ if ($action eq 'mc_mod_install') {
     my $source = '';
     my %ids;
     my %launch_opts;
-    my $return_target = _mods_list_url($instance_id, $q, $status, $sort, $dir, $page);
-    $return_target .= '&mod_q=' . _mods_query_urlencode($mod_q) if length($mod_q) >= 2;
+    my $return_target = _mods_page_return_target(
+        $instance_id, $q, $status, $sort, $dir, $page, $mod_q, $pack_q);
 
     my $mod_basename = _mods_sanitize_mod_basename($in{'mod_basename'} // '');
     if ($mod_basename ne '') {
@@ -480,6 +842,76 @@ if ($action eq 'mc_mod_install') {
     my $job_id = _mods_launch_mod_install(
         $instance_id, $inst, $unix_user, $source, \%ids, %launch_opts
     );
+    _mods_redirect_job_live($job_id, $instance_id, return_target => $return_target);
+}
+
+if ($action eq 'modpack_import_path') {
+    $ENV{'REQUEST_METHOD'} eq 'POST'
+        or &error($text{'err_invalid_action'} || 'Invalid action');
+    &mc_mod_ui_ready($profile, $server_dir)
+        or &error($text{'mc_mods_page_gate_not_ready'}
+            || 'Mods page is available after Minecraft Java and loader setup is complete.');
+    my $path = $in{'modpack_path'} // '';
+    $path =~ s/[\t\n\r\0]//g;
+    $path = substr($path, 0, 512);
+    my $job_id = _mods_launch_modpack_from_path(
+        $instance_id, $inst, $unix_user, $path);
+    my $return_target = _mods_page_return_target(
+        $instance_id, $q, $status, $sort, $dir, $page, $mod_q, $pack_q);
+    _mods_redirect_job_live($job_id, $instance_id, return_target => $return_target);
+}
+
+if ($action eq 'modpack_import_remote') {
+    $ENV{'REQUEST_METHOD'} eq 'POST'
+        or &error($text{'err_invalid_action'} || 'Invalid action');
+    &mc_mod_ui_ready($profile, $server_dir)
+        or &error($text{'mc_mods_page_gate_not_ready'}
+            || 'Mods page is available after Minecraft Java and loader setup is complete.');
+    my $source = $in{'pack_source'} // '';
+    $source =~ s/[^a-z]//g;
+    my %ids = (
+        project_id => $in{'pack_project_id'} // '',
+        version_id => $in{'pack_version_id'} // '',
+        file_id    => $in{'pack_file_id'} // '',
+        title      => $in{'pack_title'} // '',
+    );
+    for my $k (keys %ids) {
+        $ids{$k} =~ s/[\t\n\r\0]//g;
+        $ids{$k} = substr($ids{$k}, 0, 128);
+    }
+    if ($source eq 'curseforge') {
+        $ids{'project_id'} =~ s/\D//g if $ids{'project_id'};
+    } else {
+        $ids{'project_id'} =~ s/[^a-zA-Z0-9_-]//g if $ids{'project_id'};
+    }
+    $ids{'version_id'} =~ s/[^a-zA-Z0-9_-]//g if $ids{'version_id'};
+    $ids{'file_id'}    =~ s/\D//g if $ids{'file_id'};
+    my $adopt = (($in{'pack_adopt'} // '') eq '1') ? 1 : 0;
+    my $job_id = _mods_launch_modpack_remote(
+        $instance_id, $inst, $unix_user, $source, \%ids, $adopt);
+    my $return_target = _mods_page_return_target(
+        $instance_id, $q, $status, $sort, $dir, $page, $mod_q, $pack_q);
+    _mods_redirect_job_live($job_id, $instance_id, return_target => $return_target);
+}
+
+if ($action eq 'modpack_import_resume') {
+    $ENV{'REQUEST_METHOD'} eq 'POST'
+        or &error($text{'err_invalid_action'} || 'Invalid action');
+    &mc_mod_ui_ready($profile, $server_dir)
+        or &error($text{'mc_mods_page_gate_not_ready'}
+            || 'Mods page is available after Minecraft Java and loader setup is complete.');
+    my $resume_job = $in{'job'} // '';
+    $resume_job =~ s/[^0-9a-f]//g;
+    $resume_job = substr($resume_job, 0, 16);
+    unless ($resume_job) {
+        ($resume_job, undef) = _mods_find_resumable_modpack_job($instance_id, $server_dir);
+    }
+    $resume_job or &error($text{'mc_modpack_resume_nothing'}
+        || 'No resumable modpack import found.');
+    my $job_id = _mods_launch_modpack_resume(
+        $instance_id, $inst, $unix_user, $resume_job);
+    my $return_target = _mods_page_return_target(
+        $instance_id, $q, $status, $sort, $dir, $page, $mod_q, $pack_q);
     _mods_redirect_job_live($job_id, $instance_id, return_target => $return_target);
 }
 
@@ -922,6 +1354,159 @@ print &ui_hidden('xnavigation', '1');
 print &ui_submit($text{'mc_mods_page_back_manage'} || 'Back to manage',
     undef, undef, undef, 'btn-default');
 print &ui_form_end();
+
+print "<h4>" . &html_escape($text{'mc_modpack_section'} || 'Import modpack') . "</h4>\n";
+print "<p>" . &html_escape($text{'mc_modpack_section_desc'}
+    || 'Search modpacks online or import an existing pack file from server path.')
+    . "</p>\n";
+&module_config_sync_in();
+if (&modpack_cf_auto_resume_enabled()) {
+    print "<p><em>" . &html_escape($text{'mc_modpack_auto_resume_active'}
+        || 'Auto-resume enabled: jobs continue after rate-limit pauses.')
+        . "</em></p>\n";
+} else {
+    print "<p><small><i>" . &html_escape($text{'mc_modpack_auto_resume_off_hint'}
+        || 'For large CurseForge packs, enable auto-resume in Integrations.')
+        . "</i></small></p>\n";
+}
+
+print "<h4>" . &html_escape($text{'mc_modpack_search_section'} || 'Modpack search') . "</h4>\n";
+print &ui_form_start('mods.cgi', 'get');
+print &ui_hidden('instance_id', $safe_id);
+print &ui_hidden('xnavigation', '1');
+print _mods_hidden_list_state($q, $status, $sort, $dir, $page);
+print _mods_hidden_mod_search_state($mod_q);
+print &ui_table_start('', undef, 2);
+print &ui_table_row(
+    &html_escape($text{'mc_modpack_search_label'} || 'Modpack search'),
+    &ui_textbox('pack_q', $pack_q, 40, 0, undef,
+        'placeholder="' . &html_escape($text{'mc_modpack_search_placeholder'}) . '"')
+);
+print &ui_table_end();
+print &ui_submit($text{'mc_modpack_search_btn'} || 'Search',
+    undef, undef, undef, 'btn-default');
+print &ui_form_end();
+
+if (length($pack_q) >= 2) {
+    my $search = &mc_modpack_search($pack_q, $profile);
+    $search = { ok => 0, results => [], errors => ['search_failed'] }
+        unless ref($search) eq 'HASH';
+    my $cf_only_hint_shown = 0;
+    for my $code (@{ $search->{'errors'} // [] }) {
+        if ($code eq 'curseforge_key_missing') {
+            print "<p><em>" . &html_escape($text{'mc_mods_cf_key_hint'}) . "</em></p>\n";
+        }
+        if ($code eq 'curseforge_recommended') {
+            print "<p><em>" . &html_escape($text{'mc_modpack_cf_only_hint'}) . "</em></p>\n";
+            $cf_only_hint_shown = 1;
+        }
+    }
+    my $filtered_incompatible = grep { $_ eq 'filtered_incompatible' }
+        @{ $search->{'errors'} // [] };
+    my $results = $search->{'results'} // [];
+    if (!@$results) {
+        print "<p>" . &html_escape($text{'mc_modpack_no_results'} || 'No matching modpacks found.') . "</p>\n";
+        if ($filtered_incompatible) {
+            print "<p><em>" . &html_escape($text{'mc_modpack_filtered_incompatible'}) . "</em></p>\n";
+        }
+        if (&mc_modpack_query_likely_curseforge_only($pack_q) && !$cf_only_hint_shown) {
+            print "<p><em>" . &html_escape($text{'mc_modpack_cf_only_hint'}) . "</em></p>\n";
+        }
+    } else {
+        my @rows;
+        for my $r (@$results) {
+            next unless ref($r) eq 'HASH';
+            my $src = $r->{'source'} // '';
+            my $src_label = $text{"mc_mods_source_$src"} // $src;
+            my $title = &html_escape($r->{'title'} // '?');
+            my $desc = $r->{'description'} // '';
+            $desc = &html_escape(substr($desc, 0, 120)) if $desc =~ /\S/;
+
+            my $compat_line = '';
+            my @compat_parts;
+            push @compat_parts, &html_escape($r->{'pack_mc'})
+                if ($r->{'pack_mc'} // '') =~ /\S/;
+            push @compat_parts, &html_escape($r->{'pack_loader'})
+                if ($r->{'pack_loader'} // '') =~ /\S/;
+            if (@compat_parts) {
+                $compat_line = "<br><small style=\"opacity:0.75\">"
+                    . &html_escape($text{'mc_modpack_pack_target_label'} || 'Version:')
+                    . ' ' . join(' &middot; ', @compat_parts) . "</small>";
+            }
+
+            my $import_form = &html_escape($text{'mc_mods_page_readonly_mod_hint'} || 'Read-only');
+            unless (&user_is_readonly($instance_id)) {
+                $import_form = &ui_form_start('mods.cgi', 'post');
+                $import_form .= &ui_hidden('instance_id', $safe_id);
+                $import_form .= &ui_hidden('action', 'modpack_import_remote');
+                $import_form .= &ui_hidden('xnavigation', '1');
+                $import_form .= _mods_hidden_list_state($q, $status, $sort, $dir, $page);
+                $import_form .= _mods_hidden_mc_search_state($mod_q, $pack_q);
+                $import_form .= &ui_hidden('pack_source', $src);
+                $import_form .= &ui_hidden('pack_project_id', $r->{'project_id'} // '');
+                $import_form .= &ui_hidden('pack_version_id', $r->{'version_id'} // '');
+                $import_form .= &ui_hidden('pack_file_id', $r->{'file_id'} // '');
+                $import_form .= &ui_hidden('pack_title', $r->{'title'} // '');
+                $import_form .= &ui_submit($text{'mc_modpack_import_search_btn'} || 'Install',
+                    undef, undef, undef, 'btn-primary');
+                $import_form .= &ui_form_end();
+            }
+
+            push @rows, [
+                "$title<br><small>$desc</small>$compat_line",
+                &html_escape($src_label),
+                $import_form,
+            ];
+        }
+        print &ui_columns_table(
+            [
+                $text{'mc_mods_col_name'}      || 'Name',
+                $text{'mc_mods_col_source'}    || 'Source',
+                $text{'mc_modpack_col_import'} || 'Action',
+            ],
+            '100%',
+            \@rows,
+        );
+    }
+}
+
+print "<h4>" . &html_escape($text{'mc_modpack_path_section'} || 'Own file (FTP/SFTP)') . "</h4>\n";
+print "<p>" . &html_escape($text{'mc_modpack_server_limit_hint'}
+    || 'Server-side import supports large packs.')
+    . "</p>\n";
+my $filemin_html = '';
+if ($server_dir && -d $server_dir) {
+    my $enc = _filemin_path_urlencode($server_dir);
+    $filemin_html = " <a href='/filemin/?path=$enc' target='_blank'>"
+        . &html_escape($text{'mc_modpack_filemin_link'} || 'Open file manager') . "</a>";
+}
+print &ui_form_start('mods.cgi', 'post');
+print &ui_hidden('instance_id', $safe_id);
+print &ui_hidden('action', 'modpack_import_path');
+print &ui_hidden('xnavigation', '1');
+print _mods_hidden_list_state($q, $status, $sort, $dir, $page);
+print _mods_hidden_mc_search_state($mod_q, $pack_q);
+print &ui_table_start('', undef, 2);
+my $path_ph = $text{'mc_modpack_path_placeholder'} || '';
+if ($server_dir) {
+    $path_ph = "$server_dir/modpack.mrpack";
+}
+print &ui_table_row(
+    &html_escape($text{'mc_modpack_path_label'} || 'Absolute file path'),
+    &ui_textbox('modpack_path', '', 60, 0, undef,
+        'placeholder="' . &html_escape($path_ph) . '"')
+        . "<br><small>" . &html_escape($text{'mc_modpack_path_hint'} || '')
+        . $filemin_html . "</small>"
+);
+print &ui_table_end();
+print &ui_submit($text{'mc_modpack_import_path_btn'} || 'Import',
+    undef, undef, undef, 'btn-primary');
+print &ui_form_end();
+
+_mods_render_modpack_resume_ui(
+    $instance_id, $server_dir, undef, undef,
+    $pack_q, $q, $status, $sort, $dir, $page, $mod_q
+);
 
 print "<h4>" . &html_escape($text{'mc_mods_section'} || 'Mods / plugins') . "</h4>\n";
 print "<p>" . &html_escape($text{'mc_mods_section_desc'}
