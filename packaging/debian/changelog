@@ -1,3 +1,10 @@
+linuxgsm-webcore (0.2.0-1) unstable; urgency=low
+
+  * Dedicated mods.cgi: installed list, enable/disable/delete, version picker,
+    mod search/install and modpack UI moved off manage.
+
+ -- Christian Möllmann <moellix@knoellix.net>  Sat, 15 Aug 2026 21:00:00 +0200
+
 linuxgsm-webcore (0.1.0-1) unstable; urgency=low
 
   * Initial release.

@@ -17,10 +17,12 @@ This project is maintained **solo by [knoellix](https://github.com/knoellix)**. 
 
 - Provision instances (dedicated Unix users, `/usr/sbin/nologin`, LGSM under `/home/{user}/{server}/`)
 - Start / stop / restart / update / validate via background jobs and live log
-- Minecraft: loaders, mods, modpack import (Modrinth / CurseForge)
+- Minecraft: loaders, Java per instance, dedicated **Mods page** (`mods.cgi`) — installed list, enable/disable, version picker, search/install, modpack import (Modrinth / CurseForge / Hangar)
 - Monitoring (LGSM-native + SteamCMD/Wine paths) and scheduled restarts
 - SFTP (chrooted), firewall helpers, integrations (Steam accounts, download API keys)
 - Config editor for LGSM and game configs (with path validation)
+
+See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 ## Requirements
 
