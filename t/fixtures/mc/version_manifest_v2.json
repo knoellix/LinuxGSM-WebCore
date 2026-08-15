@@ -1,0 +1,40 @@
+{
+  "latest": { "release": "26.1.2", "snapshot": "26.1-snapshot" },
+  "versions": [
+    {
+      "id": "26.1-snapshot",
+      "type": "snapshot",
+      "url": "https://example.test/versions/26.1-snapshot.json",
+      "time": "2026-01-10T00:00:00+00:00",
+      "releaseTime": "2026-01-10T00:00:00+00:00"
+    },
+    {
+      "id": "26.1.2",
+      "type": "release",
+      "url": "https://example.test/versions/26.1.2.json",
+      "time": "2026-01-09T00:00:00+00:00",
+      "releaseTime": "2026-01-09T00:00:00+00:00"
+    },
+    {
+      "id": "1.21.1",
+      "type": "release",
+      "url": "https://example.test/versions/1.21.1.json",
+      "time": "2024-08-08T00:00:00+00:00",
+      "releaseTime": "2024-08-08T00:00:00+00:00"
+    },
+    {
+      "id": "1.20.4",
+      "type": "release",
+      "url": "https://example.test/versions/1.20.4.json",
+      "time": "2023-12-07T00:00:00+00:00",
+      "releaseTime": "2023-12-07T00:00:00+00:00"
+    },
+    {
+      "id": "24w14potato",
+      "type": "snapshot",
+      "url": "https://example.test/versions/24w14potato.json",
+      "time": "2024-04-01T00:00:00+00:00",
+      "releaseTime": "2024-04-01T00:00:00+00:00"
+    }
+  ]
+}

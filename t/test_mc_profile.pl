@@ -9,11 +9,10 @@ use FindBin qw($Bin);
 use lib "$Bin/..";
 chdir "$Bin/.." or die "Cannot chdir to repo root: $!\n";
 
-chdir "$Bin/.." or die "Cannot chdir to repo root: $!\n";
-
-our $module_root = 'src';
+our ($module_root, $module_config_directory, $config_directory);
 require 't/stubs.pl';
 $module_root = 'src';
+require 'src/lib/mc_loader.pl';
 require 'src/lib/mc_profile.pl';
 
 my $tmpdir = tempdir(CLEANUP => 1);
@@ -78,6 +77,32 @@ subtest 'write_mc_profile direct-write as current user' => sub {
     my $dir2 = tempdir(CLEANUP => 1);
     ok(write_mc_profile($dir2, '', $prof), 'direct write with empty user');
     ok(-f "$dir2/.mcprofile.json", 'profile file created');
+};
+
+subtest 'mc_versions_cache path under module_config_directory' => sub {
+    my $tmpdir = tempdir(CLEANUP => 1);
+    local $module_config_directory = $tmpdir;
+    local $main::module_config_directory = $tmpdir;
+    is(mc_versions_cache_path(), "$tmpdir/mc_versions_cache.json", 'cache path uses module_config_directory');
+    ok(mc_versions_cache_save({
+        fetched_at   => time() - 100_000,  # stale (>24h)
+        releases     => [ '1.21.1', '1.20.4' ],
+        java_majors  => { '1.21.1' => 21 },
+        version_urls => {},
+    }), 'stale cache save');
+    # Network miss: still use stale cache before static fallback
+    local *_mc_fetch_url = sub { return undef; };
+    my @vers = mc_list_mc_versions();
+    is_deeply(\@vers, [ '1.21.1', '1.20.4' ], 'stale cache used when offline');
+    is(resolve_java_major('1.21.1'), 21, 'java from stale cache');
+};
+
+subtest 'resolve_java_major unknown defaults to 21' => sub {
+    my $tmpdir = tempdir(CLEANUP => 1);
+    local $module_config_directory = $tmpdir;
+    local $main::module_config_directory = $tmpdir;
+    local *_mc_fetch_url = sub { return undef; };
+    is(resolve_java_major('99.0.0'), 21, 'unknown modern mc defaults to java 21');
 };
 
 done_testing();

@@ -100,6 +100,11 @@ sub mc_list_loaders {
 }
 
 sub mc_list_mc_versions {
+    # Order: live/fresh cache → stale cache → mc_compat.json mc_versions
+    if (defined &mc_versions_effective_releases) {
+        my @eff = mc_versions_effective_releases();
+        return @eff if @eff;
+    }
     my $compat = _load_mc_compat();
     my @vers = @{ $compat->{'mc_versions'} // [] };
     return @vers;
@@ -112,8 +117,23 @@ sub mc_loader_phase1_ready {
     return ($cfg->{'phase'} // 1) == 1 ? 1 : 0;
 }
 
+# Resolve required Java major for an MC version.
+# Order: cache/live Mojang → mc_compat.json versions{$mc}.java_major → default 21
+# (21 is the sensible default for unknown modern releases when offline).
 sub resolve_java_major {
     my ($mc_version) = @_;
+    $mc_version //= '';
+    $mc_version =~ s/[^0-9.]//g;
+
+    if ($mc_version =~ /^[0-9.]+$/ && defined &mc_versions_cached_java_major) {
+        my $from_cache = mc_versions_cached_java_major($mc_version);
+        return $from_cache if defined $from_cache;
+    }
+    if ($mc_version =~ /^[0-9.]+$/ && defined &mc_fetch_java_major_for_mc) {
+        my $from_live = mc_fetch_java_major_for_mc($mc_version);
+        return $from_live if defined $from_live;
+    }
+
     my $compat = _load_mc_compat();
     my $vers = $compat->{'versions'} // {};
     my $entry = $vers->{$mc_version};
@@ -143,6 +163,7 @@ sub build_mc_profile {
     my $lcfg = mc_loader_config($loader);
     return undef unless $lcfg;
 
+    # Effective list = live/cache ∪ static fallback (see mc_list_mc_versions)
     my @vers = mc_list_mc_versions();
     return undef unless grep { $_ eq $mc_version } @vers;
 

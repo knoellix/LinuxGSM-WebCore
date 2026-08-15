@@ -2,6 +2,14 @@
 use strict;
 use warnings;
 
+our ($module_config_directory, $config_directory);
+
+# Mojang launcher meta + per-version Java majors. Cache lives under the module
+# config directory (never $SERVER_DIR). TTL ~24h; stale cache is still usable
+# when the network fails.
+my $_MC_VERSIONS_CACHE_TTL = 86400;
+my $_MC_MOJANG_MANIFEST_URL = 'https://launchermeta.mojang.com/mc/game/version_manifest_v2.json';
+
 sub mc_loader_is_modded {
     my ($loader) = @_;
     return 0 unless defined $loader && $loader =~ /^[a-z]+$/;
@@ -221,11 +229,225 @@ sub _mc_fetch_json {
     my ($url) = @_;
     my $raw = _mc_fetch_url($url);
     return undef unless defined $raw;
+    my $data;
     eval {
         require JSON::PP;
-        return JSON::PP::decode_json($raw);
+        $data = JSON::PP::decode_json($raw);
     };
-    return undef;
+    return undef if $@ || !defined $data;
+    return $data;
+}
+
+# Resolve writable cache dir: prefer $module_config_directory, else $config_directory.
+# Skip /dev/null stubs used in unit tests without an explicit temp dir.
+sub mc_versions_cache_dir {
+    for my $cand (
+        (defined $module_config_directory       ? $module_config_directory       : ()),
+        (defined $main::module_config_directory ? $main::module_config_directory : ()),
+        (defined $config_directory              ? $config_directory              : ()),
+        (defined $main::config_directory        ? $main::config_directory        : ()),
+    ) {
+        next unless defined $cand && $cand ne '' && $cand ne '/dev/null';
+        return $cand if -d $cand;
+    }
+    return '';
+}
+
+sub mc_versions_cache_path {
+    my $dir = mc_versions_cache_dir();
+    return '' unless $dir;
+    return "$dir/mc_versions_cache.json";
+}
+
+sub mc_versions_cache_load {
+    my $path = mc_versions_cache_path();
+    return undef unless $path && -f $path;
+    open(my $fh, '<', $path) or return undef;
+    local $/;
+    my $raw = <$fh>;
+    close($fh);
+    return undef unless defined $raw && $raw =~ /\S/;
+    my $data;
+    eval {
+        require JSON::PP;
+        $data = JSON::PP::decode_json($raw);
+    };
+    return undef if $@ || ref($data) ne 'HASH';
+    return $data;
+}
+
+sub mc_versions_cache_save {
+    my ($href) = @_;
+    return 0 unless ref($href) eq 'HASH';
+    my $path = mc_versions_cache_path();
+    return 0 unless $path;
+    my $json;
+    eval {
+        require JSON::PP;
+        $json = JSON::PP->new->canonical->pretty->encode($href);
+    };
+    return 0 if $@ || !defined $json;
+    open(my $fh, '>', $path) or return 0;
+    print {$fh} $json or do { close($fh); return 0; };
+    close($fh) or return 0;
+    eval { chmod 0600, $path; };
+    # Read-back verify (no blind success)
+    my $rb = mc_versions_cache_load();
+    return 0 unless ref($rb) eq 'HASH';
+    return 1;
+}
+
+sub mc_versions_cache_is_fresh {
+    my ($cache) = @_;
+    return 0 unless ref($cache) eq 'HASH';
+    my $at = $cache->{'fetched_at'};
+    return 0 unless defined $at && $at =~ /^\d+$/;
+    return (time() - int($at)) < $_MC_VERSIONS_CACHE_TTL ? 1 : 0;
+}
+
+# Parse Mojang version_manifest_v2.json → release IDs only (exclude snapshots).
+# Manifest order is newest-first; keep that order.
+sub mc_parse_mojang_release_ids {
+    my ($manifest) = @_;
+    return () unless ref($manifest) eq 'HASH';
+    my $versions = $manifest->{'versions'};
+    return () unless ref($versions) eq 'ARRAY';
+    my @ids;
+    for my $entry (@$versions) {
+        next unless ref($entry) eq 'HASH';
+        next unless ($entry->{'type'} // '') eq 'release';
+        my $id = $entry->{'id'} // '';
+        next unless $id =~ /^[0-9.]+$/;
+        push @ids, $id;
+    }
+    return @ids;
+}
+
+sub mc_parse_mojang_version_urls {
+    my ($manifest) = @_;
+    return {} unless ref($manifest) eq 'HASH';
+    my $versions = $manifest->{'versions'};
+    return {} unless ref($versions) eq 'ARRAY';
+    my %urls;
+    for my $entry (@$versions) {
+        next unless ref($entry) eq 'HASH';
+        next unless ($entry->{'type'} // '') eq 'release';
+        my $id  = $entry->{'id'}  // '';
+        my $url = $entry->{'url'} // '';
+        next unless $id =~ /^[0-9.]+$/;
+        next unless $url =~ m|^https://|;
+        $urls{$id} = $url;
+    }
+    return \%urls;
+}
+
+sub mc_parse_java_major_from_version_json {
+    my ($ver) = @_;
+    return undef unless ref($ver) eq 'HASH';
+    my $jv = $ver->{'javaVersion'};
+    return undef unless ref($jv) eq 'HASH';
+    my $maj = $jv->{'majorVersion'};
+    return undef unless defined $maj && $maj =~ /^\d+$/;
+    return int($maj);
+}
+
+# Fetch release IDs from Mojang; on success refresh cache (releases + urls).
+# Network miss → empty list (caller falls back to cache / static compat).
+sub mc_fetch_mojang_release_ids {
+    my $manifest = _mc_fetch_json($_MC_MOJANG_MANIFEST_URL);
+    return () unless ref($manifest) eq 'HASH';
+    my @ids = mc_parse_mojang_release_ids($manifest);
+    return () unless @ids;
+    my $urls = mc_parse_mojang_version_urls($manifest);
+    my $cache = mc_versions_cache_load() || {};
+    $cache = {} unless ref($cache) eq 'HASH';
+    $cache->{'fetched_at'}   = time();
+    $cache->{'releases'}     = \@ids;
+    $cache->{'version_urls'} = $urls;
+    $cache->{'java_majors'}  = ref($cache->{'java_majors'}) eq 'HASH'
+        ? $cache->{'java_majors'} : {};
+    mc_versions_cache_save($cache);
+    return @ids;
+}
+
+# Resolve Java major for one MC id via cache URL map + Mojang version JSON.
+# Updates cache java_majors on success. Network miss → undef (caller falls back).
+sub mc_fetch_java_major_for_mc {
+    my ($id) = @_;
+    return undef unless defined $id;
+    $id =~ s/[^0-9.]//g;
+    return undef unless $id =~ /^[0-9.]+$/;
+
+    my $cache = mc_versions_cache_load() || {};
+    if (ref($cache) eq 'HASH'
+        && ref($cache->{'java_majors'}) eq 'HASH'
+        && defined $cache->{'java_majors'}{$id}
+        && $cache->{'java_majors'}{$id} =~ /^\d+$/)
+    {
+        return int($cache->{'java_majors'}{$id});
+    }
+
+    my $url;
+    if (ref($cache) eq 'HASH' && ref($cache->{'version_urls'}) eq 'HASH') {
+        $url = $cache->{'version_urls'}{$id};
+    }
+    if (!defined $url || $url !~ m|^https://|) {
+        # Ensure we have URL map from a fresh/stale manifest or live fetch
+        my @ids = mc_fetch_mojang_release_ids();
+        $cache = mc_versions_cache_load() || {};
+        if (ref($cache) eq 'HASH' && ref($cache->{'version_urls'}) eq 'HASH') {
+            $url = $cache->{'version_urls'}{$id};
+        }
+        # If fetch returned ids but still no url for this id, give up
+        return undef unless defined $url && $url =~ m|^https://|;
+    }
+
+    my $ver = _mc_fetch_json($url);
+    my $maj = mc_parse_java_major_from_version_json($ver);
+    return undef unless defined $maj;
+
+    $cache = mc_versions_cache_load() || {};
+    $cache = {} unless ref($cache) eq 'HASH';
+    $cache->{'java_majors'} = {} unless ref($cache->{'java_majors'}) eq 'HASH';
+    $cache->{'java_majors'}{$id} = $maj;
+    $cache->{'fetched_at'} //= time();
+    mc_versions_cache_save($cache);
+    return $maj;
+}
+
+# Effective release list: fresh cache → live fetch → stale cache → empty.
+# Static mc_compat fallback is applied by mc_list_mc_versions() in mc_profile.pl.
+sub mc_versions_effective_releases {
+    my $cache = mc_versions_cache_load();
+    if (ref($cache) eq 'HASH' && mc_versions_cache_is_fresh($cache)
+        && ref($cache->{'releases'}) eq 'ARRAY' && @{ $cache->{'releases'} })
+    {
+        return @{ $cache->{'releases'} };
+    }
+
+    my @live = mc_fetch_mojang_release_ids();
+    return @live if @live;
+
+    if (ref($cache) eq 'HASH' && ref($cache->{'releases'}) eq 'ARRAY'
+        && @{ $cache->{'releases'} })
+    {
+        return @{ $cache->{'releases'} };
+    }
+    return ();
+}
+
+# Java major from cache only (no network). Undef if unknown.
+sub mc_versions_cached_java_major {
+    my ($id) = @_;
+    return undef unless defined $id;
+    $id =~ s/[^0-9.]//g;
+    return undef unless $id =~ /^[0-9.]+$/;
+    my $cache = mc_versions_cache_load();
+    return undef unless ref($cache) eq 'HASH';
+    my $jm = $cache->{'java_majors'};
+    return undef unless ref($jm) eq 'HASH';
+    return undef unless defined $jm->{$id} && $jm->{$id} =~ /^\d+$/;
+    return int($jm->{$id});
 }
 
 # Fetch selectable loader versions for wizard UI (network; may return empty list).
