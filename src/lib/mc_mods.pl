@@ -1300,8 +1300,9 @@ sub mod_install_already_present {
 }
 
 sub prepare_mod_install_meta {
-    my ($source, $ids, $profile, $server_dir) = @_;
+    my ($source, $ids, $profile, $server_dir, $opts) = @_;
     return (0, undef, 'invalid') unless ref($ids) eq 'HASH' && ref($profile) eq 'HASH';
+    my $force_replace = ref($opts) eq 'HASH' && ($opts->{'force_replace'} // 0);
     $source =~ s/[^a-z]//g;
     my %meta;
     if ($source eq 'modrinth') {
@@ -1418,8 +1419,10 @@ sub prepare_mod_install_meta {
         unless mc_download_url_allowed($meta{'download_url'});
     return (0, undef, 'client_only')
         unless mod_env_allowed($meta{'env'}, 'import_server');
-    my ($dup, $dup_reason) = mod_install_already_present($server_dir, $meta{'mod_dir'}, \%meta);
-    return (0, undef, $dup_reason) if $dup;
+    unless ($force_replace) {
+        my ($dup, $dup_reason) = mod_install_already_present($server_dir, $meta{'mod_dir'}, \%meta);
+        return (0, undef, $dup_reason) if $dup;
+    }
     return (1, \%meta, undef);
 }
 

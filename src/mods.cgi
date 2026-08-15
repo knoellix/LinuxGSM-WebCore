@@ -211,7 +211,12 @@ sub _mods_launch_mod_install {
     &error($text{'mc_profile_missing'} || 'No Minecraft profile.')
         unless ref($profile) eq 'HASH';
 
-    my ($ok, $meta, $err) = &prepare_mod_install_meta($source, $ids_ref, $profile, $server_dir);
+    my $replace_basename = '';
+    if (defined $opts{'replace_basename'} && $opts{'replace_basename'} ne '') {
+        $replace_basename = _mods_sanitize_mod_basename($opts{'replace_basename'});
+    }
+    my $prepare_opts = $replace_basename ne '' ? { force_replace => 1 } : undef;
+    my ($ok, $meta, $err) = &prepare_mod_install_meta($source, $ids_ref, $profile, $server_dir, $prepare_opts);
     unless ($ok) {
         if ($err eq 'file_exists' || $err eq 'index_project') {
             &error($text{'mc_mod_already_installed'} || 'This mod is already installed.');
@@ -229,9 +234,9 @@ sub _mods_launch_mod_install {
     if ($opts{'prefer_disabled'}) {
         $meta->{'prefer_disabled'} = 1;
     }
-    if (defined $opts{'replace_basename'} && $opts{'replace_basename'} ne '') {
-        my $replace = _mods_sanitize_mod_basename($opts{'replace_basename'});
-        $meta->{'replace_basename'} = $replace if $replace ne '';
+    if ($replace_basename ne '') {
+        $meta->{'replace_basename'} = $replace_basename;
+        $meta->{'force_replace'} = 1;
     }
 
     my $job_id = &create_job($unix_user);

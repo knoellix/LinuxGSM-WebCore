@@ -73,6 +73,7 @@ read_meta() {
         print ($m->{hashes}{sha1} // ""), "\n";
         print (($m->{prefer_disabled} // 0) ? 1 : 0), "\n";
         print $m->{replace_basename} // "", "\n";
+        print (($m->{force_replace} // 0) ? 1 : 0), "\n";
     ' "$META_FILE"
 }
 
@@ -90,6 +91,7 @@ SOURCE="${_META[4]}"
 SHA1="${_META[5]}"
 PREFER_DISABLED="${_META[6]:-0}"
 REPLACE_BASENAME="${_META[7]:-}"
+FORCE_REPLACE="${_META[8]:-0}"
 
 if [ -z "$FNAME" ] || [ -z "$DL_URL" ]; then
     echo "ERROR: missing filename or download URL"
@@ -110,10 +112,34 @@ if ! mkdir -p "$TARGET"; then
     exit 1
 fi
 
+_remove_replace_target() {
+    local base="$1"
+    [[ "$base" =~ ^[A-Za-z0-9._-]+\.jar$ ]] \
+        && [[ "$base" != *"/"* ]] \
+        && [[ "$base" != *".."* ]] || return 0
+    local old_base="$TARGET/$base"
+    rm -f "$old_base" "${old_base}.disabled" 2>/dev/null || true
+}
+
+if [ "$FORCE_REPLACE" = "1" ] || [ -n "$REPLACE_BASENAME" ]; then
+    if [ -n "$REPLACE_BASENAME" ]; then
+        _remove_replace_target "$REPLACE_BASENAME"
+        echo "OK: prepared replace of $REPLACE_BASENAME"
+    fi
+    if [ -n "$FNAME" ] && [ "$REPLACE_BASENAME" != "$FNAME" ]; then
+        _remove_replace_target "$FNAME"
+    fi
+fi
+
 if [ -f "$DEST" ]; then
-    echo "ERROR: file already exists: $FNAME"
-    set_final_status "failed"
-    exit 1
+    if [ "$FORCE_REPLACE" = "1" ] || [ -n "$REPLACE_BASENAME" ]; then
+        rm -f "$DEST" "${DEST}.disabled" 2>/dev/null || true
+        echo "OK: overwriting existing file $FNAME"
+    else
+        echo "ERROR: file already exists: $FNAME"
+        set_final_status "failed"
+        exit 1
+    fi
 fi
 
 echo "--- Download ---"
@@ -147,18 +173,6 @@ if [ "$PREFER_DISABLED" = "1" ]; then
         exit 1
     fi
     echo "OK: preserved disabled state for $FNAME"
-fi
-
-if [ -n "$REPLACE_BASENAME" ] && [ "$REPLACE_BASENAME" != "$FNAME" ]; then
-    if [[ "$REPLACE_BASENAME" =~ ^[A-Za-z0-9._-]+\.jar$ ]] \
-        && [[ "$REPLACE_BASENAME" != *"/"* ]] \
-        && [[ "$REPLACE_BASENAME" != *".."* ]]; then
-        OLD_BASE="$TARGET/$REPLACE_BASENAME"
-        rm -f "$OLD_BASE" "${OLD_BASE}.disabled" 2>/dev/null || true
-        echo "OK: replaced previous mod file $REPLACE_BASENAME"
-    else
-        echo "WARN: ignoring invalid replace_basename metadata"
-    fi
 fi
 
 echo "OK: installed $FNAME"

@@ -425,4 +425,49 @@ subtest 'prepare_mod_install_meta pins hangar by version id or name' => sub {
     is($meta_b->{version_id}, 'release-1.4.0', 'meta resolves requested version name');
 };
 
+subtest 'prepare_mod_install_meta allows replace when force_replace set' => sub {
+    no warnings 'redefine';
+    local *modrinth_resolve_version_file = sub {
+        return {
+            version_id   => 'ver-new',
+            filename     => 'jade-1.21.1.jar',
+            download_url => 'https://cdn.modrinth.com/data/jade/jade-1.21.1.jar',
+            hashes       => {},
+            env          => 'server',
+        };
+    };
+
+    my $tmp = tempdir(CLEANUP => 1);
+    my $sf = "$tmp/serverfiles/mods";
+    require File::Path;
+    File::Path::make_path($sf);
+    open my $fh, '>', "$sf/jade-1.21.1.jar" or die $!;
+    print $fh 'old'; close $fh;
+    write_mc_mods_index($tmp, {
+        'mods/jade-1.21.1.jar' => {
+            source => 'modrinth', modrinth_project => 'jade', modrinth_version => 'ver-old',
+        },
+    });
+
+    my ($blocked, $meta_blocked, $err_blocked) = prepare_mod_install_meta(
+        'modrinth',
+        { project_id => 'jade', title => 'Jade' },
+        { loader => 'fabric', mc_version => '1.21.1', mod_dir => 'mods' },
+        $tmp,
+    );
+    ok(!$blocked, 'fresh install blocked when mod already present');
+    is($err_blocked, 'file_exists', 'duplicate reason is file_exists');
+
+    my ($ok, $meta, $err) = prepare_mod_install_meta(
+        'modrinth',
+        { project_id => 'jade', title => 'Jade' },
+        { loader => 'fabric', mc_version => '1.21.1', mod_dir => 'mods' },
+        $tmp,
+        { force_replace => 1 },
+    );
+    ok($ok, 'force_replace skips already_present check') or diag($err // 'unknown');
+    is($meta->{filename}, 'jade-1.21.1.jar', 'replace keeps resolved filename');
+    is($meta->{version_id}, 'ver-new', 'replace keeps pinned version');
+};
+
 done_testing();
