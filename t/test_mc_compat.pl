@@ -113,4 +113,118 @@ subtest 'live mocked list allows version outside static compat' => sub {
     is(mc_fetch_java_major_for_mc('1.21.1'), 21, 'fetch java major from version json');
 };
 
+subtest 'mc_compat_local merges versions and map keys' => sub {
+    my $tmpdir = tempdir(CLEANUP => 1);
+    local $module_config_directory = $tmpdir;
+    local $main::module_config_directory = $tmpdir;
+    local $config_directory = $tmpdir;
+    local $main::config_directory = $tmpdir;
+    # No live/cache java — local versions override base bundled policy
+    local *_mc_fetch_url = sub { return undef; };
+    open(my $fh, '>', "$tmpdir/mc_compat_local.json") or die $!;
+    print {$fh} <<'JSON';
+{
+  "versions": {
+    "1.21.1": { "java_major": 25, "min_java": 25, "max_java": 25 },
+    "99.0.0": { "java_major": 25 }
+  },
+  "game_to_loader": {
+    "mc-custom": "fabric"
+  },
+  "loaders": {
+    "paper": { "phase": 1, "label_en": "Paper (local)" },
+    "customloader": {
+      "lgsm_script": "mcserver",
+      "mod_dir": "mods",
+      "label_de": "Custom",
+      "label_en": "Custom",
+      "phase": 1
+    }
+  },
+  "java_mod_excluded": ["mcb", "mcbserver", "extra-excluded"]
+}
+JSON
+    close($fh);
+    _reset_mc_compat_cache();
+
+    is(resolve_java_major('1.21.1'), 25, 'local versions override java_major for known id');
+    is(resolve_java_major('99.0.0'), 25, 'local versions can add new id');
+    is(mc_loader_from_game('mc-custom'), 'fabric', 'local game_to_loader extends map');
+    is(mc_loader_from_game('mc'), 'vanilla', 'base game_to_loader still present');
+    my $paper = mc_loader_config('paper');
+    ok(ref($paper) eq 'HASH', 'paper loader still loaded');
+    is($paper->{'label_en'}, 'Paper (local)', 'local loaders shallow-merge fields');
+    is($paper->{'lgsm_script'}, 'pmcserver', 'base loader fields preserved on merge');
+    ok(mc_loader_config('customloader'), 'local can add new loader');
+    ok(_mc_java_mod_excluded('extra-excluded'), 'local java_mod_excluded replaces list');
+    ok(_mc_java_mod_excluded('mcb'), 'local java_mod_excluded still has mcb');
+};
+
+subtest 'mc_compat_local mc_versions is offline fallback only' => sub {
+    my $tmpdir = tempdir(CLEANUP => 1);
+    local $module_config_directory = $tmpdir;
+    local $main::module_config_directory = $tmpdir;
+    local $config_directory = $tmpdir;
+    local $main::config_directory = $tmpdir;
+    open(my $fh, '>', "$tmpdir/mc_compat_local.json") or die $!;
+    print {$fh} <<'JSON';
+{
+  "mc_versions": [ "1.21.1", "99.9.9" ],
+  "versions": {
+    "99.9.9": { "java_major": 25 }
+  }
+}
+JSON
+    close($fh);
+    _reset_mc_compat_cache();
+
+    # Offline: local non-empty mc_versions becomes the fallback list
+    {
+        local *_mc_fetch_url = sub { return undef; };
+        my @offline = mc_list_mc_versions();
+        is_deeply(\@offline, [ '1.21.1', '99.9.9' ],
+            'offline uses local mc_versions as fallback list');
+        ok(build_mc_profile('paper', '99.9.9'), 'offline build allows local-only fallback version');
+    }
+
+    # Live still preferred over local fallback pins
+    {
+        open(my $mfh, '<', 't/fixtures/mc/version_manifest_v2.json') or die $!;
+        local $/;
+        my $manifest_raw = <$mfh>;
+        close($mfh);
+        local *_mc_fetch_url = sub {
+            my ($url) = @_;
+            return $manifest_raw if $url =~ /version_manifest_v2\.json/;
+            return undef;
+        };
+        my @live = mc_list_mc_versions();
+        ok((grep { $_ eq '26.1.2' } @live), 'live list preferred over local mc_versions pin');
+        ok(!(grep { $_ eq '99.9.9' } @live), 'local mc_versions does not replace live list');
+    }
+};
+
+subtest 'mc_compat_local prefers module_config_directory path' => sub {
+    my $modcfg = tempdir(CLEANUP => 1);
+    my $cfg    = tempdir(CLEANUP => 1);
+    local $module_config_directory = $modcfg;
+    local $main::module_config_directory = $modcfg;
+    local $config_directory = $cfg;
+    local $main::config_directory = $cfg;
+    local *_mc_fetch_url = sub { return undef; };
+
+    open(my $fh1, '>', "$modcfg/mc_compat_local.json") or die $!;
+    print {$fh1} '{"versions":{"1.20.1":{"java_major":99}}}' . "\n";
+    close($fh1);
+    open(my $fh2, '>', "$cfg/mc_compat_local.json") or die $!;
+    print {$fh2} '{"versions":{"1.20.1":{"java_major":11}}}' . "\n";
+    close($fh2);
+    _reset_mc_compat_cache();
+    is(resolve_java_major('1.20.1'), 99, 'module_config_directory local wins over config_directory');
+
+    unlink "$modcfg/mc_compat_local.json";
+    _reset_mc_compat_cache();
+    is(resolve_java_major('1.20.1'), 11, 'falls back to config_directory/mc_compat_local.json');
+};
+
 done_testing();

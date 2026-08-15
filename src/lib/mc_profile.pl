@@ -1,11 +1,93 @@
 # LinuxGSM-WebCore - Minecraft instance profile (.mcprofile.json)
+#
+# Compat policy sources (merged in order, later overrides earlier):
+#   1. $module_root/lib/mc_compat.json — static, shipped with module
+#   2. mc_compat_local.json — admin overrides (optional):
+#        prefer $module_config_directory/mc_compat_local.json
+#        else   $config_directory/mc_compat_local.json  (same layout as games_meta_local)
 use strict;
 use warnings;
 
-our ($module_root, %text);
+our ($module_root, $module_config_directory, $config_directory, %text);
 
 my $_compat_cache;
 my $_compat_loaded = 0;
+
+# Resolve optional local override path (first existing file wins).
+sub _mc_compat_local_path {
+    for my $dir (
+        (defined $module_config_directory       ? $module_config_directory       : ()),
+        (defined $main::module_config_directory ? $main::module_config_directory : ()),
+        (defined $config_directory              ? $config_directory              : ()),
+        (defined $main::config_directory        ? $main::config_directory        : ()),
+    ) {
+        next unless defined $dir && $dir ne '' && $dir ne '/dev/null';
+        my $path = "$dir/mc_compat_local.json";
+        return $path if -f $path;
+    }
+    return undef;
+}
+
+# Decode a JSON object file → hashref, or undef on failure.
+sub _mc_compat_read_json_hash {
+    my ($file) = @_;
+    return undef unless defined $file && -f $file;
+    open(my $fh, '<', $file) or return undef;
+    local $/;
+    my $raw = <$fh>;
+    close($fh);
+    return undef unless defined $raw && $raw =~ /\S/;
+    my $data;
+    eval {
+        require JSON::PP;
+        $data = JSON::PP::decode_json($raw);
+    };
+    return undef if $@ || ref($data) ne 'HASH';
+    return $data;
+}
+
+# Merge local override into base compat hash (mutates $base).
+# Hash maps (loaders, versions, game_to_loader): local keys override/extend;
+#   nested loader/version hashes are shallow-merged like games_meta _merge_meta.
+# Arrays (java_mod_excluded): local replaces when present.
+# mc_versions: if local non-empty array, replace offline fallback list only
+#   (callers must still prefer live Mojang list via mc_list_mc_versions).
+sub _merge_mc_compat_local {
+    my ($base, $local) = @_;
+    return unless ref($base) eq 'HASH' && ref($local) eq 'HASH';
+
+    for my $map_key (qw(loaders versions game_to_loader)) {
+        next unless exists $local->{$map_key};
+        my $loc = $local->{$map_key};
+        next unless ref($loc) eq 'HASH';
+        $base->{$map_key} = {} unless ref($base->{$map_key}) eq 'HASH';
+        for my $id (keys %$loc) {
+            my $entry = $loc->{$id};
+            if (ref($entry) eq 'HASH'
+                && exists $base->{$map_key}{$id}
+                && ref($base->{$map_key}{$id}) eq 'HASH')
+            {
+                for my $field (keys %$entry) {
+                    $base->{$map_key}{$id}{$field} = $entry->{$field};
+                }
+            }
+            else {
+                $base->{$map_key}{$id} = $entry;
+            }
+        }
+    }
+
+    if (exists $local->{'java_mod_excluded'} && ref($local->{'java_mod_excluded'}) eq 'ARRAY') {
+        $base->{'java_mod_excluded'} = [ @{ $local->{'java_mod_excluded'} } ];
+    }
+
+    if (exists $local->{'mc_versions'}
+        && ref($local->{'mc_versions'}) eq 'ARRAY'
+        && @{ $local->{'mc_versions'} })
+    {
+        $base->{'mc_versions'} = [ @{ $local->{'mc_versions'} } ];
+    }
+}
 
 sub _load_mc_compat {
     return $_compat_cache if $_compat_loaded && $_compat_cache;
@@ -21,16 +103,16 @@ sub _load_mc_compat {
         if (-f $c) { $file = $c; last; }
     }
     return $_compat_cache = {} unless defined $file;
-    open(my $fh, '<', $file) or return $_compat_cache = {};
-    local $/;
-    my $raw = <$fh>;
-    close($fh);
-    eval {
-        require JSON::PP;
-        $_compat_cache = JSON::PP::decode_json($raw);
-    };
-    $_compat_cache = {} if $@ || ref($_compat_cache) ne 'HASH';
-    return $_compat_cache;
+    my $base = _mc_compat_read_json_hash($file);
+    return $_compat_cache = {} unless ref($base) eq 'HASH';
+
+    my $local_path = _mc_compat_local_path();
+    if (defined $local_path) {
+        my $local = _mc_compat_read_json_hash($local_path);
+        _merge_mc_compat_local($base, $local) if ref($local) eq 'HASH';
+    }
+
+    return $_compat_cache = $base;
 }
 
 sub _reset_mc_compat_cache {
