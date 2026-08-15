@@ -1128,10 +1128,33 @@ sub hangar_list_compatible_versions {
 }
 
 sub hangar_resolve_plugin_file {
-    my ($owner, $slug, $profile) = @_;
+    my ($owner, $slug, $profile, $requested_version_id) = @_;
     my $list = hangar_list_compatible_versions($owner, $slug, $profile);
     return undef unless ref($list) eq 'ARRAY' && @$list;
+    my $want = $requested_version_id // '';
+    $want =~ s/[\t\n\r\0]//g;
+    $want =~ s/^\s+|\s+$//g;
+    $want =~ s/[^a-zA-Z0-9._-]//g;
+    my $want_lc = lc($want);
     my $ver = $list->[0];
+    if ($want_lc ne '') {
+        CANDIDATE:
+        for my $cand (@$list) {
+            next unless ref($cand) eq 'HASH';
+            my @keys = ($cand->{'version_id'} // '', $cand->{'name'} // '');
+            for my $raw (@keys) {
+                my $norm = $raw;
+                $norm =~ s/[\t\n\r\0]//g;
+                $norm =~ s/^\s+|\s+$//g;
+                $norm =~ s/[^a-zA-Z0-9._-]//g;
+                next unless $norm ne '';
+                if (lc($norm) eq $want_lc) {
+                    $ver = $cand;
+                    last CANDIDATE;
+                }
+            }
+        }
+    }
     return undef unless ref($ver) eq 'HASH';
     return {
         version_id   => $ver->{'version_id'} // '',
@@ -1368,10 +1391,12 @@ sub prepare_mod_install_meta {
     } elsif ($source eq 'hangar') {
         my $owner = $ids->{'hangar_owner'} // '';
         my $slug  = $ids->{'hangar_slug'} // '';
+        my $vid   = $ids->{'version_id'} // '';
         $owner =~ s/[^a-zA-Z0-9_-]//g;
         $slug  =~ s/[^a-zA-Z0-9_-]//g;
+        $vid   =~ s/[^a-zA-Z0-9._-]//g;
         return (0, undef, 'invalid_project') unless $owner && $slug;
-        my $file = hangar_resolve_plugin_file($owner, $slug, $profile);
+        my $file = hangar_resolve_plugin_file($owner, $slug, $profile, $vid);
         return (0, undef, 'resolve_failed') unless $file;
         %meta = (
             source       => 'hangar',

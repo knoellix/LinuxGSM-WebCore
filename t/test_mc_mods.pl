@@ -322,4 +322,107 @@ subtest 'curseforge resolve uses list helper first entry' => sub {
     is($resolved->{filename}, 'one.jar', 'resolve returns first compatible filename');
 };
 
+subtest 'hangar resolve honors requested version_id' => sub {
+    no warnings 'redefine';
+    local *hangar_list_compatible_versions = sub {
+        return [
+            {
+                version_id   => '2.0.0',
+                name         => '2.0.0',
+                filename     => 'plugin-2.jar',
+                download_url => 'https://hangar.papermc.io/api/v1/projects/Owner/Slug/versions/2.0.0/PAPER/download',
+                hashes       => {},
+                env          => 'server',
+            },
+            {
+                version_id   => '1.5.1',
+                name         => '1.5.1',
+                filename     => 'plugin-1.jar',
+                download_url => 'https://hangar.papermc.io/api/v1/projects/Owner/Slug/versions/1.5.1/PAPER/download',
+                hashes       => {},
+                env          => 'server',
+            },
+        ];
+    };
+
+    my $picked = hangar_resolve_plugin_file(
+        'Owner', 'Slug',
+        { loader => 'paper', mc_version => '1.21.1' },
+        '1.5.1',
+    );
+    is($picked->{version_id}, '1.5.1', 'requested Hangar version id selected');
+    is($picked->{filename}, 'plugin-1.jar', 'selected requested Hangar file');
+
+    my $fallback = hangar_resolve_plugin_file(
+        'Owner', 'Slug',
+        { loader => 'paper', mc_version => '1.21.1' },
+        '9.9.9',
+    );
+    is($fallback->{version_id}, '2.0.0', 'falls back to first compatible version');
+};
+
+subtest 'prepare_mod_install_meta pins hangar by version id or name' => sub {
+    no warnings 'redefine';
+    local *hangar_resolve_plugin_file = sub {
+        my ($owner, $slug, $profile, $requested_version_id) = @_;
+        is($owner, 'PaperMC', 'owner passed through');
+        is($slug, 'FancyPlugin', 'slug passed through');
+        is($profile->{loader}, 'paper', 'profile loader passed through');
+        if (($requested_version_id // '') eq 'release-1.4.0') {
+            return {
+                version_id   => 'release-1.4.0',
+                filename     => 'fancy-1.4.0.jar',
+                download_url => 'https://hangar.papermc.io/api/v1/projects/PaperMC/FancyPlugin/versions/release-1.4.0/PAPER/download',
+                hashes       => {},
+                env          => 'server',
+            };
+        }
+        if (($requested_version_id // '') eq '1.4.0') {
+            return {
+                version_id   => 'release-1.4.0',
+                filename     => 'fancy-1.4.0.jar',
+                download_url => 'https://hangar.papermc.io/api/v1/projects/PaperMC/FancyPlugin/versions/release-1.4.0/PAPER/download',
+                hashes       => {},
+                env          => 'server',
+            };
+        }
+        return {
+            version_id   => 'latest',
+            filename     => 'fancy-latest.jar',
+            download_url => 'https://hangar.papermc.io/api/v1/projects/PaperMC/FancyPlugin/versions/latest/PAPER/download',
+            hashes       => {},
+            env          => 'server',
+        };
+    };
+
+    my ($ok_a, $meta_a, $err_a) = prepare_mod_install_meta(
+        'hangar',
+        {
+            hangar_owner => 'PaperMC',
+            hangar_slug  => 'FancyPlugin',
+            version_id   => 'release-1.4.0',
+            title        => 'Fancy Plugin',
+        },
+        { loader => 'paper', mc_version => '1.21.1', mod_dir => 'plugins' },
+        '/tmp/test-server-a',
+    );
+    ok($ok_a, 'prepare meta with explicit hangar version id') or diag($err_a // 'unknown');
+    is($meta_a->{version_id}, 'release-1.4.0', 'meta keeps explicit pinned version');
+    is($meta_a->{filename}, 'fancy-1.4.0.jar', 'meta uses pinned file');
+
+    my ($ok_b, $meta_b, $err_b) = prepare_mod_install_meta(
+        'hangar',
+        {
+            hangar_owner => 'PaperMC',
+            hangar_slug  => 'FancyPlugin',
+            version_id   => '1.4.0',
+            title        => 'Fancy Plugin',
+        },
+        { loader => 'paper', mc_version => '1.21.1', mod_dir => 'plugins' },
+        '/tmp/test-server-b',
+    );
+    ok($ok_b, 'prepare meta with hangar version name pin') or diag($err_b // 'unknown');
+    is($meta_b->{version_id}, 'release-1.4.0', 'meta resolves requested version name');
+};
+
 done_testing();

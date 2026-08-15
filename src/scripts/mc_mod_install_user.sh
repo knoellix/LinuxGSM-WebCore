@@ -72,6 +72,7 @@ read_meta() {
         print $m->{source} // "", "\n";
         print ($m->{hashes}{sha1} // ""), "\n";
         print (($m->{prefer_disabled} // 0) ? 1 : 0), "\n";
+        print $m->{replace_basename} // "", "\n";
     ' "$META_FILE"
 }
 
@@ -88,6 +89,7 @@ MOD_DIR="${_META[3]}"
 SOURCE="${_META[4]}"
 SHA1="${_META[5]}"
 PREFER_DISABLED="${_META[6]:-0}"
+REPLACE_BASENAME="${_META[7]:-}"
 
 if [ -z "$FNAME" ] || [ -z "$DL_URL" ]; then
     echo "ERROR: missing filename or download URL"
@@ -147,6 +149,18 @@ if [ "$PREFER_DISABLED" = "1" ]; then
     echo "OK: preserved disabled state for $FNAME"
 fi
 
+if [ -n "$REPLACE_BASENAME" ] && [ "$REPLACE_BASENAME" != "$FNAME" ]; then
+    if [[ "$REPLACE_BASENAME" =~ ^[A-Za-z0-9._-]+\.jar$ ]] \
+        && [[ "$REPLACE_BASENAME" != *"/"* ]] \
+        && [[ "$REPLACE_BASENAME" != *".."* ]]; then
+        OLD_BASE="$TARGET/$REPLACE_BASENAME"
+        rm -f "$OLD_BASE" "${OLD_BASE}.disabled" 2>/dev/null || true
+        echo "OK: replaced previous mod file $REPLACE_BASENAME"
+    else
+        echo "WARN: ignoring invalid replace_basename metadata"
+    fi
+fi
+
 echo "OK: installed $FNAME"
 
 echo "=== Updating mod index ==="
@@ -164,6 +178,15 @@ if ! perl -MJSON::PP=decode_json,encode_json -e '
         $idx = {} unless ref($idx) eq "HASH";
     }
     my $mod_dir = $m->{mod_dir} // "mods";
+    my $replace = $m->{replace_basename} // "";
+    $replace =~ s/[\t\n\r\0]//g;
+    $replace =~ s/^\s+|\s+$//g;
+    $replace =~ s/\.disabled\z//i;
+    $replace = "" unless $replace =~ /\A[\w.\-]+\.jar\z/;
+    if ($replace ne "" && $replace ne ($m->{filename} // "")) {
+        my $old_key = $mod_dir . "/" . $replace;
+        delete $idx->{$old_key};
+    }
     my $key = $mod_dir . "/" . ($m->{filename} // "mod.jar");
     my $rec = { env => ($m->{env} // "unknown"), source => ($m->{source} // "") };
     if (($m->{source} // "") eq "modrinth") {

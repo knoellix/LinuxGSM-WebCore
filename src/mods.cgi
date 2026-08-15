@@ -229,6 +229,10 @@ sub _mods_launch_mod_install {
     if ($opts{'prefer_disabled'}) {
         $meta->{'prefer_disabled'} = 1;
     }
+    if (defined $opts{'replace_basename'} && $opts{'replace_basename'} ne '') {
+        my $replace = _mods_sanitize_mod_basename($opts{'replace_basename'});
+        $meta->{'replace_basename'} = $replace if $replace ne '';
+    }
 
     my $job_id = &create_job($unix_user);
     my $job_dir = &_job_dir($job_id);
@@ -404,7 +408,7 @@ if ($action eq 'mc_mod_install') {
         $ids{$k} = substr($ids{$k}, 0, 128);
     }
     $ids{'project_id'} =~ s/[^a-zA-Z0-9_-]//g if $ids{'project_id'};
-    $ids{'version_id'} =~ s/[^a-zA-Z0-9_-]//g if $ids{'version_id'};
+    $ids{'version_id'} =~ s/[^a-zA-Z0-9._-]//g if $ids{'version_id'};
     $ids{'file_id'} =~ s/\D//g if $ids{'file_id'};
     $ids{'hangar_owner'} =~ s/[^a-zA-Z0-9_-]//g if $ids{'hangar_owner'};
     $ids{'hangar_slug'} =~ s/[^a-zA-Z0-9_-]//g if $ids{'hangar_slug'};
@@ -413,6 +417,7 @@ if ($action eq 'mc_mod_install') {
     my $job_id = _mods_launch_mod_install(
         $instance_id, $inst, $unix_user, $source, \%ids,
         prefer_disabled => $prefer_disabled,
+        replace_basename => $selected_mod->{'basename'} // '',
     );
     my $return_target = _mods_list_url($instance_id, $q, $status, $sort, $dir, $page);
     _mods_redirect_job_live($job_id, $instance_id, return_target => $return_target);
