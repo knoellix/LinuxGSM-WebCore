@@ -19,12 +19,24 @@ ok(mc_loader_is_modded('fabric'), 'fabric is modded');
 ok(mc_loader_is_modded('neoforge'), 'neoforge is modded');
 ok(!mc_loader_is_modded('vanilla'), 'vanilla not modded');
 
+# Legacy MC 1.x → NeoForge drops the leading 1
 is(mc_neoforge_version_prefix('1.21.1'), '21.1', 'neoforge prefix 1.21.1');
 is(mc_neoforge_version_prefix('1.20.4'), '20.4', 'neoforge prefix 1.20.4');
+# Mojang 26.x (year.drop[.hotfix]) → NeoForge keeps full 3-component MC id
+is(mc_neoforge_version_prefix('26.1.2'), '26.1.2', 'neoforge prefix 26.1.2 stays');
+is(mc_neoforge_version_prefix('26.1'), '26.1.0', 'neoforge prefix 26.1 pads to 26.1.0');
 
 my @neo = qw(21.0.5-beta 21.1.68 21.1.234 21.2.0-beta 20.4.10);
 is(mc_pick_neoforge_version('1.21.1', \@neo), '21.1.234', 'pick latest stable neoforge');
 is(mc_pick_neoforge_version('1.20.4', \@neo), '20.4.10', 'pick neoforge for 1.20.4');
+
+# NeoForge 26.x builds are 4-part: {mc_major}.{mc_minor}.{mc_patch}.{build}
+my @neo26 = qw(26.1.2.80 26.1.2.95 26.1.2.95-beta 26.1.1.10 26.2.0.1);
+is(mc_pick_neoforge_version('26.1.2', \@neo26), '26.1.2.95', 'pick latest stable neoforge for 26.1.2');
+my @neo26_filtered = @{ mc_filter_neoforge_versions_for_mc('26.1.2', \@neo26) };
+is_deeply(\@neo26_filtered, [ '26.1.2.95', '26.1.2.80' ], 'neoforge 26.x filter newest first');
+ok(mc_loader_version_matches_mc('neoforge', '26.1.2', '26.1.2.95'), 'neoforge 26.x pin matches mc');
+ok(!mc_loader_version_matches_mc('neoforge', '26.1.2', '26.1.1.10'), 'neoforge 26.x pin wrong mc line');
 
 my @forge_keys = mc_forge_promo_key_candidates('1.21.1');
 is_deeply(\@forge_keys, ['1.21.1-recommended', '1.21.1-latest', '1.21-recommended', '1.21-latest'], 'forge promo keys');

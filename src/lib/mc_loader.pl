@@ -24,12 +24,25 @@ sub mc_loader_id_from_name {
     return $map{$n};
 }
 
-# NeoForge version prefix from MC semver (1.21.1 -> 21.1, 1.20.4 -> 20.4).
+# NeoForge version prefix from MC id.
+# Legacy Mojang 1.x: 1.21.1 -> 21.1, 1.20 -> 20.0 (NeoForge drops the leading 1).
+# Mojang 26.x (year.drop[.hotfix]): 26.1.2 -> 26.1.2, 26.1 -> 26.1.0
+# (NeoForge builds are then prefix.build, e.g. 26.1.2.95).
 sub mc_neoforge_version_prefix {
     my ($mc_version) = @_;
-    return undef unless defined $mc_version && $mc_version =~ /^(\d+)\.(\d+)(?:\.(\d+))?$/;
-    my ($maj, $min, $patch) = ($1, $2, $3);
-    return defined $patch ? "$min.$patch" : "$min.0";
+    return undef unless defined $mc_version;
+    if ($mc_version =~ /^1\.(\d+)\.(\d+)$/) {
+        return "$1.$2";
+    }
+    if ($mc_version =~ /^1\.(\d+)$/) {
+        return "$1.0";
+    }
+    # Non-1.x MC ids (e.g. 26.1 / 26.1.2): NeoForge uses the full 3-component id.
+    if ($mc_version =~ /^(\d+)\.(\d+)(?:\.(\d+))?$/ && $1 != 1) {
+        my ($maj, $min, $patch) = ($1, $2, $3 // 0);
+        return "$maj.$min.$patch";
+    }
+    return undef;
 }
 
 sub _mc_version_parts {
@@ -53,12 +66,22 @@ sub _mc_version_cmp {
     return 0;
 }
 
+# True when a NeoForge build version belongs to the MC prefix line.
+# Accepts 3-part legacy (21.1.234) and 4-part 26.x (26.1.2.95) builds.
+sub _mc_neoforge_version_matches_prefix {
+    my ($prefix, $ver) = @_;
+    return 0 unless defined $prefix && defined $ver;
+    return 0 if $ver =~ /-beta$/;
+    # After the MC prefix: one required build component, optional extra segment.
+    return $ver =~ /^\Q$prefix\E\.\d+(?:\.\d+)?$/ ? 1 : 0;
+}
+
 # Pick newest stable NeoForge version for an MC version from maven-metadata version list.
 sub mc_pick_neoforge_version {
     my ($mc_version, $versions_ref) = @_;
     my $prefix = mc_neoforge_version_prefix($mc_version);
     return undef unless $prefix && ref($versions_ref) eq 'ARRAY';
-    my @candidates = grep { /^\Q$prefix\E\.\d+(?:\.\d+)?$/ && !/-beta$/ } @$versions_ref;
+    my @candidates = grep { _mc_neoforge_version_matches_prefix($prefix, $_) } @$versions_ref;
     return undef unless @candidates;
     my @sorted = sort { _mc_version_cmp($a, $b) } @candidates;
     return $sorted[-1];
@@ -144,7 +167,7 @@ sub mc_filter_neoforge_versions_for_mc {
     my ($mc_version, $versions_ref) = @_;
     my $prefix = mc_neoforge_version_prefix($mc_version);
     return [] unless $prefix && ref($versions_ref) eq 'ARRAY';
-    my @candidates = grep { /^\Q$prefix\E\.\d+(?:\.\d+)?$/ && !/-beta$/ } @$versions_ref;
+    my @candidates = grep { _mc_neoforge_version_matches_prefix($prefix, $_) } @$versions_ref;
     return [] unless @candidates;
     my @sorted = sort { _mc_version_cmp($a, $b) } @candidates;
     return [ reverse @sorted ];
@@ -270,7 +293,8 @@ sub mc_loader_version_matches_mc {
     if ($loader eq 'neoforge') {
         my $prefix = mc_neoforge_version_prefix($mc_version);
         return 0 unless $prefix;
-        return $pin =~ /^\Q$prefix\E\./ ? 1 : 0;
+        # Pin must be on the prefix line (3- or 4-part NeoForge builds).
+        return _mc_neoforge_version_matches_prefix($prefix, $pin) ? 1 : 0;
     }
     return $pin =~ /^[0-9.]+$/ ? 1 : 0;
 }
