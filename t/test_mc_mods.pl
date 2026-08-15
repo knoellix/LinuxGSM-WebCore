@@ -99,6 +99,30 @@ subtest 'list_installed_mods scans jar and disabled' => sub {
     ok(!$by{'Beta.jar'}{has_update_meta}, 'no update meta without index');
 };
 
+subtest 'mod_set_enabled and delete' => sub {
+    my $tmp = tempdir(CLEANUP => 1);
+    my $sf = "$tmp/serverfiles/mods";
+    require File::Path;
+    File::Path::make_path($sf);
+    open my $fh, '>', "$sf/Foo.jar" or die $!;
+    print $fh 'x'; close $fh;
+    # Empty unix_user = direct filesystem ops (test harness runs as current user).
+    my ($ok, $err) = mod_set_enabled($tmp, '', 'mods', 'Foo.jar', 0);
+    ok($ok, 'disable ok') or diag($err);
+    ok(-f "$sf/Foo.jar.disabled", 'disabled file present');
+    ok(!-f "$sf/Foo.jar", 'enabled file gone');
+    ($ok, $err) = mod_set_enabled($tmp, '', 'mods', 'Foo.jar', 1);
+    ok($ok, 'enable ok') or diag($err);
+    ok(-f "$sf/Foo.jar", 'enabled file restored');
+    ok(!-f "$sf/Foo.jar.disabled", 'disabled file gone after enable');
+    write_mc_mods_index($tmp, { 'mods/Foo.jar' => { title => 'Foo', source => 'modrinth' } });
+    ($ok, $err) = mod_delete_installed($tmp, '', 'mods', 'Foo.jar');
+    ok($ok, 'delete ok') or diag($err);
+    ok(!-e "$sf/Foo.jar" && !-e "$sf/Foo.jar.disabled", 'both variants gone');
+    my $idx = read_mc_mods_index($tmp);
+    ok(!exists $idx->{'mods/Foo.jar'}, 'index key removed');
+};
+
 subtest 'curseforge file record cache' => sub {
     curseforge_clear_file_cache();
     my $calls = 0;

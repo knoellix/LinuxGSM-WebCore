@@ -539,6 +539,113 @@ sub list_installed_mods {
     return \@mods;
 }
 
+sub _mc_mods_direct_as_user {
+    my ($unix_user) = @_;
+    return 1 if !defined $unix_user || $unix_user eq '';
+    my $uid = (getpwnam($unix_user))[2];
+    return 1 if defined $uid && $> == $uid;
+    return 0;
+}
+
+sub _mc_mods_mv_as_user {
+    my ($unix_user, $src, $dst) = @_;
+    if (_mc_mods_direct_as_user($unix_user)) {
+        return rename($src, $dst) ? 1 : 0;
+    }
+    (my $safe_src = $src) =~ s/'/'\\''/g;
+    (my $safe_dst = $dst) =~ s/'/'\\''/g;
+    system('su', '-s', '/bin/bash', '-c', "mv '$safe_src' '$safe_dst'", $unix_user);
+    return $? == 0 ? 1 : 0;
+}
+
+sub _mc_mods_rm_as_user {
+    my ($unix_user, @paths) = @_;
+    @paths = grep { defined $_ && $_ ne '' && -e $_ } @paths;
+    return 1 unless @paths;
+    if (_mc_mods_direct_as_user($unix_user)) {
+        my $ok = 1;
+        for my $p (@paths) {
+            $ok = 0 unless unlink($p);
+        }
+        return $ok;
+    }
+    my @quoted;
+    for my $p (@paths) {
+        (my $safe = $p) =~ s/'/'\\''/g;
+        push @quoted, "'$safe'";
+    }
+    system('su', '-s', '/bin/bash', '-c', 'rm -f ' . join(' ', @quoted), $unix_user);
+    return $? == 0 ? 1 : 0;
+}
+
+sub _mc_mods_write_text_as_user {
+    my ($unix_user, $path, $content) = @_;
+    if (_mc_mods_direct_as_user($unix_user)) {
+        open(my $fh, '>', $path) or return 0;
+        print {$fh} $content or do { close($fh); return 0; };
+        close($fh) or return 0;
+        return 1;
+    }
+    (my $safe_path = $path) =~ s/'/'\\''/g;
+    open(my $pipe, '|-', 'su', '-s', '/bin/bash', '-c', "cat > '$safe_path'", $unix_user)
+        or return 0;
+    print $pipe $content;
+    close($pipe) or return 0;
+    return 1;
+}
+
+sub mod_set_enabled {
+    my ($server_dir, $unix_user, $mod_dir, $basename, $want_enabled) = @_;
+    $basename = mod_basename_sanitize($basename // '');
+    return (0, 'invalid') unless $basename;
+    my ($en_path, $dis_path) = mod_file_paths($server_dir, $mod_dir, $basename);
+    return (0, 'invalid') unless defined $en_path && defined $dis_path;
+    for my $p ($en_path, $dis_path) {
+        return (0, 'outside') unless mod_validate_under_mod_dir($server_dir, $mod_dir, $p);
+    }
+
+    if ($want_enabled) {
+        return (1, undef) if -f $en_path && !-f $dis_path;
+        return (0, 'missing') unless -f $dis_path;
+        return (0, 'rename_failed') unless _mc_mods_mv_as_user($unix_user, $dis_path, $en_path);
+        return (0, 'verify_failed') unless -f $en_path && !-f $dis_path;
+        return (1, undef);
+    }
+
+    return (1, undef) if -f $dis_path && !-f $en_path;
+    return (0, 'missing') unless -f $en_path;
+    return (0, 'rename_failed') unless _mc_mods_mv_as_user($unix_user, $en_path, $dis_path);
+    return (0, 'verify_failed') unless -f $dis_path && !-f $en_path;
+    return (1, undef);
+}
+
+sub mod_delete_installed {
+    my ($server_dir, $unix_user, $mod_dir, $basename) = @_;
+    $basename = mod_basename_sanitize($basename // '');
+    return (0, 'invalid') unless $basename;
+    my ($en_path, $dis_path) = mod_file_paths($server_dir, $mod_dir, $basename);
+    return (0, 'invalid') unless defined $en_path && defined $dis_path;
+    for my $p ($en_path, $dis_path) {
+        return (0, 'outside') unless mod_validate_under_mod_dir($server_dir, $mod_dir, $p);
+    }
+
+    return (0, 'missing') unless -f $en_path || -f $dis_path;
+    return (0, 'rename_failed') unless _mc_mods_rm_as_user($unix_user, $en_path, $dis_path);
+    return (0, 'verify_failed') if -e $en_path || -e $dis_path;
+
+    $mod_dir = _mc_mods_sanitize_mod_dir($mod_dir);
+    my $idx_key = "$mod_dir/$basename";
+    my $index = read_mc_mods_index($server_dir);
+    if (exists $index->{$idx_key}) {
+        delete $index->{$idx_key};
+        require JSON::PP;
+        my $json = JSON::PP::encode_json($index);
+        my $idx_path = mc_mods_index_path($server_dir);
+        return (0, 'rename_failed') unless _mc_mods_write_text_as_user($unix_user, $idx_path, $json);
+    }
+    return (1, undef);
+}
+
 sub _mc_mods_urlencode {
     my ($s) = @_;
     $s //= '';
