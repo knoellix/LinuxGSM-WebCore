@@ -9,6 +9,8 @@ our ($module_config_directory, $config_directory);
 # when the network fails.
 my $_MC_VERSIONS_CACHE_TTL = 86400;
 my $_MC_MOJANG_MANIFEST_URL = 'https://launchermeta.mojang.com/mc/game/version_manifest_v2.json';
+# Short timeout for Mojang manifest / version JSON (wizard must not block ~120s).
+my $_MC_MOJANG_FETCH_TIMEOUT = 10;
 
 sub mc_loader_is_modded {
     my ($loader) = @_;
@@ -216,18 +218,23 @@ sub mc_filter_fabric_loader_versions {
     return [ reverse @sorted ];
 }
 
+# Optional $timeout_secs (default 120) for curl --max-time. Mojang helpers pass ~10.
 sub _mc_fetch_url {
-    my ($url) = @_;
+    my ($url, $timeout_secs) = @_;
     return undef unless defined $url && $url =~ m|^https://|;
+    my $max = 120;
+    if (defined $timeout_secs && $timeout_secs =~ /^\d+$/ && int($timeout_secs) > 0) {
+        $max = int($timeout_secs);
+    }
     (my $safe = $url) =~ s/'/'\\''/g;
-    my $raw = `curl -fsSL --max-time 120 '$safe' 2>/dev/null`;
+    my $raw = `curl -fsSL --max-time $max '$safe' 2>/dev/null`;
     return undef if $? != 0 || !defined $raw || $raw !~ /\S/;
     return $raw;
 }
 
 sub _mc_fetch_json {
-    my ($url) = @_;
-    my $raw = _mc_fetch_url($url);
+    my ($url, $timeout_secs) = @_;
+    my $raw = _mc_fetch_url($url, $timeout_secs);
     return undef unless defined $raw;
     my $data;
     eval {
@@ -287,10 +294,12 @@ sub mc_versions_cache_save {
         $json = JSON::PP->new->canonical->pretty->encode($href);
     };
     return 0 if $@ || !defined $json;
-    open(my $fh, '>', $path) or return 0;
-    print {$fh} $json or do { close($fh); return 0; };
-    close($fh) or return 0;
-    eval { chmod 0600, $path; };
+    my $tmp = "$path.tmp.$$";
+    open(my $fh, '>', $tmp) or return 0;
+    print {$fh} $json or do { close($fh); unlink($tmp); return 0; };
+    close($fh) or do { unlink($tmp); return 0; };
+    eval { chmod 0600, $tmp; };
+    rename($tmp, $path) or do { unlink($tmp); return 0; };
     # Read-back verify (no blind success)
     my $rb = mc_versions_cache_load();
     return 0 unless ref($rb) eq 'HASH';
@@ -354,7 +363,7 @@ sub mc_parse_java_major_from_version_json {
 # Fetch release IDs from Mojang; on success refresh cache (releases + urls).
 # Network miss → empty list (caller falls back to cache / static compat).
 sub mc_fetch_mojang_release_ids {
-    my $manifest = _mc_fetch_json($_MC_MOJANG_MANIFEST_URL);
+    my $manifest = _mc_fetch_json($_MC_MOJANG_MANIFEST_URL, $_MC_MOJANG_FETCH_TIMEOUT);
     return () unless ref($manifest) eq 'HASH';
     my @ids = mc_parse_mojang_release_ids($manifest);
     return () unless @ids;
@@ -402,7 +411,7 @@ sub mc_fetch_java_major_for_mc {
         return undef unless defined $url && $url =~ m|^https://|;
     }
 
-    my $ver = _mc_fetch_json($url);
+    my $ver = _mc_fetch_json($url, $_MC_MOJANG_FETCH_TIMEOUT);
     my $maj = mc_parse_java_major_from_version_json($ver);
     return undef unless defined $maj;
 

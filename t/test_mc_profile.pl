@@ -97,12 +97,29 @@ subtest 'mc_versions_cache path under module_config_directory' => sub {
     is(resolve_java_major('1.21.1'), 21, 'java from stale cache');
 };
 
-subtest 'resolve_java_major unknown defaults to 21' => sub {
+subtest 'resolve_java_major unknown defaults version-aware' => sub {
     my $tmpdir = tempdir(CLEANUP => 1);
     local $module_config_directory = $tmpdir;
     local $main::module_config_directory = $tmpdir;
     local *_mc_fetch_url = sub { return undef; };
-    is(resolve_java_major('99.0.0'), 21, 'unknown modern mc defaults to java 21');
+    is(resolve_java_major('99.0.0'), 25, 'unknown new-scheme major (>=25) defaults to java 25');
+    is(resolve_java_major('2.0.0'), 21, 'unknown pre-25 major defaults to java 21');
+};
+
+# Offline/stale: 26.x with no java_majors cache entry must not fall back to 21
+subtest 'resolve_java_major offline 26.1.2 defaults to 25' => sub {
+    my $tmpdir = tempdir(CLEANUP => 1);
+    local $module_config_directory = $tmpdir;
+    local $main::module_config_directory = $tmpdir;
+    ok(mc_versions_cache_save({
+        fetched_at   => time() - 100_000,  # stale
+        releases     => [ '26.1.2', '1.21.1' ],
+        java_majors  => {},                 # no entry for 26.1.2
+        version_urls => {},
+    }), 'stale cache without java_majors');
+    local *_mc_fetch_url = sub { return undef; };
+    is(resolve_java_major('26.1.2'), 25, 'offline 26.1.2 without java cache → 25 not 21');
+    is(resolve_java_major('1.21.1'), 21, 'offline 1.21.1 still defaults to 21 when no compat/cache');
 };
 
 done_testing();
