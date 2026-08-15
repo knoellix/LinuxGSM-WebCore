@@ -302,7 +302,9 @@ sub normalize_mod_env {
     return 'unknown';
 }
 
-# target: server | client | export_server | export_client
+# target: server | client | export_server | export_client | import_server
+# import_server: allow unknown (CurseForge has no reliable per-file env; FTB etc.
+# must still install). Only explicit client is blocked.
 sub mod_env_allowed {
     my ($env, $target) = @_;
     $env    //= 'unknown';
@@ -310,9 +312,9 @@ sub mod_env_allowed {
     $env    =~ s/[^a-z]//g;
     $target =~ s/[^a-z_]//g;
     if ($target eq 'server' || $target eq 'import_server') {
-        return 1 if $env eq 'server' || $env eq 'both';
+        return 1 if $env eq 'server' || $env eq 'both' || $env eq 'unknown';
         return 0 if $env eq 'client';
-        return 0;    # unknown: skip on import
+        return 0;
     }
     if ($target eq 'export_server') {
         return 1 if $env eq 'server' || $env eq 'both';
@@ -369,12 +371,13 @@ sub read_mc_mods_index {
     local $/;
     my $raw = <$fh>;
     close($fh);
+    my $data;
     eval {
         require JSON::PP;
-        my $d = JSON::PP::decode_json($raw);
-        return ref($d) eq 'HASH' ? $d : {};
-    };
-    return {};
+        $data = JSON::PP::decode_json($raw);
+        1;
+    } or return {};
+    return ref($data) eq 'HASH' ? $data : {};
 }
 
 sub write_mc_mods_index {
@@ -387,6 +390,153 @@ sub write_mc_mods_index {
     print $fh $json;
     close($fh);
     return 1;
+}
+
+sub _mc_mods_sanitize_mod_dir {
+    my ($mod_dir) = @_;
+    $mod_dir //= 'mods';
+    $mod_dir =~ s/[^a-zA-Z0-9_-]//g;
+    return $mod_dir if $mod_dir =~ /\S/;
+    return 'mods';
+}
+
+sub mod_basename_sanitize {
+    my ($name) = @_;
+    return '' unless defined $name && $name =~ /\S/;
+    $name =~ s/[\t\n\r\0]//g;
+    $name =~ s/^\s+|\s+$//g;
+    return '' if $name =~ /\// || $name =~ /\.\./;
+    $name =~ s/\.disabled\z//i;
+    return '' unless $name =~ /\A[\w.\-]+\.jar\z/;
+    return $name;
+}
+
+sub mod_file_paths {
+    my ($server_dir, $mod_dir, $basename) = @_;
+    $basename = mod_basename_sanitize($basename // '');
+    return (undef, undef) unless $basename;
+    $mod_dir = _mc_mods_sanitize_mod_dir($mod_dir);
+    $server_dir =~ s{/\z}{};
+    my $base = "$server_dir/serverfiles/$mod_dir";
+    return ("$base/$basename", "$base/$basename.disabled");
+}
+
+sub _mc_mods_realpath {
+    my ($path) = @_;
+    return undef unless defined $path && $path ne '';
+    require Cwd;
+    return Cwd::realpath($path);
+}
+
+sub _mc_mods_path_under_root {
+    my ($resolved, $root) = @_;
+    return 0 unless defined $resolved && $resolved ne '';
+    return 0 unless defined $root && $root ne '';
+    my $base = _mc_mods_realpath($root) // $root;
+    $base =~ s{/\z}{};
+    return 1 if $resolved eq $base;
+    return 1 if index($resolved, "$base/") == 0;
+    return 0;
+}
+
+sub mod_validate_under_mod_dir {
+    my ($server_dir, $mod_dir, $abs_path) = @_;
+    return 0 unless defined $abs_path && $abs_path ne '';
+    return 0 if $abs_path =~ /\.\./;
+    $mod_dir = _mc_mods_sanitize_mod_dir($mod_dir);
+    $server_dir =~ s{/\z}{};
+    my $root = "$server_dir/serverfiles/$mod_dir";
+    my $resolved = _mc_mods_realpath($abs_path);
+    return 0 unless defined $resolved && $resolved ne '';
+    return _mc_mods_path_under_root($resolved, $root) ? 1 : 0;
+}
+
+sub _mc_mods_index_entry_has_update_meta {
+    my ($source, $rec) = @_;
+    return 0 unless defined $source && $source =~ /\S/;
+    return 0 unless ref($rec) eq 'HASH';
+    if ($source eq 'modrinth') {
+        my $pid = $rec->{'modrinth_project'} // $rec->{'project_id'} // '';
+        return ($pid =~ /\S/) ? 1 : 0;
+    }
+    if ($source eq 'curseforge') {
+        my $pid = $rec->{'project_id'} // '';
+        return ($pid =~ /\S/) ? 1 : 0;
+    }
+    if ($source eq 'hangar') {
+        my $slug = $rec->{'hangar_slug'} // '';
+        return ($slug =~ /\S/) ? 1 : 0;
+    }
+    return 0;
+}
+
+sub _mc_mods_index_entry_fields {
+    my ($rec, $basename) = @_;
+    $rec = {} unless ref($rec) eq 'HASH';
+    my $source = $rec->{'source'} // '';
+    my %out = (
+        title           => $rec->{'title'} // $basename,
+        source          => $source,
+        project_id      => '',
+        version_id      => '',
+        file_id         => $rec->{'file_id'} // '',
+        hangar_slug     => $rec->{'hangar_slug'} // '',
+        has_update_meta => _mc_mods_index_entry_has_update_meta($source, $rec),
+    );
+    if ($source eq 'modrinth') {
+        $out{'project_id'} = $rec->{'modrinth_project'} // $rec->{'project_id'} // '';
+        $out{'version_id'} = $rec->{'modrinth_version'} // $rec->{'version_id'} // '';
+    } elsif ($source eq 'curseforge') {
+        $out{'project_id'} = $rec->{'project_id'} // '';
+        $out{'version_id'} = $rec->{'version_id'} // '';
+    } elsif ($source eq 'hangar') {
+        $out{'version_id'} = $rec->{'version_id'} // '';
+    }
+    return \%out;
+}
+
+sub list_installed_mods {
+    my ($server_dir, $profile) = @_;
+    return [] unless defined $server_dir && $server_dir ne '';
+    return [] unless ref($profile) eq 'HASH';
+    my $mod_dir = _mc_mods_sanitize_mod_dir($profile->{'mod_dir'} // 'mods');
+    $server_dir =~ s{/\z}{};
+    my $scan_dir = "$server_dir/serverfiles/$mod_dir";
+    return [] unless -d $scan_dir;
+    my $index = read_mc_mods_index($server_dir);
+    opendir(my $dh, $scan_dir) or return [];
+    my @mods;
+    while (my $entry = readdir($dh)) {
+        next if $entry eq '.' || $entry eq '..';
+        next if $entry =~ /\A\./;
+        my $full = "$scan_dir/$entry";
+        next unless -f $full;
+        my ($enabled, $filename_on_disk, $basename);
+        if ($entry =~ /\A(.+\.jar)\.disabled\z/i) {
+            $basename = mod_basename_sanitize($1);
+            next unless $basename;
+            $enabled = 0;
+            $filename_on_disk = $entry;
+        } elsif ($entry =~ /\A(.+\.jar)\z/i) {
+            $basename = mod_basename_sanitize($1);
+            next unless $basename;
+            $enabled = 1;
+            $filename_on_disk = $entry;
+        } else {
+            next;
+        }
+        my $idx_key = "$mod_dir/$basename";
+        my $fields = _mc_mods_index_entry_fields($index->{$idx_key}, $basename);
+        push @mods, {
+            basename          => $basename,
+            enabled           => $enabled ? 1 : 0,
+            filename_on_disk  => $filename_on_disk,
+            %$fields,
+        };
+    }
+    closedir($dh);
+    @mods = sort { lc($a->{'basename'}) cmp lc($b->{'basename'}) } @mods;
+    return \@mods;
 }
 
 sub _mc_mods_urlencode {
@@ -734,7 +884,9 @@ sub curseforge_resolve_mod_file {
             filename     => $fname,
             download_url => $dl,
             hashes       => \%hashes,
-            env          => 'unknown',
+            # CF API has no Modrinth-style env; treat as both so server install works
+            # (FTB Chunks/Library etc. are dual-side and were blocked as "client_only").
+            env          => 'both',
         };
     }
     return undef;
@@ -945,7 +1097,7 @@ sub prepare_mod_install_meta {
                     filename     => $fname,
                     download_url => $dl,
                     hashes       => \%hashes,
-                    env          => 'unknown',
+                    env          => 'both',
                 };
             }
         }

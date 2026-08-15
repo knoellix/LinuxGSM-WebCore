@@ -3,6 +3,7 @@ use strict;
 use warnings;
 use Test::More;
 use FindBin qw($Bin);
+use File::Temp qw(tempdir);
 
 require "$Bin/stubs.pl";
 our (%config, $module_root);
@@ -14,8 +15,10 @@ require "$Bin/../src/lib/mc_mods.pl";
 ok(mod_env_allowed('server', 'import_server'), 'server env allowed for import');
 ok(!mod_env_allowed('client', 'import_server'), 'client env blocked for import');
 ok(mod_env_allowed('both', 'import_server'), 'both env allowed for import');
+ok(mod_env_allowed('unknown', 'import_server'), 'unknown allowed for server import (CF)');
 ok(mod_env_allowed('both', 'export_client'), 'both for client export');
 ok(!mod_env_allowed('server', 'export_client'), 'server not in client export');
+ok(!mod_env_allowed('unknown', 'export_server'), 'unknown not in export_server');
 
 is(normalize_mod_env({ server => 'required', client => 'unsupported' }), 'server', 'modrinth env server');
 is(normalize_mod_env({ server => 'required', client => 'required' }), 'both', 'modrinth env both');
@@ -71,6 +74,29 @@ subtest 'search helpers return empty list not arrayref' => sub {
     is(scalar @empty, 0, 'empty query returns empty list');
     my @cf = curseforge_search_mods('jade', { loader => 'neoforge', mc_version => '1.21.1' });
     is(scalar @cf, 0, 'curseforge without key returns empty list');
+};
+
+subtest 'list_installed_mods scans jar and disabled' => sub {
+    my $tmp = tempdir(CLEANUP => 1);
+    my $sf = "$tmp/serverfiles/mods";
+    require File::Path;
+    File::Path::make_path($sf);
+    open my $a, '>', "$sf/Alpha.jar" or die $!;
+    print $a 'x'; close $a;
+    open my $b, '>', "$sf/Beta.jar.disabled" or die $!;
+    print $b 'y'; close $b;
+    write_mc_mods_index($tmp, {
+        'mods/Alpha.jar' => { title => 'Alpha Mod', source => 'modrinth', modrinth_project => 'abc' },
+    });
+    my $profile = { mod_dir => 'mods', loader => 'neoforge', mc_version => '1.21.1' };
+    my $list = list_installed_mods($tmp, $profile);
+    is(scalar @$list, 2, 'two mods');
+    my %by = map { $_->{basename} => $_ } @$list;
+    ok($by{'Alpha.jar'}{enabled}, 'alpha enabled');
+    ok(!$by{'Beta.jar'}{enabled}, 'beta disabled');
+    is($by{'Alpha.jar'}{title}, 'Alpha Mod', 'title from index');
+    ok($by{'Alpha.jar'}{has_update_meta}, 'update meta when project known');
+    ok(!$by{'Beta.jar'}{has_update_meta}, 'no update meta without index');
 };
 
 subtest 'curseforge file record cache' => sub {
