@@ -316,9 +316,17 @@ sub _step35_mc_form {
     my $default_loader = &mc_loader_from_game($game) // 'vanilla';
     my $sel_loader = ($in{'mc_loader'} // '') =~ s/[^a-z]//gr;
     $sel_loader = $default_loader unless $sel_loader =~ /^[a-z]+$/;
+    # Live Mojang list (+ cache / mc_compat fallback) — never a hardcoded allowlist.
     my @versions = &mc_list_mc_versions();
+    &error($text{'mc_profile_invalid'} || 'Ungültiges Minecraft-Profil.')
+        unless @versions;
     my $sel_mc_version = ($in{'mc_version'} // '') =~ s/[^0-9.]//gr;
-    $sel_mc_version = $versions[0] // '1.21.1' unless $sel_mc_version =~ /^[0-9.]+$/;
+    # Prefer posted version if still in effective list; else newest (first) entry.
+    unless ($sel_mc_version =~ /^[0-9.]+$/
+        && grep { $_ eq $sel_mc_version } @versions)
+    {
+        $sel_mc_version = $versions[0];
+    }
     my @loaders = &mc_list_loaders();
     my @loader_opts = map {
         [ $_, &html_escape(&mc_loader_label($_, $current_lang // 'de')) ]

@@ -5,7 +5,7 @@ use FindBin qw($Bin);
 use lib "$Bin/..";
 chdir "$Bin/.." or die "Cannot chdir: $!";
 
-print "1..7\n";
+print "1..8\n";
 
 sub pass { print "ok - $_[0]\n" }
 sub fail { print "not ok - $_[0]\n" }
@@ -111,4 +111,18 @@ require './src/lib/provision.pl';
         ? pass('step 3 port re-validation fires error when port is taken')
         : fail('step 3 port re-validation should fire error');
     $port_busy = 0;
+}
+
+# 8. wizard Step 3b sources MC versions from mc_list_mc_versions (no hardcoded 1.21.1)
+{
+    open my $fh, '<', 'src/wizard.cgi' or die "Cannot read wizard.cgi: $!";
+    local $/;
+    my $src = <$fh>;
+    close $fh;
+    my $uses_list = $src =~ /mc_list_mc_versions\s*\(\s*\)/;
+    my $hardcoded_default = $src =~ /\$versions\[0\]\s*\/\/\s*'1\.21\.1'/
+        || $src =~ /sel_mc_version\s*=\s*'1\.21\.1'/;
+    ($uses_list && !$hardcoded_default)
+        ? pass('wizard.cgi uses mc_list_mc_versions without hardcoded 1.21.1 default')
+        : fail('wizard.cgi must use mc_list_mc_versions and must not hardcode 1.21.1 default');
 }
