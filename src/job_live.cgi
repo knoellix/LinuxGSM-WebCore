@@ -45,16 +45,83 @@ sub _job_live_query_urlencode {
     return $v;
 }
 
+sub _job_live_safe_return_param {
+    my ($key, $raw) = @_;
+    $raw //= '';
+    $raw =~ s/[\t\n\r\0]//g;
+    $raw =~ s/^\s+|\s+$//g;
+
+    if ($key eq 'instance_id') {
+        $raw =~ s/[^A-Za-z0-9_.-]//g;
+        $raw = substr($raw, 0, 64);
+        return length($raw) ? $raw : undef;
+    }
+    if ($key eq 'q' || $key eq 'mod_q' || $key eq 'pack_q') {
+        $raw =~ s/[^A-Za-z0-9 ._:+\-\/]//g;
+        $raw = substr($raw, 0, 100);
+        return $raw;
+    }
+    if ($key eq 'status') {
+        $raw = lc($raw);
+        return ($raw eq 'all' || $raw eq 'enabled' || $raw eq 'disabled') ? $raw : 'all';
+    }
+    if ($key eq 'sort') {
+        $raw = lc($raw);
+        return ($raw eq 'name' || $raw eq 'status') ? $raw : 'name';
+    }
+    if ($key eq 'dir') {
+        $raw = lc($raw);
+        return ($raw eq 'asc' || $raw eq 'desc') ? $raw : 'asc';
+    }
+    if ($key eq 'page') {
+        return '1' unless $raw =~ /\A\d+\z/;
+        my $page = int($raw);
+        $page = 1 if $page < 1;
+        $page = 9999 if $page > 9999;
+        return "$page";
+    }
+    if ($key eq 'xnavigation') {
+        return ($raw eq '1') ? '1' : undef;
+    }
+    return undef;
+}
+
 sub _job_live_safe_return_query {
     my ($raw, $instance_id) = @_;
     $raw //= '';
     $raw =~ s/[\t\n\r\0]//g;
     $raw =~ s/^\s+|\s+$//g;
-    return '' unless length($raw) <= 200;
-    return '' unless $raw =~ m{\Amods\.cgi\?instance_id=([A-Za-z0-9_.-]+)(?:&xnavigation=1)?\z};
-    my $ret_id = $1;
+    return '' unless length($raw) <= 600;
+    return '' unless $raw =~ m{\Amods\.cgi\?(.+)\z};
+
+    my $query = $1;
+    my %allowed = map { $_ => 1 } qw(instance_id q status sort dir page mod_q pack_q xnavigation);
+    my %vals;
+    my %seen;
+    for my $pair (split /&/, $query, -1) {
+        next unless length($pair);
+        my ($k, $v) = split(/=/, $pair, 2);
+        $k //= '';
+        $v //= '';
+        return '' unless $k =~ /\A[A-Za-z0-9_]+\z/;
+        return '' unless $allowed{$k};
+        next if $seen{$k}++;
+        my $safe = _job_live_safe_return_param($k, $v);
+        return '' unless defined $safe;
+        $vals{$k} = $safe;
+    }
+
+    my $ret_id = $vals{'instance_id'} // '';
     return '' unless defined $instance_id && $ret_id eq $instance_id;
-    return "mods.cgi?instance_id=" . _job_live_query_urlencode($ret_id) . "&xnavigation=1";
+
+    my @pairs = ("instance_id=" . _job_live_query_urlencode($ret_id));
+    for my $k (qw(q status sort dir page mod_q pack_q)) {
+        next unless exists $vals{$k};
+        next unless length($vals{$k});
+        push @pairs, $k . '=' . _job_live_query_urlencode($vals{$k});
+    }
+    push @pairs, 'xnavigation=1';
+    return 'mods.cgi?' . join('&', @pairs);
 }
 
 sub _job_live_mc_search_url_suffix {

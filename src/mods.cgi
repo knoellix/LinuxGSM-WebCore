@@ -1429,7 +1429,7 @@ if (length($pack_q) >= 2) {
             push @compat_parts, &html_escape($r->{'pack_loader'})
                 if ($r->{'pack_loader'} // '') =~ /\S/;
             if (@compat_parts) {
-                $compat_line = "<br><small style=\"opacity:0.75\">"
+                $compat_line = "<br><small>"
                     . &html_escape($text{'mc_modpack_pack_target_label'} || 'Version:')
                     . ' ' . join(' &middot; ', @compat_parts) . "</small>";
             }
