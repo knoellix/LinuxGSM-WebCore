@@ -201,19 +201,29 @@ sub _manage_infer_setup_status_from_jobs {
 }
 
 # Fix registry status from on-disk MC setup progress (upgrade and downgrade).
+# Disk/pending steps are authoritative: a historical ok mc_loader_setup job must
+# not keep status=installed after serverfiles were wiped (reinstall / failed loader).
 sub _manage_reconcile_mc_instance_status {
     my ($inst, $instance_id) = @_;
     my ($profile, $server_dir) = _manage_read_mc_profile($inst);
-    my $istatus = $inst->{'instance_status'} // 'installed';
-    return $inst if $istatus eq 'installed';
+    return $inst unless ref($profile) eq 'HASH';
+
+    # Heal stale java_major (e.g. 21 on MC 26.x) so pending setup offers Java upgrade.
+    if (&mc_profile_java_needs_sync($profile)) {
+        my $synced = &mc_profile_sync_java_fields($profile);
+        my $unix = $inst->{'user'} // '';
+        if ($unix && $server_dir && &write_mc_profile($server_dir, $unix, $synced)) {
+            $profile = $synced;
+        }
+    }
 
     my $from_disk = _manage_infer_setup_status_from_disk($inst, $profile, $server_dir);
-    my $from_jobs = _manage_infer_setup_status_from_jobs($instance_id);
-    my $new_status = &mc_pick_setup_status($from_disk, $from_jobs);
+    return $inst unless defined $from_disk && $from_disk ne '';
 
-    if (defined $new_status && $new_status ne $istatus) {
-        &set_instance_status($instance_id, $new_status);
-        $inst->{'instance_status'} = $new_status;
+    my $istatus = $inst->{'instance_status'} // 'installed';
+    if ($from_disk ne $istatus) {
+        &set_instance_status($instance_id, $from_disk);
+        $inst->{'instance_status'} = $from_disk;
     }
     return $inst;
 }
@@ -618,13 +628,18 @@ sub _manage_finish_modpack_import_job {
     }
 
     &write_modpack_job_meta($job_dir, {
-        format         => $pack->{'format'},
-        pack_file      => $pack_path,
-        pack_name      => $pack->{'name'} // '',
-        mod_dir        => $profile->{'mod_dir'} // 'mods',
-        server_dir     => $server_dir,
-        skipped_client => $skipped_client,
-        files          => $files,
+        format                => $pack->{'format'},
+        pack_file             => $pack_path,
+        pack_name             => $pack->{'name'} // '',
+        pack_loader           => $pack->{'loader'} // '',
+        pack_loader_version   => $pack->{'loader_version'} // '',
+        pack_mc_version       => $pack->{'mc_version'} // '',
+        mod_dir               => $profile->{'mod_dir'} // 'mods',
+        server_dir            => $server_dir,
+        skipped_client        => $skipped_client,
+        files                 => $files,
+        profile               => { %$profile },
+        validation_warnings   => [ @{ $validation->{'warnings'} // [] } ],
     }, $unix_user) or do {
         &delete_job($job_id);
         &error($text{'mc_modpack_meta_failed'} || 'Job-Vorbereitung fehlgeschlagen.');
@@ -888,49 +903,6 @@ sub _manage_launch_modpack_remote {
     return $job_id;
 }
 
-sub _manage_launch_mod_install {
-    my ($instance_id, $inst, $unix_user, $source, $ids_ref) = @_;
-    my (undef, undef, $server_dir) = _parse_script_info($inst);
-    my $profile = &read_mc_profile($server_dir);
-    &error($text{'mc_profile_missing'} || 'Kein Minecraft-Profil.') unless $profile;
-
-    my ($ok, $meta, $err) = &prepare_mod_install_meta($source, $ids_ref, $profile, $server_dir);
-    unless ($ok) {
-        if ($err eq 'file_exists' || $err eq 'index_project') {
-            &error($text{'mc_mod_already_installed'} || 'Mod ist bereits installiert.');
-        } elsif ($err eq 'curseforge_key_missing') {
-            &error($text{'mc_modpack_curseforge_key_missing'});
-        } elsif ($err eq 'client_only') {
-            &error($text{'mc_mod_client_only'} || 'Nur Client-Mod — nicht für den Server geeignet.');
-        } elsif ($err eq 'resolve_failed') {
-            &error($text{'mc_mod_resolve_failed'} || 'Mod-Version konnte nicht aufgelöst werden.');
-        } else {
-            &error($text{'mc_mod_install_failed'} || 'Mod-Installation konnte nicht vorbereitet werden.');
-        }
-    }
-
-    my $job_id = &create_job($unix_user);
-    my $job_dir = &_job_dir($job_id);
-    &write_mod_install_job_meta($job_dir, $meta) or do {
-        &delete_job($job_id);
-        &error($text{'mc_mod_meta_failed'} || 'Job-Vorbereitung fehlgeschlagen.');
-    };
-    &write_job_meta($job_id, $instance_id, 'mc_mod_install', $unix_user)
-        or do { &job_mark_launch_failed($job_id); &error($text{'manage_job_launch_failed'}); };
-
-    my $rc = &system_logged(&user_worker_launch_cmd(
-        unix_user   => $unix_user,
-        module_root => $module_root,
-        worker      => "$module_root/scripts/mc_mod_install_user.sh",
-        args        => [ $job_dir, $unix_user, $server_dir ],
-    ));
-    if ($rc != 0 || !&job_dispatch_verified($job_id)) {
-        &job_mark_launch_failed($job_id);
-        &error($text{'manage_job_launch_failed'});
-    }
-    return $job_id;
-}
-
 sub _manage_mod_search_query {
     my ($raw) = @_;
     $raw //= '';
@@ -939,90 +911,19 @@ sub _manage_mod_search_query {
     return substr($raw, 0, 100);
 }
 
-sub _manage_render_mod_browser {
-    my ($inst, $instance_id, $safe_id) = @_;
-    my ($profile, $server_dir) = _manage_read_mc_profile($inst);
-    return unless $profile && $server_dir;
-    return unless &mc_mod_ui_ready($profile, $server_dir);
-
-    my $mod_q = _manage_mod_search_query($in{'mod_q'} // '');
-
-    print "<h3>" . &html_escape($text{'mc_mods_section'}) . "</h3>\n";
-    print "<p>" . &html_escape($text{'mc_mods_section_desc'}) . "</p>\n";
-    print &ui_form_start('manage.cgi', 'get');
+sub _manage_render_mods_page_link {
+    my ($instance_id) = @_;
+    my $safe_id = &html_escape($instance_id);
+    print "<h3>" . &html_escape($text{'mc_mods_page_title'} || 'Mods') . "</h3>\n";
+    print "<p>" . &html_escape($text{'manage_mods_page_desc'}
+        || 'Open the mods page to search, install, and update mods.')
+        . "</p>\n";
+    print &ui_form_start('mods.cgi', 'get');
     print &ui_hidden('instance_id', $safe_id);
     print &ui_hidden('xnavigation', '1');
-    if (length(_manage_modpack_search_query($in{'pack_q'} // '')) >= 2) {
-        print &ui_hidden('pack_q', _manage_modpack_search_query($in{'pack_q'} // ''));
-    }
-    print &ui_table_start('', undef, 2);
-    print &ui_table_row(
-        &html_escape($text{'mc_mods_search_label'}),
-        &ui_textbox('mod_q', $mod_q, 40, 0, undef, 'placeholder="' . &html_escape($text{'mc_mods_search_placeholder'}) . '"')
-    );
-    print &ui_table_end();
-    print &ui_submit($text{'mc_mods_search_btn'}, undef, undef, undef, 'btn-default');
+    print &ui_submit($text{'manage_mods_page_btn'} || 'Open mods page',
+        undef, undef, undef, 'btn-default');
     print &ui_form_end();
-
-    return unless length($mod_q) >= 2;
-
-    my $search = &mc_mod_search($mod_q, $profile);
-    $search = { ok => 0, results => [], errors => ['search_failed'] }
-        unless ref($search) eq 'HASH';
-    for my $code (@{ $search->{'errors'} // [] }) {
-        if ($code eq 'curseforge_key_missing') {
-            print "<p><em>" . &html_escape($text{'mc_mods_cf_key_hint'}) . "</em></p>\n";
-        }
-    }
-    my $results = $search->{'results'} // [];
-    if (!@$results) {
-        print "<p>" . &html_escape($text{'mc_mods_no_results'}) . "</p>\n";
-        return;
-    }
-
-    my @rows;
-    for my $r (@$results) {
-        next unless ref($r) eq 'HASH';
-        my $src = $r->{'source'} // '';
-        my $src_label = $text{"mc_mods_source_$src"} // $src;
-        my $env = $r->{'env'} // 'unknown';
-        my $env_label = $text{"mc_mod_env_$env"} // $env;
-        my $title = &html_escape($r->{'title'} // '?');
-        my $desc = $r->{'description'} // '';
-        $desc = &html_escape(substr($desc, 0, 120)) if $desc =~ /\S/;
-
-        my $install_form = &ui_form_start('manage.cgi', 'post');
-        $install_form .= &ui_hidden('instance_id', $safe_id);
-        $install_form .= &ui_hidden('action', 'mc_mod_install');
-        $install_form .= &ui_hidden('xnavigation', '1');
-        $install_form .= &ui_hidden('mod_source', $src);
-        $install_form .= &ui_hidden('mod_project_id', $r->{'project_id'} // '');
-        $install_form .= &ui_hidden('mod_version_id', $r->{'version_id'} // '');
-        $install_form .= &ui_hidden('mod_file_id', $r->{'file_id'} // '');
-        $install_form .= &ui_hidden('mod_hangar_owner', $r->{'hangar_owner'} // '');
-        $install_form .= &ui_hidden('mod_hangar_slug', $r->{'hangar_slug'} // '');
-        $install_form .= &ui_hidden('mod_title', $r->{'title'} // '');
-        $install_form .= _manage_ui_preserve_mc_search_hidden();
-        $install_form .= &ui_submit($text{'mc_mods_install_btn'}, undef, undef, undef, 'btn-primary');
-        $install_form .= &ui_form_end();
-
-        push @rows, [
-            "$title<br><small>$desc</small>",
-            &html_escape($src_label),
-            &html_escape($env_label),
-            $install_form,
-        ];
-    }
-    print &ui_columns_table(
-        [
-            $text{'mc_mods_col_name'}    || 'Name',
-            $text{'mc_mods_col_source'}  || 'Quelle',
-            $text{'mc_mods_col_side'}    || 'Seite',
-            $text{'mc_mods_col_install'} || 'Aktion',
-        ],
-        '100%',
-        \@rows,
-    );
 }
 
 sub _manage_render_modpack_section {
@@ -2204,32 +2105,6 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
             $instance_id, $inst, $unix_user, $resume_job);
         &_manage_redirect_poll_job($job_id, $instance_id);
     }
-    elsif ($action eq 'mc_mod_install') {
-        my (undef, undef, $server_dir) = _parse_script_info($inst);
-        &read_mc_profile($server_dir)
-            or &error($text{'mc_profile_missing'} || 'Kein Minecraft-Profil.');
-        my $source = $in{'mod_source'} // '';
-        $source =~ s/[^a-z]//g;
-        my %ids = (
-            project_id   => $in{'mod_project_id'} // '',
-            version_id   => $in{'mod_version_id'} // '',
-            file_id      => $in{'mod_file_id'} // '',
-            hangar_owner => $in{'mod_hangar_owner'} // '',
-            hangar_slug  => $in{'mod_hangar_slug'} // '',
-            title        => $in{'mod_title'} // '',
-        );
-        for my $k (keys %ids) {
-            $ids{$k} =~ s/[\t\n\r\0]//g;
-            $ids{$k} = substr($ids{$k}, 0, 128);
-        }
-        $ids{'project_id'} =~ s/[^a-zA-Z0-9_-]//g if $ids{'project_id'};
-        $ids{'version_id'} =~ s/[^a-zA-Z0-9_-]//g if $ids{'version_id'};
-        $ids{'file_id'}    =~ s/\D//g if $ids{'file_id'};
-        $ids{'hangar_owner'} =~ s/[^a-zA-Z0-9_-]//g if $ids{'hangar_owner'};
-        $ids{'hangar_slug'}  =~ s/[^a-zA-Z0-9_-]//g if $ids{'hangar_slug'};
-        my $job_id = &_manage_launch_mod_install($instance_id, $inst, $unix_user, $source, \%ids);
-        &_manage_redirect_poll_job($job_id, $instance_id);
-    }
     elsif ($action eq 'install_game') {
         my (undef, undef, $server_dir) = _parse_script_info($inst);
         my $profile = $server_dir ? &read_mc_profile($server_dir) : undef;
@@ -2295,6 +2170,29 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
         &_manage_redirect_poll_job($job_id, $instance_id);
     }
     elsif ($action eq 'reinstall') {
+        # Modded MC: wipe serverfiles + Java + loader (not LGSM install).
+        # Vanilla/Paper and non-MC keep SteamCMD/LGSM reinstall below.
+        my (undef, $re_script, $re_dir) = _parse_script_info($inst);
+        my $re_profile = ($re_dir && &is_minecraft_game($re_script // ''))
+            ? &read_mc_profile($re_dir) : undef;
+        if (&mc_reinstall_uses_loader_chain($re_profile)) {
+            &_manage_redirect_if_job_running($instance_id, 'reinstall');
+            my $lgsm_script = $re_profile->{'lgsm_script'} // $re_script;
+            $lgsm_script =~ s/[^a-zA-Z0-9_-]//g;
+            my $job_id = &_manage_launch_background_job(
+                $instance_id, 'reinstall', $unix_user,
+                sub {
+                    my ($jid) = @_;
+                    return &user_worker_launch_cmd(
+                        unix_user   => $unix_user,
+                        module_root => $module_root,
+                        worker      => "$module_root/scripts/mc_reinstall_user.sh",
+                        args        => [ &_job_dir($jid), $unix_user, $re_dir, $lgsm_script ],
+                    );
+                },
+            );
+            &_manage_redirect_poll_job($job_id, $instance_id, next_status => 'installed');
+        }
         my $source = $effective_source;
         my $job_id;
         if ($source eq 'steamcmd') {
@@ -2888,13 +2786,13 @@ if ($is_fresh) {
         }
         print "</ol>\n";
         &_manage_render_active_job_notice($instance_id);
-        if ($modded && !&_manage_setup_action_running($instance_id, 'mc_loader_setup')) {
+        if ($modded) {
             print &ui_form_start('manage.cgi', 'post');
             print &ui_hidden('instance_id', &html_escape($instance_id));
             print &ui_hidden('action', 'mc_loader_setup');
             print &ui_submit($text{'mc_setup_loader_btn'}, undef, undef, undef, 'btn-primary');
             print &ui_form_end();
-        } elsif (!$modded && !&_manage_setup_action_running($instance_id, 'install_game')) {
+        } elsif (!$modded) {
             print &ui_form_start('manage.cgi', 'post');
             print &ui_hidden('instance_id', &html_escape($instance_id));
             print &ui_hidden('action', 'install_game');
@@ -2907,7 +2805,7 @@ if ($is_fresh) {
         &_manage_render_instance_jobs_table($instance_id, 5);
         if ($mc_prof && $server_dir_setup && &mc_mod_ui_ready($mc_prof, $server_dir_setup)) {
             &_manage_render_modpack_section($inst, $instance_id);
-            &_manage_render_mod_browser($inst, $instance_id, &html_escape($instance_id));
+            &_manage_render_mods_page_link($instance_id);
         }
     }
 
@@ -3123,22 +3021,19 @@ print &ui_table_end();
                 print "<li>&#x2705; " . &html_escape($text{'setup_step_install_game'}) . "</li>\n";
             }
             print "</ol>\n";
-            if (grep { $_ eq 'java' } @$pending
-                && !&_manage_setup_action_running($instance_id, 'mc_java_setup')) {
+            if (grep { $_ eq 'java' } @$pending) {
                 print &ui_form_start('manage.cgi', 'post');
                 print &ui_hidden('instance_id', $safe_id);
                 print &ui_hidden('action', 'mc_java_setup');
                 print &ui_submit($text{'mc_setup_java_btn'}, undef, undef, undef, 'btn-primary');
                 print &ui_form_end();
-            } elsif (grep { $_ eq 'loader' } @$pending
-                && !&_manage_setup_action_running($instance_id, 'mc_loader_setup')) {
+            } elsif (grep { $_ eq 'loader' } @$pending) {
                 print &ui_form_start('manage.cgi', 'post');
                 print &ui_hidden('instance_id', $safe_id);
                 print &ui_hidden('action', 'mc_loader_setup');
                 print &ui_submit($text{'mc_setup_loader_btn'}, undef, undef, undef, 'btn-primary');
                 print &ui_form_end();
-            } elsif (grep { $_ eq 'install' } @$pending
-                && !&_manage_setup_action_running($instance_id, 'install_game')) {
+            } elsif (grep { $_ eq 'install' } @$pending) {
                 print &ui_form_start('manage.cgi', 'post');
                 print &ui_hidden('instance_id', $safe_id);
                 print &ui_hidden('action', 'install_game');
@@ -3278,7 +3173,16 @@ my $monitor_link = "<a href=\"manage.cgi?instance_id=$safe_id&amp;action=monitor
     . " class=\"btn btn-default\">" . &html_escape($text{'manage_monitor_btn'}) . "</a>";
 print &_manage_inline_action_btn($monitor_link);
 {
-    my $form = &ui_form_start('manage.cgi', 'post');
+    my ($re_prof) = _manage_read_mc_profile($inst);
+    my $re_confirm = $text{'manage_reinstall_confirm'};
+    if (&mc_reinstall_uses_loader_chain($re_prof)) {
+        $re_confirm = $text{'manage_reinstall_confirm_modded'}
+            || $re_confirm;
+    }
+    my $re_js = &html_escape($re_confirm);
+    $re_js =~ s/'/\\'/g;
+    my $form = &ui_form_start('manage.cgi', 'post', undef,
+        "onsubmit=\"return confirm('$re_js')\"");
     $form .= &ui_hidden('instance_id', $safe_id);
     $form .= &ui_hidden('action', 'reinstall');
     $form .= &ui_submit($text{'manage_reinstall_btn'}, undef, undef, undef, 'btn-danger');
@@ -3287,9 +3191,9 @@ print &_manage_inline_action_btn($monitor_link);
 }
 print "</div>\n";
 
-# Modpack import + mod browser (below server controls)
+# Modpack import + mods page link (below server controls)
 &_manage_render_modpack_section($inst, $instance_id);
-&_manage_render_mod_browser($inst, $instance_id, $safe_id);
+&_manage_render_mods_page_link($instance_id);
 
 if (&is_admin()) {
     print "<p>\n";

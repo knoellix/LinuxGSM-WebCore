@@ -101,6 +101,14 @@ sub _mods_list_url {
     return $url;
 }
 
+sub _mods_mod_search_query {
+    my ($raw) = @_;
+    $raw //= '';
+    $raw =~ s/[\t\n\r\0]//g;
+    $raw =~ s/^\s+|\s+$//g;
+    return substr($raw, 0, 100);
+}
+
 sub _mods_hidden_list_state {
     my ($q, $status, $sort, $dir, $page) = @_;
     my $out = '';
@@ -110,6 +118,30 @@ sub _mods_hidden_list_state {
     $out .= &ui_hidden('dir', $dir);
     $out .= &ui_hidden('page', $page);
     return $out;
+}
+
+sub _mods_hidden_mod_search_state {
+    my ($mod_q) = @_;
+    $mod_q = _mods_mod_search_query($mod_q // '');
+    return '' unless length($mod_q) >= 2;
+    return &ui_hidden('mod_q', $mod_q);
+}
+
+sub _mods_versions_for_source {
+    my ($source, $project_id, $hangar_owner, $hangar_slug, $profile) = @_;
+    my $versions = [];
+    if ($source eq 'modrinth') {
+        $versions = &modrinth_list_compatible_versions($project_id // '', $profile);
+    } elsif ($source eq 'curseforge') {
+        $versions = &curseforge_list_compatible_files($project_id // '', $profile);
+    } elsif ($source eq 'hangar') {
+        $versions = &hangar_list_compatible_versions(
+            $hangar_owner // '',
+            $hangar_slug // '',
+            $profile,
+        );
+    }
+    return ref($versions) eq 'ARRAY' ? $versions : [];
 }
 
 sub _mods_status_label_for_row {
@@ -281,11 +313,12 @@ my $dir = lc($in{'dir'} // 'asc');
 $dir = 'asc' unless $dir =~ /\A(?:asc|desc)\z/;
 my $page = $in{'page'} // 1;
 $page = ($page =~ /^\d+$/ && $page > 0) ? int($page) : 1;
+my $mod_q = _mods_mod_search_query($in{'mod_q'} // '');
 
 &user_can_manage($instance_id)
     or &error($text{'err_acl_admin_only'} || 'Access denied');
 
-if ($action ne '' && $action !~ /^(?:monitor|start|stop|mod_enable|mod_disable|mod_delete|mod_versions|mc_mod_install)$/) {
+if ($action ne '' && $action !~ /^(?:monitor|start|stop|mod_enable|mod_disable|mod_delete|mod_versions|mod_search_versions|mc_mod_install)$/) {
     &error($text{'err_invalid_action'} || 'Invalid action');
 }
 if ($action ne '' && $action ne 'monitor' && &user_is_readonly($instance_id)) {
@@ -386,45 +419,67 @@ if ($action eq 'mc_mod_install') {
         or &error($text{'mc_mods_page_gate_not_ready'}
             || 'Mods page is available after Minecraft Java and loader setup is complete.');
 
+    my $source = '';
+    my %ids;
+    my %launch_opts;
+    my $return_target = _mods_list_url($instance_id, $q, $status, $sort, $dir, $page);
+    $return_target .= '&mod_q=' . _mods_query_urlencode($mod_q) if length($mod_q) >= 2;
+
     my $mod_basename = _mods_sanitize_mod_basename($in{'mod_basename'} // '');
-    $mod_basename or &error($text{'mc_mods_page_invalid_mod'} || 'Invalid mod file.');
+    if ($mod_basename ne '') {
+        my $installed = &list_installed_mods($server_dir, $profile);
+        my $selected_mod = _mods_find_mod_by_basename($installed, $mod_basename)
+            or &error($text{'mc_mods_page_invalid_mod'} || 'Invalid mod file.');
+        ($selected_mod->{'has_update_meta'} // 0)
+            or &error($text{'mc_mods_page_update_unavailable'} || 'No version data available for this mod.');
 
-    my $installed = &list_installed_mods($server_dir, $profile);
-    my $selected_mod = _mods_find_mod_by_basename($installed, $mod_basename)
-        or &error($text{'mc_mods_page_invalid_mod'} || 'Invalid mod file.');
-    ($selected_mod->{'has_update_meta'} // 0)
-        or &error($text{'mc_mods_page_update_unavailable'} || 'No version data available for this mod.');
+        $source = $selected_mod->{'source'} // '';
+        $source =~ s/[^a-z]//g;
+        %ids = (
+            project_id   => $selected_mod->{'project_id'} // '',
+            version_id   => $selected_mod->{'version_id'} // '',
+            file_id      => $selected_mod->{'file_id'} // '',
+            hangar_owner => $selected_mod->{'hangar_owner'} // '',
+            hangar_slug  => $selected_mod->{'hangar_slug'} // '',
+            title        => $selected_mod->{'title'} // $selected_mod->{'basename'} // '',
+        );
+        $ids{'version_id'} = $in{'mod_version_id'} // '' if defined $in{'mod_version_id'} && $in{'mod_version_id'} ne '';
+        $ids{'file_id'}    = $in{'mod_file_id'} // ''    if defined $in{'mod_file_id'} && $in{'mod_file_id'} ne '';
+        $launch_opts{'prefer_disabled'} = ($selected_mod->{'enabled'} // 0) ? 0 : 1;
+        $launch_opts{'replace_basename'} = $selected_mod->{'basename'} // '';
+    } else {
+        $source = $in{'mod_source'} // '';
+        $source =~ s/[^a-z]//g;
+        %ids = (
+            project_id   => $in{'mod_project_id'} // '',
+            version_id   => $in{'mod_version_id'} // '',
+            file_id      => $in{'mod_file_id'} // '',
+            hangar_owner => $in{'mod_hangar_owner'} // '',
+            hangar_slug  => $in{'mod_hangar_slug'} // '',
+            title        => $in{'mod_title'} // '',
+        );
+        unless ($source eq 'modrinth' || $source eq 'curseforge' || $source eq 'hangar') {
+            &error($text{'mc_mod_install_failed'} || 'Could not prepare mod installation.');
+        }
+    }
 
-    my $source = $selected_mod->{'source'} // '';
-    $source =~ s/[^a-z]//g;
-    my %ids = (
-        project_id   => $selected_mod->{'project_id'} // '',
-        version_id   => $selected_mod->{'version_id'} // '',
-        file_id      => $selected_mod->{'file_id'} // '',
-        hangar_owner => $selected_mod->{'hangar_owner'} // '',
-        hangar_slug  => $selected_mod->{'hangar_slug'} // '',
-        title        => $selected_mod->{'title'} // $selected_mod->{'basename'} // '',
-    );
-
-    $ids{'version_id'} = $in{'mod_version_id'} // '' if defined $in{'mod_version_id'} && $in{'mod_version_id'} ne '';
-    $ids{'file_id'}    = $in{'mod_file_id'} // ''    if defined $in{'mod_file_id'} && $in{'mod_file_id'} ne '';
     for my $k (keys %ids) {
         $ids{$k} =~ s/[\t\n\r\0]//g;
         $ids{$k} = substr($ids{$k}, 0, 128);
     }
-    $ids{'project_id'} =~ s/[^a-zA-Z0-9_-]//g if $ids{'project_id'};
+    if ($source eq 'curseforge') {
+        $ids{'project_id'} =~ s/\D//g if $ids{'project_id'};
+    } else {
+        $ids{'project_id'} =~ s/[^a-zA-Z0-9_-]//g if $ids{'project_id'};
+    }
     $ids{'version_id'} =~ s/[^a-zA-Z0-9._-]//g if $ids{'version_id'};
     $ids{'file_id'} =~ s/\D//g if $ids{'file_id'};
     $ids{'hangar_owner'} =~ s/[^a-zA-Z0-9_-]//g if $ids{'hangar_owner'};
     $ids{'hangar_slug'} =~ s/[^a-zA-Z0-9_-]//g if $ids{'hangar_slug'};
-    my $prefer_disabled = ($selected_mod->{'enabled'} // 0) ? 0 : 1;
 
     my $job_id = _mods_launch_mod_install(
-        $instance_id, $inst, $unix_user, $source, \%ids,
-        prefer_disabled => $prefer_disabled,
-        replace_basename => $selected_mod->{'basename'} // '',
+        $instance_id, $inst, $unix_user, $source, \%ids, %launch_opts
     );
-    my $return_target = _mods_list_url($instance_id, $q, $status, $sort, $dir, $page);
     _mods_redirect_job_live($job_id, $instance_id, return_target => $return_target);
 }
 
@@ -442,19 +497,13 @@ if ($action eq 'mod_versions') {
         or &error($text{'mc_mods_page_update_unavailable'} || 'No version data available for this mod.');
 
     my $source = $selected_mod->{'source'} // '';
-    my $versions = [];
-    if ($source eq 'modrinth') {
-        $versions = &modrinth_list_compatible_versions($selected_mod->{'project_id'} // '', $profile);
-    } elsif ($source eq 'curseforge') {
-        $versions = &curseforge_list_compatible_files($selected_mod->{'project_id'} // '', $profile);
-    } elsif ($source eq 'hangar') {
-        $versions = &hangar_list_compatible_versions(
-            $selected_mod->{'hangar_owner'} // '',
-            $selected_mod->{'hangar_slug'} // '',
-            $profile,
-        );
-    }
-    $versions = [] unless ref($versions) eq 'ARRAY';
+    my $versions = _mods_versions_for_source(
+        $source,
+        $selected_mod->{'project_id'} // '',
+        $selected_mod->{'hangar_owner'} // '',
+        $selected_mod->{'hangar_slug'} // '',
+        $profile,
+    );
 
     my $safe_id = &html_escape($instance_id);
     my $display_name = $selected_mod->{'title'} // '';
@@ -500,6 +549,7 @@ if ($action eq 'mod_versions') {
                 $action_form .= &ui_hidden('instance_id', $safe_id);
                 $action_form .= &ui_hidden('xnavigation', '1');
                 $action_form .= _mods_hidden_list_state($q, $status, $sort, $dir, $page);
+                $action_form .= _mods_hidden_mod_search_state($mod_q);
                 $action_form .= &ui_hidden('action', 'mc_mod_install');
                 $action_form .= &ui_hidden('mod_basename', $selected_mod->{'basename'} // '');
                 $action_form .= &ui_hidden('mod_version_id', $row->{'version_id'} // '');
@@ -532,6 +582,142 @@ if ($action eq 'mod_versions') {
     print &ui_hidden('instance_id', $safe_id);
     print &ui_hidden('xnavigation', '1');
     print _mods_hidden_list_state($q, $status, $sort, $dir, $page);
+    print _mods_hidden_mod_search_state($mod_q);
+    print &ui_submit($text{'mc_mods_page_versions_back_btn'} || 'Back to mods',
+        undef, undef, undef, 'btn-default');
+    print &ui_form_end();
+    &footer('', '');
+    exit;
+}
+
+if ($action eq 'mod_search_versions') {
+    &mc_mod_ui_ready($profile, $server_dir)
+        or &error($text{'mc_mods_page_gate_not_ready'}
+            || 'Mods page is available after Minecraft Java and loader setup is complete.');
+
+    my $source = $in{'mod_source'} // '';
+    $source =~ s/[^a-z]//g;
+    ($source eq 'modrinth' || $source eq 'curseforge' || $source eq 'hangar')
+        or &error($text{'mc_mod_install_failed'} || 'Could not prepare mod installation.');
+
+    my %ids = (
+        project_id   => $in{'mod_project_id'} // '',
+        version_id   => $in{'mod_version_id'} // '',
+        file_id      => $in{'mod_file_id'} // '',
+        hangar_owner => $in{'mod_hangar_owner'} // '',
+        hangar_slug  => $in{'mod_hangar_slug'} // '',
+        title        => $in{'mod_title'} // '',
+    );
+    for my $k (keys %ids) {
+        $ids{$k} =~ s/[\t\n\r\0]//g;
+        $ids{$k} = substr($ids{$k}, 0, 128);
+    }
+    if ($source eq 'curseforge') {
+        $ids{'project_id'} =~ s/\D//g if $ids{'project_id'};
+    } else {
+        $ids{'project_id'} =~ s/[^a-zA-Z0-9_-]//g if $ids{'project_id'};
+    }
+    $ids{'version_id'} =~ s/[^a-zA-Z0-9._-]//g if $ids{'version_id'};
+    $ids{'file_id'} =~ s/\D//g if $ids{'file_id'};
+    $ids{'hangar_owner'} =~ s/[^a-zA-Z0-9_-]//g if $ids{'hangar_owner'};
+    $ids{'hangar_slug'} =~ s/[^a-zA-Z0-9_-]//g if $ids{'hangar_slug'};
+
+    if ($source eq 'hangar') {
+        ($ids{'hangar_owner'} ne '' && $ids{'hangar_slug'} ne '')
+            or &error($text{'mc_mod_install_failed'} || 'Could not prepare mod installation.');
+    } else {
+        $ids{'project_id'} ne ''
+            or &error($text{'mc_mod_install_failed'} || 'Could not prepare mod installation.');
+    }
+
+    my $versions = _mods_versions_for_source(
+        $source,
+        $ids{'project_id'},
+        $ids{'hangar_owner'},
+        $ids{'hangar_slug'},
+        $profile,
+    );
+
+    my $safe_id = &html_escape($instance_id);
+    my $display_name = $ids{'title'} // '';
+    $display_name = $ids{'project_id'} // '' unless $display_name =~ /\S/;
+    $display_name = $ids{'hangar_slug'} // '' if $source eq 'hangar' && $display_name !~ /\S/;
+
+    &header($text{'mc_mods_page_versions_title'} || 'Choose mod version', '');
+    print "<h3>" . &html_escape($text{'mc_mods_page_versions_title'} || 'Choose mod version') . "</h3>\n";
+    print "<p><strong>" . &html_escape($text{'mc_mods_page_versions_mod'} || 'Mod')
+        . ":</strong> " . &html_escape($display_name) . "<br>\n";
+    print "<strong>" . &html_escape($text{'mc_mods_col_source'} || 'Source')
+        . ":</strong> " . &html_escape(_mods_source_label_for_row($source))
+        . "</p>\n";
+
+    if (!@$versions) {
+        print "<p>" . &html_escape($text{'mc_mods_page_versions_empty'}
+            || 'No compatible versions found for this profile.')
+            . "</p>\n";
+    } else {
+        my @rows;
+        for my $row (@$versions) {
+            next unless ref($row) eq 'HASH';
+            my $name = $row->{'name'} // $row->{'display_name'} // '';
+            $name = $row->{'version_id'} // $row->{'file_id'} // '?' unless $name =~ /\S/;
+            my $file = $row->{'filename'} // '';
+            my $published = $row->{'published'} // '';
+            my $is_current = 0;
+            $is_current = 1 if ($source eq 'modrinth' && ($ids{'version_id'} // '') ne ''
+                && ($ids{'version_id'} // '') eq ($row->{'version_id'} // ''));
+            $is_current = 1 if ($source eq 'curseforge' && ($ids{'file_id'} // '') ne ''
+                && ($ids{'file_id'} // '') eq ($row->{'file_id'} // ''));
+            $is_current = 1 if ($source eq 'hangar' && ($ids{'version_id'} // '') ne ''
+                && ($ids{'version_id'} // '') eq ($row->{'version_id'} // ''));
+            my $current_mark = $is_current
+                ? (' <small>(' . &html_escape($text{'mc_mods_page_versions_current_mark'} || 'Current') . ')</small>')
+                : '';
+
+            my $action_form = &html_escape($text{'mc_mods_page_readonly_mod_hint'} || 'Read-only');
+            unless (&user_is_readonly($instance_id)) {
+                $action_form = &ui_form_start('mods.cgi', 'post');
+                $action_form .= &ui_hidden('instance_id', $safe_id);
+                $action_form .= &ui_hidden('xnavigation', '1');
+                $action_form .= _mods_hidden_list_state($q, $status, $sort, $dir, $page);
+                $action_form .= _mods_hidden_mod_search_state($mod_q);
+                $action_form .= &ui_hidden('action', 'mc_mod_install');
+                $action_form .= &ui_hidden('mod_source', $source);
+                $action_form .= &ui_hidden('mod_project_id', $ids{'project_id'} // '');
+                $action_form .= &ui_hidden('mod_hangar_owner', $ids{'hangar_owner'} // '');
+                $action_form .= &ui_hidden('mod_hangar_slug', $ids{'hangar_slug'} // '');
+                $action_form .= &ui_hidden('mod_title', $ids{'title'} // '');
+                $action_form .= &ui_hidden('mod_version_id', $row->{'version_id'} // '');
+                $action_form .= &ui_hidden('mod_file_id', $row->{'file_id'} // '');
+                $action_form .= &ui_submit($text{'mc_mods_page_versions_install_btn'} || 'Install version',
+                    undef, undef, undef, 'btn-primary');
+                $action_form .= &ui_form_end();
+            }
+
+            push @rows, [
+                &html_escape($name) . $current_mark,
+                &html_escape($file),
+                &html_escape($published),
+                $action_form,
+            ];
+        }
+        print &ui_columns_table(
+            [
+                $text{'mc_mods_page_versions_col_version'} || 'Version',
+                $text{'mc_mods_page_versions_col_file'}    || 'File',
+                $text{'mc_mods_page_versions_col_date'}    || 'Published',
+                $text{'mc_mods_page_versions_col_action'}  || 'Action',
+            ],
+            '100%',
+            \@rows,
+        );
+    }
+
+    print &ui_form_start('mods.cgi', 'get');
+    print &ui_hidden('instance_id', $safe_id);
+    print &ui_hidden('xnavigation', '1');
+    print _mods_hidden_list_state($q, $status, $sort, $dir, $page);
+    print _mods_hidden_mod_search_state($mod_q);
     print &ui_submit($text{'mc_mods_page_versions_back_btn'} || 'Back to mods',
         undef, undef, undef, 'btn-default');
     print &ui_form_end();
@@ -737,6 +923,106 @@ print &ui_submit($text{'mc_mods_page_back_manage'} || 'Back to manage',
     undef, undef, undef, 'btn-default');
 print &ui_form_end();
 
+print "<h4>" . &html_escape($text{'mc_mods_section'} || 'Mods / plugins') . "</h4>\n";
+print "<p>" . &html_escape($text{'mc_mods_section_desc'}
+    || 'Search and install mods or Paper plugins. Only server-compatible entries are shown; loader and MC version must match the profile.')
+    . "</p>\n";
+print &ui_form_start('mods.cgi', 'get');
+print &ui_hidden('instance_id', $safe_id);
+print &ui_hidden('xnavigation', '1');
+print _mods_hidden_list_state($q, $status, $sort, $dir, $page);
+print &ui_table_start('', undef, 2);
+print &ui_table_row(
+    &html_escape($text{'mc_mods_search_label'} || 'Search'),
+    &ui_textbox('mod_q', $mod_q, 40, 0, undef,
+        'placeholder="' . &html_escape($text{'mc_mods_search_placeholder'}) . '"')
+);
+print &ui_table_end();
+print &ui_submit($text{'mc_mods_search_btn'} || 'Search',
+    undef, undef, undef, 'btn-default');
+print &ui_form_end();
+
+if (length($mod_q) >= 2) {
+    my $search = &mc_mod_search($mod_q, $profile);
+    $search = { ok => 0, results => [], errors => ['search_failed'] }
+        unless ref($search) eq 'HASH';
+    for my $code (@{ $search->{'errors'} // [] }) {
+        if ($code eq 'curseforge_key_missing') {
+            print "<p><em>" . &html_escape($text{'mc_mods_cf_key_hint'}) . "</em></p>\n";
+        }
+    }
+    my $results = $search->{'results'} // [];
+    if (!@$results) {
+        print "<p>" . &html_escape($text{'mc_mods_no_results'} || 'No matching mods or plugins found.') . "</p>\n";
+    } else {
+        my @rows;
+        for my $r (@$results) {
+            next unless ref($r) eq 'HASH';
+            my $src = $r->{'source'} // '';
+            my $src_label = $text{"mc_mods_source_$src"} // $src;
+            my $env = $r->{'env'} // 'unknown';
+            my $env_label = $text{"mc_mod_env_$env"} // $env;
+            my $title = &html_escape($r->{'title'} // '?');
+            my $desc = $r->{'description'} // '';
+            $desc = &html_escape(substr($desc, 0, 120)) if $desc =~ /\S/;
+
+            my $actions = &html_escape($text{'mc_mods_page_readonly_mod_hint'} || 'Read-only');
+            unless (&user_is_readonly($instance_id)) {
+                my $install_form = &ui_form_start('mods.cgi', 'post');
+                $install_form .= &ui_hidden('instance_id', $safe_id);
+                $install_form .= &ui_hidden('action', 'mc_mod_install');
+                $install_form .= &ui_hidden('xnavigation', '1');
+                $install_form .= _mods_hidden_list_state($q, $status, $sort, $dir, $page);
+                $install_form .= _mods_hidden_mod_search_state($mod_q);
+                $install_form .= &ui_hidden('mod_source', $src);
+                $install_form .= &ui_hidden('mod_project_id', $r->{'project_id'} // '');
+                $install_form .= &ui_hidden('mod_version_id', $r->{'version_id'} // '');
+                $install_form .= &ui_hidden('mod_file_id', $r->{'file_id'} // '');
+                $install_form .= &ui_hidden('mod_hangar_owner', $r->{'hangar_owner'} // '');
+                $install_form .= &ui_hidden('mod_hangar_slug', $r->{'hangar_slug'} // '');
+                $install_form .= &ui_hidden('mod_title', $r->{'title'} // '');
+                $install_form .= &ui_submit($text{'mc_mods_install_btn'} || 'Install',
+                    undef, undef, undef, 'btn-primary');
+                $install_form .= &ui_form_end();
+                $actions = $install_form;
+
+                my $version_url = "mods.cgi?instance_id=" . _mods_query_urlencode($instance_id)
+                    . "&action=mod_search_versions&xnavigation=1"
+                    . "&mod_source=" . _mods_query_urlencode($src)
+                    . "&mod_project_id=" . _mods_query_urlencode($r->{'project_id'} // '')
+                    . "&mod_version_id=" . _mods_query_urlencode($r->{'version_id'} // '')
+                    . "&mod_file_id=" . _mods_query_urlencode($r->{'file_id'} // '')
+                    . "&mod_hangar_owner=" . _mods_query_urlencode($r->{'hangar_owner'} // '')
+                    . "&mod_hangar_slug=" . _mods_query_urlencode($r->{'hangar_slug'} // '')
+                    . "&mod_title=" . _mods_query_urlencode($r->{'title'} // '');
+                my $qs = _mods_list_qs($q, $status, $sort, $dir, $page);
+                $version_url .= "&$qs" if $qs ne '';
+                $version_url .= "&mod_q=" . _mods_query_urlencode($mod_q) if length($mod_q) >= 2;
+                $actions .= "<br><a href=\"" . &html_escape($version_url) . "\">"
+                    . &html_escape($text{'mc_mods_page_update_btn'} || 'Choose version')
+                    . "</a>";
+            }
+
+            push @rows, [
+                "$title<br><small>$desc</small>",
+                &html_escape($src_label),
+                &html_escape($env_label),
+                $actions,
+            ];
+        }
+        print &ui_columns_table(
+            [
+                $text{'mc_mods_col_name'}    || 'Name',
+                $text{'mc_mods_col_source'}  || 'Source',
+                $text{'mc_mods_col_side'}    || 'Side',
+                $text{'mc_mods_col_install'} || 'Action',
+            ],
+            '100%',
+            \@rows,
+        );
+    }
+}
+
 my $all_mods = &list_installed_mods($server_dir, $profile);
 my $filtered_mods = &filter_installed_mods($all_mods, {
     q      => $q,
@@ -753,6 +1039,7 @@ print "<h4>" . &html_escape($text{'mc_mods_page_installed_title'} || 'Installed 
 print &ui_form_start('mods.cgi', 'get');
 print &ui_hidden('instance_id', $safe_id);
 print &ui_hidden('xnavigation', '1');
+print _mods_hidden_mod_search_state($mod_q);
 print &ui_table_start('', undef, 2);
 print &ui_table_row(
     &html_escape($text{'mc_mods_page_filter_q'} || 'Search'),
@@ -810,6 +1097,7 @@ if ($total_mods == 0) {
             $actions .= &ui_hidden('instance_id', $safe_id);
             $actions .= &ui_hidden('xnavigation', '1');
             $actions .= _mods_hidden_list_state($q, $status, $sort, $dir, $page);
+            $actions .= _mods_hidden_mod_search_state($mod_q);
             $actions .= &ui_hidden('action', $toggle_action);
             $actions .= &ui_hidden('mod_basename', $basename);
             $actions .= &ui_submit($toggle_label, undef, undef, undef, $toggle_class);
@@ -822,6 +1110,7 @@ if ($total_mods == 0) {
             $actions .= &ui_hidden('instance_id', $safe_id);
             $actions .= &ui_hidden('xnavigation', '1');
             $actions .= _mods_hidden_list_state($q, $status, $sort, $dir, $page);
+            $actions .= _mods_hidden_mod_search_state($mod_q);
             $actions .= &ui_hidden('action', 'mod_delete');
             $actions .= &ui_hidden('mod_basename', $basename);
             $actions .= &ui_submit($text{'mc_mods_page_delete_btn'} || 'Delete',
@@ -834,6 +1123,7 @@ if ($total_mods == 0) {
                     . "&xnavigation=1";
                 my $qs = _mods_list_qs($q, $status, $sort, $dir, $page);
                 $versions_url .= "&$qs" if $qs ne '';
+                $versions_url .= "&mod_q=" . _mods_query_urlencode($mod_q) if length($mod_q) >= 2;
                 $actions .= "<a href=\"" . &html_escape($versions_url) . "\">"
                     . &html_escape($text{'mc_mods_page_update_btn'} || 'Choose version')
                     . "</a>";
