@@ -219,12 +219,12 @@ jl "=== Verified serverfiles/$EXPECTED ==="
 rm -f "$INSTALLER_JAR" 2>/dev/null || true
 
 INSTALLED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-if ! perl "$MODULE_ROOT/scripts/mc_profile_merge.pl" "$PROFILE_FILE" "$UNIX_USER" \
-    "loader_version=$loader_version" "loader_installed_at=$INSTALLED_AT"; then
-    echo "ERROR: could not update .mcprofile.json"
+MERGE_ERR="$(perl "$MODULE_ROOT/scripts/mc_profile_merge.pl" "$PROFILE_FILE" "$UNIX_USER" \
+    "loader_version=$loader_version" "loader_installed_at=$INSTALLED_AT" 2>&1)" || {
+    jl "ERROR: could not update .mcprofile.json${MERGE_ERR:+ — $MERGE_ERR}"
     set_final_status "failed"
     exit 1
-fi
+}
 
 CFG_DIR="$SERVER_DIR/lgsm/config-lgsm/$LGSM_SCRIPT"
 CFG_FILE="$CFG_DIR/$LGSM_SCRIPT.cfg"

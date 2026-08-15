@@ -122,4 +122,30 @@ subtest 'resolve_java_major offline 26.1.2 defaults to 25' => sub {
     is(resolve_java_major('1.21.1'), 21, 'offline 1.21.1 still defaults to 21 when no compat/cache');
 };
 
+# Game-user merge path: write must succeed for live-only MC versions when Mojang
+# list/cache is unreachable (static fallback has no 26.x).
+subtest 'write_mc_profile allows existing 26.x profile offline' => sub {
+    my $dir = tempdir(CLEANUP => 1);
+    my $cfg = tempdir(CLEANUP => 1);
+    local $module_config_directory = $cfg;
+    local $main::module_config_directory = $cfg;
+    local *_mc_fetch_url = sub { return undef; };
+    ok(!grep({ $_ eq '26.1.2' } mc_list_mc_versions()), '26.1.2 not in offline effective list');
+    my $prof = {
+        loader         => 'neoforge',
+        mc_version     => '26.1.2',
+        java_major     => 25,
+        java_home      => '.java/temurin-25',
+        lgsm_script    => 'mcserver',
+        mod_dir        => 'mods',
+        loader_version => '26.1.2.95',
+    };
+    is(validate_mc_profile($prof), undef, 'validate accepts structural 26.1.2 profile');
+    ok(!build_mc_profile('neoforge', '26.1.2'), 'build_mc_profile still gates create allowlist');
+    my $me = getpwuid($>);
+    ok(write_mc_profile($dir, $me, $prof), 'write succeeds for 26.1.2 offline');
+    my $rb = read_mc_profile($dir);
+    is($rb->{'loader_version'}, '26.1.2.95', 'loader_version persisted');
+};
+
 done_testing();

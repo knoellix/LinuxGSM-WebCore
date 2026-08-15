@@ -45,7 +45,8 @@ is($profile->{'java_major'}, 21, 'java major');
 is($profile->{'java_home'}, '.java/temurin-21', 'java home rel');
 
 is(validate_mc_profile($profile), undef, 'valid profile');
-is(validate_mc_profile({ loader => 'bad' }), 'missing mc_version', 'invalid profile');
+is(validate_mc_profile({ loader => 'bad' }), 'missing mc_version', 'invalid profile missing version');
+is(validate_mc_profile({ loader => 'nope', mc_version => '1.21.1' }), 'unknown loader', 'unknown loader');
 
 subtest 'mojang manifest parse releases only' => sub {
     open(my $fh, '<', 't/fixtures/mc/version_manifest_v2.json') or die $!;

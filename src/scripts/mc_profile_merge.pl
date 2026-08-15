@@ -24,4 +24,12 @@ for my $pair (@fields) {
 }
 
 (my $server_dir = $profile_file) =~ s{/[^/]+$}{};
-write_mc_profile($server_dir, $unix_user, $profile) or exit 1;
+my $verr = validate_mc_profile($profile);
+if ($verr) {
+    print STDERR "ERROR: invalid profile after merge: $verr\n";
+    exit 1;
+}
+write_mc_profile($server_dir, $unix_user, $profile) or do {
+    print STDERR "ERROR: write_mc_profile failed for $server_dir\n";
+    exit 1;
+};

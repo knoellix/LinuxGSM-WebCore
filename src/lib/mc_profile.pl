@@ -274,6 +274,10 @@ sub build_mc_profile {
     return $profile;
 }
 
+# Structural validation for read/write/merge. Does NOT re-check Mojang allowlist —
+# that gate belongs in build_mc_profile (wizard create). Game-user workers must be
+# able to update .mcprofile.json offline even when the live list/cache is unreachable
+# (e.g. MC 26.x installed earlier, static fallback has no entry).
 sub validate_mc_profile {
     my ($profile) = @_;
     return 'missing profile' unless ref($profile) eq 'HASH';
@@ -281,8 +285,7 @@ sub validate_mc_profile {
     my $mc_version = $profile->{'mc_version'} // '';
     return 'missing loader' unless $loader =~ /^[a-z]+$/;
     return 'missing mc_version' unless $mc_version =~ /^[0-9.]+$/;
-    my $built = build_mc_profile($loader, $mc_version);
-    return 'invalid loader or version' unless $built;
+    return 'unknown loader' unless mc_loader_config($loader);
     for my $k (qw(loader mc_version java_major java_home lgsm_script mod_dir)) {
         return "missing $k" unless defined $profile->{$k} && $profile->{$k} =~ /\S/;
     }

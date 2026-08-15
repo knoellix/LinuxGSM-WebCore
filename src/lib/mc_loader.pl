@@ -298,7 +298,8 @@ sub mc_versions_cache_save {
     open(my $fh, '>', $tmp) or return 0;
     print {$fh} $json or do { close($fh); unlink($tmp); return 0; };
     close($fh) or do { unlink($tmp); return 0; };
-    eval { chmod 0600, $tmp; };
+    # Readable by game-user workers (validate/merge paths); no secrets in cache.
+    eval { chmod 0644, $tmp; };
     rename($tmp, $path) or do { unlink($tmp); return 0; };
     # Read-back verify (no blind success)
     my $rb = mc_versions_cache_load();
