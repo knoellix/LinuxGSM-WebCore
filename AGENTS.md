@@ -29,7 +29,7 @@ User instruction > project rules (`.cursor/rules/`) > agent defaults. **Security
 
 | Path | Role |
 |------|------|
-| `src/*.cgi` | Webmin CGIs (`integrations.cgi` = Steam + download APIs + module debug) |
+| `src/*.cgi` | Webmin CGIs (`integrations.cgi` = Steam + download APIs + module debug; `mods.cgi` = MC mod/modpack UI) |
 | `src/lib/*.pl` | Core libraries |
 | `src/scripts/` | Background workers (LGSM, SteamCMD, monitor) |
 | `src/lang/de`, `src/lang/en` | UI strings (`key=value`; both required for new keys) |
@@ -54,7 +54,7 @@ User instruction > project rules (`.cursor/rules/`) > agent defaults. **Security
 | Steam accounts | `src/lib/steam.pl` |
 | Module config load/save/flash, worker bootstrap | `src/lib/module_config.pl` |
 | MC profile / loader / compat | `src/lib/mc_profile.pl`, `src/lib/mc_loader.pl`, `src/lib/mc_compat.json` (+ optional `mc_compat_local.json`) |
-| Mods API, download whitelist | `src/lib/mc_mods.pl` |
+| Mods API, installed list, enable/disable/delete | `src/lib/mc_mods.pl`; UI on `src/mods.cgi` (manage links only) |
 | Modpack search/import/resolve/errors | `src/lib/mc_modpack.pl` |
 | Monitor cron rebuild | `src/lib/monitor.pl` |
 | Live log / job server | `src/lib/live_log.pl`, `src/job_live.cgi` |

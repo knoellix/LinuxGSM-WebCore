@@ -1,6 +1,6 @@
 ---
 description: Minecraft profile, mods, modpack search/import, CurseForge/Modrinth APIs
-globs: src/lib/mc_*.pl,src/scripts/mc_*.sh,src/scripts/mc_*.pl,src/manage.cgi,t/test_mc_*.pl
+globs: src/lib/mc_*.pl,src/scripts/mc_*.sh,src/scripts/mc_*.pl,src/mods.cgi,src/manage.cgi,t/test_mc_*.pl
 alwaysApply: false
 ---
 
@@ -10,7 +10,13 @@ alwaysApply: false
 
 - Profile: `$SERVER_DIR/.mc_profile.json` via `mc_profile.pl` / `read_mc_profile()`.
 - Mod/modpack UI only when `mc_mod_ui_ready($server_dir)` — Java + loader on disk (Paper: jar installed).
-- Preserve search state: hidden `pack_q` / `mod_q` on forms and redirects (`_manage_ui_preserve_mc_search_hidden`).
+
+## Mod UI placement (`mods.cgi`)
+
+- **Primary page:** `mods.cgi` — installed list (filter/sort/pagination), enable/disable/delete, mod search/install, modpack search/import, Start/Stop/Log toolbar.
+- **`manage.cgi`:** link only (`mc_mods_page_manage_link` → `mods.cgi?instance_id=…`) when `mc_mod_ui_ready`; no mod/modpack blocks on manage.
+- Preserve search state: hidden `pack_q` / `mod_q` on forms and redirects (`mods.cgi` and shared helpers).
+- Sync mutations (enable/disable/delete): game-user rename/unlink + flash after read-back verify (`no-blind-success-feedback.mdc`).
 
 ## Libraries
 
@@ -18,7 +24,8 @@ alwaysApply: false
 |------|------|
 | `mc_profile.pl` | Profile read/write, LGSM cfg patch hooks; merges `mc_compat` + local; `mc_list_mc_versions` / `resolve_java_major` |
 | `mc_loader.pl` | Fabric/Forge/NeoForge install + version lists; Mojang fetch/cache helpers |
-| `mc_mods.pl` | Mod API, download host whitelist, CurseForge download URL helpers |
+| `mc_mods.pl` | Mod API, download whitelist, installed list/enable/disable/delete, version helpers |
+| `mods.cgi` | Mods page UI (list, install, modpack, toolbar); manage links here when ready |
 | `mc_modpack.pl` | Parse/validate modpacks, search, resolve, job expand, error messages |
 
 ## Versions: static policy vs live
@@ -73,6 +80,7 @@ Resolution order for the wizard list: live/fresh cache → stale cache → stati
 | `mc_mod_install` | `mc_mod_install_user.sh` | Resolve in CGI; user worker downloads single mod |
 | `mc_java_setup` | `mc_java_install_user.sh` | Temurin JDK per instance (user-native) |
 | `mc_loader_setup` | `mc_loader_install_user.sh` | Fabric/Forge/NeoForge, pinned `loader_version` (user-native) |
+| `reinstall` (modded MC) | `mc_reinstall_user.sh` | Wipe `serverfiles/` → Java + loader sub-steps; vanilla/Paper still use `game_action_user.sh` |
 
 Adopt mode (modpack-first): the user worker runs `mc_modpack_adopt.pl` → Java → loader (pinned) → mods in **one** job (`WEBCORE_SUBSTEP=1` for the sub-steps). Dispatch via `user_worker_launch_cmd()`.
 
