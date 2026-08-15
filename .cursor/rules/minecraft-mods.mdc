@@ -1,92 +1,85 @@
 ---
-description: Minecraft profile, mods, modpack search/import, CurseForge/Modrinth APIs
-globs: src/lib/mc_*.pl,src/scripts/mc_*.sh,src/scripts/mc_*.pl,src/mods.cgi,src/manage.cgi,t/test_mc_*.pl
+description: Minecraft profile, Java, mods page, modpack import, CurseForge/Modrinth APIs
+globs: src/lib/mc_*.pl,src/scripts/mc_*.sh,src/scripts/mc_*.pl,src/scripts/lib/mc_java_env.sh,src/mods.cgi,src/manage.cgi,t/test_mc_*.pl
 alwaysApply: false
 ---
 
-# Minecraft mods and modpacks
+# Minecraft mods and runtime
 
 ## Profile and UI gating
 
-- Profile: `$SERVER_DIR/.mc_profile.json` via `mc_profile.pl` / `read_mc_profile()`.
-- Mod/modpack UI only when `mc_mod_ui_ready($server_dir)` — Java + loader on disk (Paper: jar installed).
+- Profile: `$SERVER_DIR/.mc_profile.json` via `mc_profile.pl`.
+- Mod UI only when `mc_mod_ui_ready` — Java + loader on disk (Paper: jar installed).
+- **Primary UI:** `mods.cgi` (list, enable/disable/delete, search/install, modpack, Start/Stop/Log).
+- **`manage.cgi`:** gated link only — no embedded mod/modpack blocks.
+- Preserve `pack_q` / `mod_q` (and list filters) on forms and `job_live` return URLs (allowlisted in `job_live.cgi`).
 
-## Mod UI placement (`mods.cgi`)
+## Java and start path
 
-- **Primary page:** `mods.cgi` — installed list (filter/sort/pagination), enable/disable/delete, mod search/install, modpack search/import, Start/Stop/Log toolbar.
-- **`manage.cgi`:** link only (`mc_mods_page_manage_link` → `mods.cgi?instance_id=…`) when `mc_mod_ui_ready`; no mod/modpack blocks on manage.
-- Preserve search state: hidden `pack_q` / `mod_q` on forms and redirects (`mods.cgi` and shared helpers).
-- Sync mutations (enable/disable/delete): game-user rename/unlink + flash after read-back verify (`no-blind-success-feedback.mdc`).
+- `resolve_java_major($mc)` is authoritative; if profile lags → `mc_profile_java_needs_sync` / `mc_profile_sync_java_fields` (manage reconcile, modpack adopt, `mc_profile_sync_java.pl`).
+- `mc_java_install_user.sh` must verify the installed JVM major matches the profile (reinstall if wrong).
+- Forge/NeoForge: `run.sh` often has `exec java …` with empty LGSM `preexecutable` → system JDK. Fix:
+  - `mc_compat.json`: `lgsm_preexecutable: "wrapper"` for forge/neoforge
+  - `mc_java_env_apply` (`scripts/lib/mc_java_env.sh`) on start/monitor/scheduled restart: set `JAVA_HOME` and pin absolute java in `run.sh` (match `exec java`, not only line-leading `java`)
+  - Pin sed: use `#` as delimiter when the pattern contains `|`
 
 ## Libraries
 
 | File | Role |
 |------|------|
-| `mc_profile.pl` | Profile read/write, LGSM cfg patch hooks; merges `mc_compat` + local; `mc_list_mc_versions` / `resolve_java_major` |
-| `mc_loader.pl` | Fabric/Forge/NeoForge install + version lists; Mojang fetch/cache helpers |
-| `mc_mods.pl` | Mod API, download whitelist, installed list/enable/disable/delete, version helpers |
-| `mods.cgi` | Mods page UI (list, install, modpack, toolbar); manage links here when ready |
-| `mc_modpack.pl` | Parse/validate modpacks, search, resolve, job expand, error messages |
+| `mc_profile.pl` | Profile R/W, Java sync, LGSM cfg / wrapper hooks |
+| `mc_loader.pl` | Fabric/Forge/NeoForge; `mc_reinstall_uses_loader_chain` |
+| `mc_compat.json` (+ optional local) | Policy: loaders, LGSM map, `lgsm_preexecutable` |
+| `mc_mods.pl` | APIs, download whitelist, installed list, enable/disable/delete, version lists |
+| `mc_modpack.pl` | Parse/validate/search/resolve; validation compare + WARN lines |
+| `mods.cgi` | Mods page UI |
 
-## Versions: static policy vs live
+## Versions: policy vs live
 
-`mc_compat.json` is the **policy** layer (loaders, LGSM script map, exclusions, curated offline fallbacks). MC release IDs and Java majors resolve **live** from Mojang with cache + fallback.
+`mc_compat.json` = policy. MC IDs + Java majors resolve **live** from Mojang (cache under module config dir) → fallback `mc_versions` / static majors.
 
-| Data | Source |
-|------|--------|
-| Loader definitions / LGSM script map | `mc_compat.json` (+ local) |
-| MC release list | Mojang manifest (cache) → fallback `mc_versions` |
-| Java major | Mojang version JSON (cache) → fallback `versions` |
-| Forge/NeoForge/Fabric builds | Maven / Fabric meta (existing) |
+## Installed mods
 
-Paths (under `$module_config_directory`, else `$config_directory`):
+- Disk truth: `serverfiles/$mod_dir/*.jar` = on, `*.jar.disabled` = off.
+- Index: `$SERVER_DIR/.mc_mods_index.json` (titles / project ids).
+- Enable/disable/delete: sync as game user + flash after verify.
+- Update: version list → `mc_mod_install` with pin; `replace_basename` / `force_replace`; preserve disabled via `prefer_disabled`.
 
-- `mc_compat_local.json` — optional admin override merge (same idea as `games_meta_local.json`)
-- `mc_versions_cache.json` — Mojang release IDs + Java majors (TTL ~24h; stale OK offline)
-
-Resolution order for the wizard list: live/fresh cache → stale cache → static `mc_versions` (local non-empty `mc_versions` replaces that offline fallback only).
-
-## Modpack import flows
+## Modpack import
 
 | Path | When |
 |------|------|
-| **Search → Install** | `modpack_import_remote` — job with `remote_pending` in `pack_meta.json`; resolve+download in worker |
-| **FTP path** | `modpack_import_path` — sync validate path, then job with local `pack_file` |
-| **Upload** | Not supported (Webmin 413); UI explains server-side search/path only |
+| Search → Install | `modpack_import_remote` — `remote_pending` in meta; resolve in worker |
+| FTP path | validate path sync, then job with `pack_file` |
+| Upload | Not supported (Webmin 413) |
 
-**Remote search import:** CGI validates source + project_id only, writes job meta, redirects to `job_live.cgi`. Do **not** resolve CurseForge/Modrinth download URLs in CGI — worker does it (`mc_modpack_expand_meta.pl` → `expand_remote_modpack_job_meta`).
+- CGI: validate source + ids only; **never** resolve download URLs in CGI.
+- Validate vs profile: hard errors (`loader_mismatch`, `version_mismatch`, `modded_pack_on_vanilla`); soft WARN (`loader_version_mismatch`, `java_mismatch`; adopt softens loader/MC to warnings). Print compare + WARN in expand/job log (`modpack_print_validation_report*`).
+- Adopt: pack is source of truth for loader/MC/loader_version.
 
-## CurseForge specifics
+## CurseForge / env
 
-- API key: `$config{curseforge_api_key}` from Integrations — **must** load in workers via `module_config_bootstrap_standalone()` (CGI `module_config_sync_in()` alone is not enough).
-- `/download-url` response: `data` is a **string URL**, not `{ downloadUrl: ... }` — use `curseforge_extract_download_url()`.
-- CDN download (`forgecdn.net`): pass `x-api-key` header — `mc_download_url_to_file()`.
-- Search returns metadata only (no per-hit download-url roundtrip). Import resolves file_id → URL once.
-- CF-only packs (e.g. ATM10): slug hints in `mc_modpack_guess_curseforge_slugs()` / `mc_modpack_query_likely_curseforge_only()`.
-- `project_id` sanitize: digits only for curseforge; Modrinth uses slug/alnum.
-
-## Errors (no generic silence)
-
-- Use `mc_modpack_error_message($err, $detail, $profile, \%text)` in CGI **and** worker log output.
-- Map concrete codes: `curseforge_key_missing`, `curseforge_no_matching_file`, `loader_mismatch`, `version_mismatch`, `download_failed`, …
-- New keys in **de + en** (`mc_modpack_resolve_*`, `mc_modpack_job_*`).
-- Worker must print `ERROR: <human message>` to job output — user reads Live-Log, not Webmin error page.
+- Worker API key: `module_config_bootstrap_standalone` + `.worker_secrets` — CGI `module_config_sync_in` alone is not enough.
+- Download-URL API: `data` is a **string**, not `{ downloadUrl }`.
+- CDN (`forgecdn.net`): send `x-api-key`.
+- Server import: allow env `unknown` (CF manifests often lack side); resolve default `both` — do not skip as client-only.
 
 ## Jobs
 
-| Action | Worker | Notes |
-|--------|--------|-------|
-| `modpack_import` | `mc_modpack_install.sh` → `mc_modpack_install_user.sh` | Root drops privileges; user worker does download, adopt, Java/loader sub-steps, mods |
-| `mc_mod_install` | `mc_mod_install_user.sh` | Resolve in CGI; user worker downloads single mod |
-| `mc_java_setup` | `mc_java_install_user.sh` | Temurin JDK per instance (user-native) |
-| `mc_loader_setup` | `mc_loader_install_user.sh` | Fabric/Forge/NeoForge, pinned `loader_version` (user-native) |
-| `reinstall` (modded MC) | `mc_reinstall_user.sh` | Wipe `serverfiles/` → Java + loader sub-steps; vanilla/Paper still use `game_action_user.sh` |
+| Action | Worker |
+|--------|--------|
+| `modpack_import` | `mc_modpack_install_user.sh` (+ adopt/Java/loader sub-steps) |
+| `mc_mod_install` | `mc_mod_install_user.sh` |
+| `mc_java_setup` | `mc_java_install_user.sh` |
+| `mc_loader_setup` | `mc_loader_install_user.sh` |
+| `reinstall` (modded) | `mc_reinstall_user.sh` — wipe `serverfiles/` → Java + loader |
 
-Adopt mode (modpack-first): the user worker runs `mc_modpack_adopt.pl` → Java → loader (pinned) → mods in **one** job (`WEBCORE_SUBSTEP=1` for the sub-steps). Dispatch via `user_worker_launch_cmd()`.
+Dispatch via `user_worker_launch_cmd()`. Writes under `$SERVER_DIR` as game user only.
 
-Mod writes: `$SERVER_DIR/serverfiles/{mods|plugins}/` — worker runs **as the game user** (no internal `su`).
+## Errors
+
+Use `mc_modpack_error_message` in CGI **and** worker log (`ERROR: …`). New keys in **de + en**.
 
 ## Tests
 
-- `t/test_mc_modpack.pl`, `t/test_mc_mods.pl`, `t/test_mc_profile.pl`, `t/test_mc_loader.pl`
-- Fixture: `t/fixtures/modpack/modrinth.index.json`
+`t/test_mc_modpack.pl`, `t/test_mc_mods.pl`, `t/test_mc_profile.pl`, `t/test_mc_loader.pl`, `t/test_job_live_return_query.pl`

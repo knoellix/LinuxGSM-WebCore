@@ -16,10 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Update installs replace the previous jar (including same-filename overwrite) and can preserve disabled state
 - Mod search/install and **modpack** import UI moved onto the mods page (manage keeps a gated link only)
 - Job live-log return URLs can keep mods-page list/search state safely
+- Modded **reinstall** chain (`mc_reinstall_user.sh`): wipe `serverfiles/` then Java + loader from profile
+- Start-time **JAVA_HOME** helper (`mc_java_env.sh`) and Forge/NeoForge wrapper preexecutable so `run.sh` does not use system JDK
+- Profile **Java heal** when `java_major` lags behind MC version requirements
 
 ### Changed
 
 - Manage page no longer embeds the large mod/modpack blocks; opens `mods.cgi` when the instance is mod-UI ready
+- Modpack import prints pack-vs-instance comparison and soft version/Java warnings in the live log
+- CurseForge/server import keeps mods with unknown side metadata (no longer skipped as client-only)
 
 ## [0.1.0] - 2026-08-10
 

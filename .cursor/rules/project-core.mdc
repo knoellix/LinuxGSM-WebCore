@@ -35,5 +35,5 @@ alwaysApply: true
 ## Background jobs (summary)
 
 - All long tasks → job + **`job_live.cgi`** (see `instance-jobs.mdc`, `workers-shell.mdc`).
-- Minecraft modpack/mod install: see `minecraft-mods.mdc`.
+- Minecraft mods/modpacks/Java/reinstall: see `minecraft-mods.mdc` (`mods.cgi`, not manage blocks).
 - Success only after `$JOB_DIR/status` = `ok` (see `no-blind-success-feedback.mdc`).

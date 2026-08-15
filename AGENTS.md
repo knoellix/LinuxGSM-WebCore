@@ -10,7 +10,7 @@ User instruction > project rules (`.cursor/rules/`) > agent defaults. **Security
 
 1. **Plan** before non-trivial code changes (`docs/superpowers/plans/` for larger features).
 2. **Check** ports, Unix users, and dependencies before provisioning or service changes.
-3. **Validate** Perl with `perl -c` before saving; shell scripts via `bash -n` or `verify.sh`.
+3. **Validate** Perl with `perl -c` before saving; shell via `bash -n` / `verify.sh`.
 4. **Verify** with `bash scripts/verify.sh` before claiming work is done.
 5. **Build** for deploy: `bash scripts/build.sh` — no symlink/auto-sync to live Webmin.
 
@@ -23,21 +23,20 @@ User instruction > project rules (`.cursor/rules/`) > agent defaults. **Security
 | Build `.wbm` | `bash scripts/build.sh` |
 | Single test | `perl t/test_<name>.pl` |
 
-**Deploy:** copy `dist/*.wbm` to `/tmp/`, then run `install-module.pl` (resolve via `command -v` or `/usr/share|/usr/libexec|/usr/lib/webmin` paths). WBM root inside tar: `linuxgsm-webcore/`.
+**Deploy:** copy `dist/*.wbm` to `/tmp/`, then `install-module.pl` (via `command -v` or `/usr/share|/usr/libexec|/usr/lib/webmin`). WBM root inside tar: `linuxgsm-webcore/`.
 
 ## Project layout
 
 | Path | Role |
 |------|------|
-| `src/*.cgi` | Webmin CGIs (`integrations.cgi` = Steam + download APIs + module debug; `mods.cgi` = MC mod/modpack UI) |
+| `src/*.cgi` | Webmin CGIs — `mods.cgi` = MC mods/modpacks; `integrations.cgi` = Steam + download APIs |
 | `src/lib/*.pl` | Core libraries |
-| `src/scripts/` | Background workers (LGSM, SteamCMD, monitor) |
-| `src/lang/de`, `src/lang/en` | UI strings (`key=value`; both required for new keys) |
+| `src/scripts/` | Background workers (+ `lib/mc_java_env.sh`, `mc_reinstall_user.sh`, …) |
+| `src/lang/de`, `src/lang/en` | UI strings (both required for new keys) |
 | `src/lib/games_meta.json` | Static game metadata |
 | `$config_directory/games_meta_local.json` | Local game overrides |
-| `src/defaultacl` | Default ACL fallback |
-| `t/stubs.pl` | Standalone test stubs |
-| `docs/superpowers/` | Specs and implementation plans |
+| `CHANGELOG.md` | Release notes (bump `src/module.info` with packaging) |
+| `docs/superpowers/` | Specs and plans |
 
 **Legacy redirects:** `steam_settings.cgi`, `config.cgi` → `integrations.cgi`.
 
@@ -45,47 +44,46 @@ User instruction > project rules (`.cursor/rules/`) > agent defaults. **Security
 
 | Need | File |
 |------|------|
-| `list_webmin_users()` | `src/lib/acl.pl` |
-| `get_game_list()` | `src/lib/games.pl` |
-| `get_game_fields()`, `get_game_live_log_path()` | `src/lib/games_meta.pl` |
-| Instance registry, status, `instance_is_lgsm()` | `src/lib/instance.pl` |
-| Jobs, action labels | `src/lib/jobs.pl` |
-| Config editor | `src/lib/config_editor.pl` |
-| Steam accounts | `src/lib/steam.pl` |
-| Module config load/save/flash, worker bootstrap | `src/lib/module_config.pl` |
-| MC profile / loader / compat | `src/lib/mc_profile.pl`, `src/lib/mc_loader.pl`, `src/lib/mc_compat.json` (+ optional `mc_compat_local.json`) |
-| Mods API, installed list, enable/disable/delete | `src/lib/mc_mods.pl`; UI on `src/mods.cgi` (manage links only) |
-| Modpack search/import/resolve/errors | `src/lib/mc_modpack.pl` |
-| Monitor cron rebuild | `src/lib/monitor.pl` |
-| Live log / job server | `src/lib/live_log.pl`, `src/job_live.cgi` |
+| ACL / games / registry / jobs | `acl.pl`, `games.pl`, `instance.pl`, `jobs.pl` |
+| Config editor / Steam / module config | `config_editor.pl`, `steam.pl`, `module_config.pl` |
+| MC profile, Java sync, loader chain | `mc_profile.pl`, `mc_loader.pl`, `mc_compat.json` |
+| Mods API + list/enable/disable | `mc_mods.pl`; UI: `mods.cgi` (manage links only) |
+| Modpack parse/validate/import | `mc_modpack.pl` |
+| Monitor / live log | `monitor.pl`, `live_log.pl`, `job_live.cgi` |
+
+## Minecraft (must-know)
+
+- **UI:** mods/modpacks live on `mods.cgi`; manage only shows a gated link when `mc_mod_ui_ready`.
+- **Java:** profile `java_major` must match `resolve_java_major(mc_version)` — heal via `mc_profile_java_needs_sync` / `mc_profile_sync_java_fields`; install verifies real JVM major.
+- **Start:** Forge/NeoForge `run.sh` uses bare `java` — `lgsm_preexecutable=wrapper` + `mc_java_env_apply` (pin absolute Temurin; handle `exec java`). Sed pin patterns: use `#` delimiter when the regex contains `|`.
+- **Reinstall (modded):** `mc_reinstall_user.sh` (wipe `serverfiles/` → Java + loader). Vanilla/Paper stay on `game_action_user.sh`.
+- **Disable mods:** rename `.jar` ↔ `.jar.disabled` as game user; restart needed for loader pickup.
+- Details: `.cursor/rules/minecraft-mods.mdc`.
 
 ## Workers (short)
 
-- **Game-user side:** monitoring (`monitor_instance_user.sh`), SteamCMD control (`steamcmd_control_user.sh`), file writes in `$SERVER_DIR`.
-- **Root dispatch:** starts user workers, apt, provisioning, cron install.
-- **Perl helpers** (`mc_modpack_expand_meta.pl`, …): `module_config_bootstrap_standalone($MODULE_ROOT)` before reading API keys.
-- **Live log:** all background jobs → `job_live.cgi`; output in `$JOB_DIR/output`, status in `$JOB_DIR/status`.
+- **Game-user:** monitor, SteamCMD control, `$SERVER_DIR` writes, MC install/update/modpack (user-native).
+- **Root dispatch:** start user workers, apt/provision, system cron — no root writes to game data at runtime.
+- Standalone Perl helpers: `module_config_bootstrap_standalone($MODULE_ROOT)` (+ `WEBCORE_JOB_DIR` for secrets).
+- Jobs → `job_live.cgi`; success only `$JOB_DIR/status=ok`.
 
 ## Standards (short)
 
-- UI text: **German**; code and comments: **English**.
-- Webmin UI: only `ui_*` helpers; escape dynamic HTML with `html_escape()`.
-- Webmin-native-first: use core Webmin patterns before custom workarounds.
-- Game ops in `$SERVER_DIR`: always as game user via `su -s /bin/bash -c` or `_write_file_as_user()` — never bare `chown` on game files.
-- `&redirect(...)` must always be followed by `exit;`.
-- **Success feedback:** verified outcome only — see `.cursor/rules/no-blind-success-feedback.mdc`. Config saves: `src/lib/module_config.pl` (write + read-back + one-time flash). Async jobs: outcome from `$JOB_DIR/status`, errors in Live-Log with specific messages (not generic “failed”).
+- UI text: **German**; code/comments: **English**.
+- Only `ui_*`; `html_escape()` on dynamic HTML; no hardcoded colors.
+- `&redirect(...)` always followed by `exit;`.
+- Verified success only — `.cursor/rules/no-blind-success-feedback.mdc`.
 
-## Detailed rules
-
-Cursor loads topic rules from `.cursor/rules/` (by glob). Key topic files:
+## Topic rules
 
 | Rule | Topic |
 |------|--------|
-| `instance-jobs.mdc` | Jobs, live log, per-user monitor cron |
-| `workers-shell.mdc` | Shell workers, game-user dispatch, job_log, config bootstrap |
-| `minecraft-mods.mdc` | MC profile, mods, modpack import, CurseForge/Modrinth |
-| `no-blind-success-feedback.mdc` | Verified success, flash pattern |
+| `instance-jobs.mdc` | Jobs, live log, monitor cron |
+| `workers-shell.mdc` | Shell workers, game-user dispatch, job_log |
+| `minecraft-mods.mdc` | Profile, Java, mods page, modpacks, APIs |
+| `no-blind-success-feedback.mdc` | Flash / verify success |
 | `security-isolation.mdc` | Unix users, su boundary |
 | `webmin-cgi.mdc` | CGI bootstrap, redirects |
+| `project-core.mdc` | Workflow, integrations config |
 
-Custom agents in `.cursor/agents/`. Periodic quality: skill `.cursor/skills/linuxgsm-webcore-audit/` + agent `linuxgsm-auditor`; reports in `docs/audits/`.
+Custom agents: `.cursor/agents/`. Audits: skill `linuxgsm-webcore-audit` → `docs/audits/`.
