@@ -41,19 +41,51 @@ subtest 'validate against profile' => sub {
     $v = validate_modpack_against_profile($pack, $profile);
     ok(!$v->{ok}, 'loader mismatch fails');
     ok(grep { $_ eq 'loader_mismatch' } @{ $v->{errors} }, 'loader_mismatch error');
+
+    $v = validate_modpack_against_profile($pack, $profile, { adopt => 1 });
+    ok($v->{ok}, 'adopt softens loader mismatch');
+    ok(grep { $_ eq 'loader_mismatch' } @{ $v->{warnings} }, 'loader_mismatch becomes warning');
+};
+
+subtest 'validation warnings loader_version and java' => sub {
+    plan tests => 8;
+    my $pack = {
+        loader         => 'neoforge',
+        loader_version => '21.1.200',
+        mc_version     => '1.21.1',
+        files          => [{ env => 'server' }],
+    };
+    my $profile = build_mc_profile('neoforge', '1.21.1', {
+        loader_version => '21.1.100',
+    });
+    $profile->{'java_major'} = 17; # force stale Java vs resolve_java_major(1.21.1)
+    my $v = validate_modpack_against_profile($pack, $profile);
+    ok($v->{ok}, 'soft mismatches still ok');
+    ok(grep { $_ eq 'loader_version_mismatch' } @{ $v->{warnings} }, 'loader_version warning');
+    ok(grep { $_ eq 'java_mismatch' } @{ $v->{warnings} }, 'java warning');
+
+    my @msgs = modpack_validation_warning_messages($v, $pack, $profile);
+    is(scalar @msgs, 2, 'two warning messages');
+    like($msgs[0], qr/21\.1\.200/, 'mentions pack loader version');
+    like(join("\n", @msgs), qr/Java/, 'mentions Java');
+
+    my @cmp = modpack_validation_compare_lines($pack, $profile);
+    is(scalar @cmp, 3, 'compare has header + pack + instance');
+    like($cmp[1], qr/1\.21\.1/, 'compare mentions MC');
 };
 
 subtest 'server import filter' => sub {
     my $pack = parse_modrinth_index_json($fixture_json);
-    $pack = {
+    my $pack = {
         files => [
             { env => 'server' },
             { env => 'client' },
             { env => 'both' },
+            { env => 'unknown' },
         ],
     };
     my ($files, $skipped) = modpack_files_for_server_import($pack);
-    is(scalar @$files, 2, 'server + both kept');
+    is(scalar @$files, 3, 'server + both + unknown kept');
     is($skipped, 1, 'one client skipped');
 };
 

@@ -34,7 +34,7 @@
       "label_en": "Forge",
       "phase": 2,
       "lgsm_executable": "./run.sh",
-      "lgsm_preexecutable": "empty"
+      "lgsm_preexecutable": "wrapper"
     },
     "neoforge": {
       "lgsm_script": "mcserver",
@@ -43,7 +43,7 @@
       "label_en": "NeoForge",
       "phase": 2,
       "lgsm_executable": "./run.sh",
-      "lgsm_preexecutable": "empty"
+      "lgsm_preexecutable": "wrapper"
     }
   },
   "versions": {

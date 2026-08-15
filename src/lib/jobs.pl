@@ -799,6 +799,9 @@ sub job_next_instance_status {
         mc_java_setup   => 'mc_ready',
         mc_loader_setup => 'installed',
         install_game    => 'installed',
+        # Modded MC reinstall uses mc_reinstall_user.sh; vanilla/LGSM reinstall
+        # also leaves the instance installed when the job succeeds.
+        reinstall       => 'installed',
     );
     return $map{$action // ''} // '';
 }

@@ -19,6 +19,14 @@ ok(mc_loader_is_modded('fabric'), 'fabric is modded');
 ok(mc_loader_is_modded('neoforge'), 'neoforge is modded');
 ok(!mc_loader_is_modded('vanilla'), 'vanilla not modded');
 
+ok(mc_reinstall_uses_loader_chain({ loader => 'neoforge' }), 'reinstall chain for neoforge');
+ok(mc_reinstall_uses_loader_chain({ loader => 'fabric' }), 'reinstall chain for fabric');
+ok(mc_reinstall_uses_loader_chain({ loader => 'forge' }), 'reinstall chain for forge');
+ok(!mc_reinstall_uses_loader_chain({ loader => 'paper' }), 'no loader chain for paper');
+ok(!mc_reinstall_uses_loader_chain({ loader => 'vanilla' }), 'no loader chain for vanilla');
+ok(!mc_reinstall_uses_loader_chain(undef), 'no loader chain without profile');
+ok(!mc_reinstall_uses_loader_chain({}), 'no loader chain without loader');
+
 # Legacy MC 1.x → NeoForge drops the leading 1
 is(mc_neoforge_version_prefix('1.21.1'), '21.1', 'neoforge prefix 1.21.1');
 is(mc_neoforge_version_prefix('1.20.4'), '20.4', 'neoforge prefix 1.20.4');
@@ -99,6 +107,10 @@ is(mc_infer_setup_status(1, ['loader']), 'mc_ready', 'mc_ready when java done');
 is(mc_infer_setup_status(1, []), 'installed', 'installed when nothing pending');
 is(mc_pick_setup_status('fresh', 'lgsm_ready'), 'lgsm_ready', 'pick higher setup rank');
 
+# After wipe/reinstall: disk says mc_ready even if an old job was ok — prefer disk.
+is(mc_infer_setup_status(1, ['loader']), 'mc_ready',
+    'loader missing after wipe stays mc_ready (not installed)');
+
 my $paper_prof = build_mc_profile('paper', '1.21.1');
 my $paper_dir = tempdir(CLEANUP => 1);
 mkdir "$paper_dir/serverfiles" or die $!;
@@ -109,13 +121,36 @@ my $neo_dir = tempdir(CLEANUP => 1);
 mkdir "$neo_dir/serverfiles" or die $!;
 ok(!mc_mod_ui_ready($neo_prof, $neo_dir), 'mod ui blocked until java+loader');
 
-$neo_prof->{'java_home'} = '.java';
-system('mkdir', '-p', "$neo_dir/.java/bin") == 0 or die "mkdir: $!";
-open(my $jf, '>', "$neo_dir/.java/bin/java") or die $!;
+$neo_prof->{'java_home'} = mc_java_home_rel($neo_prof->{'java_major'});
+system('mkdir', '-p', "$neo_dir/$neo_prof->{'java_home'}/bin") == 0 or die "mkdir: $!";
+open(my $jf, '>', "$neo_dir/$neo_prof->{'java_home'}/bin/java") or die $!;
 close($jf);
-chmod 0755, "$neo_dir/.java/bin/java";
+chmod 0755, "$neo_dir/$neo_prof->{'java_home'}/bin/java";
 open(my $nf, '>', "$neo_dir/serverfiles/run.sh") or die $!;
 close($nf);
 ok(mc_mod_ui_ready($neo_prof, $neo_dir), 'mod ui ready when java+loader on disk');
+
+# Stale Java 21 on MC 26.x must pend java even if an old JDK path exists
+{
+    my $stale = {
+        loader      => 'neoforge',
+        mc_version  => '26.1.2',
+        java_major  => 21,
+        java_home   => '.java/temurin-21',
+        lgsm_script => 'mcserver',
+        mod_dir     => 'mods',
+    };
+    ok(mc_profile_java_needs_sync($stale), 'stale java 21 on 26.1.2 needs sync');
+    my $synced = mc_profile_sync_java_fields($stale);
+    is($synced->{'java_major'}, 25, 'sync bumps java_major to 25');
+    is($synced->{'java_home'}, '.java/temurin-25', 'sync sets temurin-25 home');
+    my $sdir = tempdir(CLEANUP => 1);
+    system('mkdir', '-p', "$sdir/.java/temurin-21/bin") == 0 or die $!;
+    open(my $sj, '>', "$sdir/.java/temurin-21/bin/java") or die $!;
+    close($sj);
+    chmod 0755, "$sdir/.java/temurin-21/bin/java";
+    my @sp = @{ mc_pending_setup_steps($stale, $sdir) };
+    ok(grep({ $_ eq 'java' } @sp), 'pending java when major stale despite old JDK present');
+}
 
 done_testing();

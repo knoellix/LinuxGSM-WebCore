@@ -245,8 +245,11 @@ sub modpack_files_for_server_import {
     return (\@out, $skipped_client);
 }
 
+# $opts->{adopt}: pack is source of truth — loader/MC mismatches become warnings.
 sub validate_modpack_against_profile {
-    my ($pack, $profile) = @_;
+    my ($pack, $profile, $opts) = @_;
+    $opts = {} unless ref($opts) eq 'HASH';
+    my $adopt = $opts->{'adopt'} ? 1 : 0;
     my @errors;
     my @warnings;
     return { ok => 0, errors => ['invalid pack'], warnings => [] }
@@ -257,17 +260,27 @@ sub validate_modpack_against_profile {
     my $p_loader = $pack->{'loader'} // '';
     my $i_loader = $profile->{'loader'} // '';
     if ($p_loader && $i_loader && $p_loader ne $i_loader) {
-        push @errors, 'loader_mismatch';
+        if ($adopt) {
+            push @warnings, 'loader_mismatch';
+        } else {
+            push @errors, 'loader_mismatch';
+        }
     }
 
     my $p_mc = $pack->{'mc_version'} // '';
     my $i_mc = $profile->{'mc_version'} // '';
     if ($p_mc && $i_mc && $p_mc ne $i_mc) {
-        push @errors, 'version_mismatch';
+        if ($adopt) {
+            push @warnings, 'version_mismatch';
+        } else {
+            push @errors, 'version_mismatch';
+        }
     }
 
     my $has_mod_files = @{ $pack->{'files'} // [] } > 0;
     if ($has_mod_files && $i_loader =~ /^(?:vanilla|paper)$/) {
+        # Keep as hard error even in adopt: provisional wizard profiles for
+        # modpacks should already be modded loaders; vanilla+mods is unsafe.
         push @errors, 'modded_pack_on_vanilla';
     }
 
@@ -1408,6 +1421,146 @@ sub _mc_modpack_apply_text {
     return $fmt;
 }
 
+sub _mc_modpack_text_lookup {
+    my ($text_ref) = @_;
+    $text_ref = {} unless ref($text_ref) eq 'HASH';
+    return sub {
+        my ($key, @repl) = @_;
+        return _mc_modpack_apply_text($text_ref->{$key}, @repl) if $text_ref->{$key};
+        return '';
+    };
+}
+
+# Pack vs instance summary lines (job log / UI).
+sub modpack_validation_compare_lines {
+    my ($pack, $profile, $text_ref) = @_;
+    $pack     = {} unless ref($pack) eq 'HASH';
+    $profile  = {} unless ref($profile) eq 'HASH';
+    my $t = _mc_modpack_text_lookup($text_ref);
+
+    my $p_loader = $pack->{'loader'} // '?';
+    my $p_mc     = $pack->{'mc_version'} // '?';
+    my $p_lv     = $pack->{'loader_version'} // '';
+    my $p_lv_s   = $p_lv ne '' ? " / Loader $p_lv" : '';
+
+    my $i_loader = $profile->{'loader'} // '?';
+    my $i_mc     = $profile->{'mc_version'} // '?';
+    my $i_lv     = $profile->{'loader_version'} // '';
+    my $i_lv_s   = $i_lv ne '' ? " / Loader $i_lv" : '';
+    my $i_java   = int($profile->{'java_major'} // 0) || '?';
+
+    my $header = $t->('mc_modpack_compare_header') || 'Pack vs. Instanz:';
+    my $pack_line = $t->('mc_modpack_compare_pack', $p_loader, $p_mc, $p_lv_s)
+        || "Pack: $p_loader / MC $p_mc$p_lv_s";
+    my $inst_line = $t->('mc_modpack_compare_instance', $i_loader, $i_mc, $i_lv_s, $i_java)
+        || "Instanz: $i_loader / MC $i_mc$i_lv_s / Java $i_java";
+    return ($header, $pack_line, $inst_line);
+}
+
+# Soft mismatch messages (import continues). $text_ref optional (Webmin %text).
+sub modpack_validation_warning_messages {
+    my ($validation, $pack, $profile, $text_ref) = @_;
+    return () unless ref($validation) eq 'HASH';
+    $pack    = {} unless ref($pack) eq 'HASH';
+    $profile = {} unless ref($profile) eq 'HASH';
+    my $t = _mc_modpack_text_lookup($text_ref);
+
+    my @out;
+    for my $code (@{ $validation->{'warnings'} // [] }) {
+        if ($code eq 'loader_version_mismatch') {
+            push @out, $t->('mc_modpack_loader_version_mismatch',
+                    $pack->{'loader_version'} // '?',
+                    $profile->{'loader_version'} // '?')
+                || 'Modpack benötigt Loader-Version '
+                . ($pack->{'loader_version'} // '?')
+                . ', Instanz hat '
+                . ($profile->{'loader_version'} // '?')
+                . '. Import läuft weiter — Loader ggf. anpassen.';
+        } elsif ($code eq 'java_mismatch') {
+            my $mc = $pack->{'mc_version'} || $profile->{'mc_version'} || '?';
+            my $need = resolve_java_major($mc) || '?';
+            my $have = int($profile->{'java_major'} // 0) || '?';
+            push @out, $t->('mc_modpack_java_mismatch', $mc, $need, $have)
+                || "Modpack (MC $mc) erwartet Java $need, Instanz-Profil hat Java $have. "
+                . 'Java wird beim Import ggf. angepasst.';
+        } elsif ($code eq 'loader_mismatch') {
+            push @out, $t->('mc_modpack_adopt_loader_mismatch',
+                    $pack->{'loader'} // '?',
+                    $profile->{'loader'} // '?')
+                || 'Hinweis (Adopt): Pack-Loader „'
+                . ($pack->{'loader'} // '?')
+                . '“ weicht von Instanz „'
+                . ($profile->{'loader'} // '?')
+                . '“ ab — Profil wird vom Pack übernommen.';
+        } elsif ($code eq 'version_mismatch') {
+            push @out, $t->('mc_modpack_adopt_version_mismatch',
+                    $pack->{'mc_version'} // '?',
+                    $profile->{'mc_version'} // '?')
+                || 'Hinweis (Adopt): Pack-MC '
+                . ($pack->{'mc_version'} // '?')
+                . ' weicht von Instanz '
+                . ($profile->{'mc_version'} // '?')
+                . ' ab — Profil wird vom Pack übernommen.';
+        } else {
+            push @out, $code;
+        }
+    }
+    return @out;
+}
+
+# Print compare + WARN from pack_meta (after job log truncate / install-ready path).
+sub modpack_print_validation_report_from_meta {
+    my ($meta, $server_dir, $text_ref) = @_;
+    return 0 unless ref($meta) eq 'HASH';
+
+    my $pack = {
+        loader         => $meta->{'pack_loader'} // '',
+        loader_version => $meta->{'pack_loader_version'} // '',
+        mc_version     => $meta->{'pack_mc_version'} // '',
+    };
+    my $profile = $meta->{'profile'};
+    if (ref($profile) ne 'HASH' && defined $server_dir && $server_dir =~ /\S/) {
+        $profile = read_mc_profile($server_dir) if defined &read_mc_profile;
+    }
+    return 0 unless ref($profile) eq 'HASH';
+    return 0 unless ($pack->{'loader'} ne '' || $pack->{'mc_version'} ne ''
+        || @{ $meta->{'validation_warnings'} // [] });
+
+    my $validation = {
+        ok       => 1,
+        errors   => [],
+        warnings => [ @{ $meta->{'validation_warnings'} // [] } ],
+    };
+    return modpack_print_validation_report($pack, $profile, $validation, $text_ref);
+}
+
+# Print compare + WARN lines to STDOUT (worker / expand_meta).
+sub modpack_print_validation_report {
+    my ($pack, $profile, $validation, $text_ref) = @_;
+    return 0 unless ref($pack) eq 'HASH' && ref($profile) eq 'HASH';
+    $validation = { ok => 1, errors => [], warnings => [] }
+        unless ref($validation) eq 'HASH';
+
+    print "=== ";
+    my ($header, $pack_line, $inst_line) =
+        modpack_validation_compare_lines($pack, $profile, $text_ref);
+    print "$header ===\n";
+    print "$pack_line\n";
+    print "$inst_line\n";
+
+    my @warns = modpack_validation_warning_messages(
+        $validation, $pack, $profile, $text_ref);
+    if (@warns) {
+        my $wh = _mc_modpack_text_lookup($text_ref)->('mc_modpack_validation_warn_header')
+            || 'Versionshinweise (Import läuft trotzdem)';
+        print "=== $wh ===\n";
+        for my $w (@warns) {
+            print "WARN: $w\n";
+        }
+    }
+    return scalar @warns;
+}
+
 # Human-readable modpack import error (Webmin UI + job log). $text_ref optional (Webmin %text).
 sub mc_modpack_error_message {
     my ($err, $detail, $profile, $text_ref) = @_;
@@ -2513,6 +2666,8 @@ sub expand_remote_modpack_job_meta {
     return (0, 'parse_meta', undef) unless ref($meta) eq 'HASH';
 
     if (modpack_meta_install_ready($meta)) {
+        # Job log was truncated at worker start — re-emit version notes.
+        modpack_print_validation_report_from_meta($meta, $server_dir);
         return (1, undef, undef);
     }
 
@@ -2605,16 +2760,10 @@ sub expand_remote_modpack_job_meta {
 
     # Adopt mode (modpack-first wizard): the pack is the source of truth for
     # loader / loader_version / mc_version, so version/loader "mismatches"
-    # against the provisional profile are expected and must not hard-fail.
+    # against the provisional profile become warnings (not hard errors).
     my $adopt = $meta->{'adopt_profile'} ? 1 : 0;
 
-    my $validation = validate_modpack_against_profile($pack, $profile);
-    if ($adopt && !$validation->{'ok'}) {
-        my @verr = grep { $_ ne 'loader_mismatch' && $_ ne 'version_mismatch' }
-            @{ $validation->{'errors'} // [] };
-        $validation = { ok => (@verr ? 0 : 1), errors => \@verr,
-            warnings => $validation->{'warnings'} };
-    }
+    my $validation = validate_modpack_against_profile($pack, $profile, { adopt => $adopt });
     unless ($validation->{'ok'}) {
         my %detail = (
             pack_mc           => $pack->{'mc_version'} // '',
@@ -2635,6 +2784,9 @@ sub expand_remote_modpack_job_meta {
         }
         return (0, 'validation_failed', \%detail);
     }
+
+    modpack_print_validation_report($pack, $profile, $validation);
+    $meta->{'validation_warnings'} = [ @{ $validation->{'warnings'} // [] } ];
 
     if (($pack->{'format'} // '') eq 'curseforge') {
         my $needs_resolve = 0;
@@ -2731,10 +2883,21 @@ sub modpack_adopt_profile_from_meta {
         $new->{$k} = $old->{$k} if defined $old->{$k};
     }
 
-    # Nothing to do if loader, mc and loader_version already match.
+    # Nothing to do if loader, mc and loader_version already match — unless Java
+    # fields are stale (MC 26.x still pointing at Temurin 21).
     if (($old->{'loader'} // '') eq ($new->{'loader'} // '')
         && ($old->{'mc_version'} // '') eq ($new->{'mc_version'} // '')
         && ($old->{'loader_version'} // '') eq ($new->{'loader_version'} // '')) {
+        if (mc_profile_java_needs_sync($old)) {
+            my $synced = mc_profile_sync_java_fields($old);
+            write_mc_profile($server_dir, $unix_user, $synced) or return (0, 'write_failed');
+            return (1, 'java_synced', {
+                loader         => $synced->{'loader'},
+                mc_version     => $synced->{'mc_version'},
+                loader_version => $synced->{'loader_version'} // '',
+                java_major     => $synced->{'java_major'},
+            });
+        }
         return (1, 'unchanged', {
             loader => $new->{'loader'}, mc_version => $new->{'mc_version'},
             loader_version => $new->{'loader_version'} // '',

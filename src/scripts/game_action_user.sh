@@ -34,6 +34,9 @@ _SCRIPT_LIB="$(cd "$(dirname "$0")"/lib && pwd)"
 . "$_SCRIPT_LIB/job_log.sh"
 job_log_init_as_user "$JOB_DIR"
 
+# shellcheck source=lib/mc_java_env.sh
+. "$_SCRIPT_LIB/mc_java_env.sh"
+
 # Process priority — install/update is a long, IO-heavy operation. PRIO_LOW
 # keeps the LGSM child tree (steamcmd, tar, wineboot) out of the way of running
 # games on neighbouring instances. PRIO_HIGH (negative nice) needs root, so the
@@ -70,6 +73,7 @@ trap on_exit EXIT
 
 if [ "$ACTION" = "start" ] || [ "$ACTION" = "stop" ] || [ "$ACTION" = "restart" ]; then
     echo "=== Performing '$ACTION': $GAME_SCRIPT ==="
+    mc_java_env_apply "$SERVER_DIR"
     if ! ( cd "$SERVER_DIR" && ./"$GAME_SCRIPT" "$ACTION" ); then
         set_final_status "failed"
         exit 1
@@ -81,6 +85,7 @@ fi
 
 if [ "$ACTION" = "bootstrap_game_config" ]; then
     echo "=== Bootstrap game config: start then stop ==="
+    mc_java_env_apply "$SERVER_DIR"
     if ! ( cd "$SERVER_DIR" && ./"$GAME_SCRIPT" start ); then
         set_final_status "failed"
         exit 1

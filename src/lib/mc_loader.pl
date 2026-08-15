@@ -18,6 +18,14 @@ sub mc_loader_is_modded {
     return $loader =~ /^(?:fabric|forge|neoforge)$/ ? 1 : 0;
 }
 
+# True when manage "reinstall" should wipe serverfiles + Java/loader chain
+# instead of LGSM/SteamCMD game install (Fabric / Forge / NeoForge only).
+sub mc_reinstall_uses_loader_chain {
+    my ($profile) = @_;
+    return 0 unless ref($profile) eq 'HASH';
+    return mc_loader_is_modded($profile->{'loader'} // '');
+}
+
 # Map a loader name from a modpack (CurseForge/Modrinth) to an internal loader id.
 # Returns undef when the name is unknown. Quilt is recognised but not a
 # modded-supported loader here (mc_loader_is_modded excludes it).
@@ -613,7 +621,13 @@ sub mc_pending_setup_steps {
     my @pending;
     my $java_home = $profile->{'java_home'} // '';
     my $java_bin  = $java_home ? "$server_dir/$java_home/bin/java" : '';
-    push @pending, 'java' unless ($java_bin && -x $java_bin);
+    # Stale java_major (e.g. 21 on MC 26.x) counts as pending even if an old JDK exists.
+    if (defined &mc_profile_java_needs_sync && mc_profile_java_needs_sync($profile)) {
+        push @pending, 'java';
+    }
+    else {
+        push @pending, 'java' unless ($java_bin && -x $java_bin);
+    }
 
     my $loader = $profile->{'loader'} // '';
     if (mc_loader_is_modded($loader)) {

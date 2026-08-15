@@ -185,18 +185,27 @@ ADOPT_PROFILE=$(perl -MJSON::PP=decode_json -e '
     local $/; my $m = eval { decode_json(<$f>) } // {};
     print $m->{adopt_profile} ? 1 : 0;
 ' "$META_FILE" 2>/dev/null || echo 0)
+
+_SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+JAVA_SCRIPT="${MODULE_ROOT:-}/scripts/mc_java_install_user.sh"
+[ -f "$JAVA_SCRIPT" ] || JAVA_SCRIPT="$_SELF_DIR/mc_java_install_user.sh"
+LOADER_SCRIPT="${MODULE_ROOT:-}/scripts/mc_loader_install_user.sh"
+[ -f "$LOADER_SCRIPT" ] || LOADER_SCRIPT="$_SELF_DIR/mc_loader_install_user.sh"
+SYNC_JAVA_PL="${MODULE_ROOT:-}/scripts/mc_profile_sync_java.pl"
+[ -f "$SYNC_JAVA_PL" ] || SYNC_JAVA_PL="$_SELF_DIR/mc_profile_sync_java.pl"
+
 if [ "${ADOPT_PROFILE:-0}" = "1" ] && [ ! -f "$JOB_DIR/.mc_setup_done" ]; then
-    _SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
     ADOPT_PL="${MODULE_ROOT:-}/scripts/mc_modpack_adopt.pl"
     [ -f "$ADOPT_PL" ] || ADOPT_PL="$_SELF_DIR/mc_modpack_adopt.pl"
-    JAVA_SCRIPT="${MODULE_ROOT:-}/scripts/mc_java_install_user.sh"
-    [ -f "$JAVA_SCRIPT" ] || JAVA_SCRIPT="$_SELF_DIR/mc_java_install_user.sh"
-    LOADER_SCRIPT="${MODULE_ROOT:-}/scripts/mc_loader_install_user.sh"
-    [ -f "$LOADER_SCRIPT" ] || LOADER_SCRIPT="$_SELF_DIR/mc_loader_install_user.sh"
 
     echo "=== Adopting profile from modpack (loader / version / MC) ==="
     if ! MODULE_ROOT="${MODULE_ROOT:-}" perl "$ADOPT_PL" "$JOB_DIR" "$SERVER_DIR" "$UNIX_USER"; then
         echo "WARN: profile adopt failed — continuing with existing profile (loader may not be pinned)"
+    fi
+
+    # Heal java even when adopt was unchanged/failed (stale Temurin-21 on MC 26.x).
+    if ! MODULE_ROOT="${MODULE_ROOT:-}" perl "$SYNC_JAVA_PL" "$SERVER_DIR" "$UNIX_USER"; then
+        echo "WARN: java profile sync failed — continuing"
     fi
 
     SETUP_LGSM_SCRIPT="$(_read_profile_field lgsm_script)"
@@ -224,6 +233,23 @@ if [ "${ADOPT_PROFILE:-0}" = "1" ] && [ ! -f "$JOB_DIR/.mc_setup_done" ]; then
 
     touch "$JOB_DIR/.mc_setup_done" 2>/dev/null || true
     echo "=== Pack base ready — installing mods ==="
+else
+    # Non-adopt (or adopt already done): still heal stale java_major and ensure JDK.
+    # Fixes MC 26.x / NeoForge needing Java 25 while profile still points at 21.
+    echo "=== Syncing profile Java to MC version ==="
+    if ! MODULE_ROOT="${MODULE_ROOT:-}" perl "$SYNC_JAVA_PL" "$SERVER_DIR" "$UNIX_USER"; then
+        echo "WARN: java profile sync failed — continuing"
+    fi
+    SETUP_LGSM_SCRIPT="$(_read_profile_field lgsm_script)"
+    if [ -n "$SETUP_LGSM_SCRIPT" ]; then
+        echo "=== Ensuring Java matches profile ==="
+        if ! WEBCORE_SUBSTEP=1 MODULE_ROOT="${MODULE_ROOT:-}" \
+            bash "$JAVA_SCRIPT" "$JOB_DIR" "$UNIX_USER" "$SERVER_DIR" "$SETUP_LGSM_SCRIPT"; then
+            echo "ERROR: Java setup failed"
+            set_final_status "failed"
+            exit 1
+        fi
+    fi
 fi
 
 read_meta() {

@@ -24,6 +24,9 @@ WAIT_DELAY="${WEBCORE_MONITOR_WAIT_DELAY:-5}"
 mkdir -p "$STATE_DIR" 2>/dev/null || true
 mkdir -p "$LOG_DIR"   2>/dev/null || true
 
+# shellcheck source=lib/mc_java_env.sh
+. "$MODULE_ROOT/scripts/lib/mc_java_env.sh"
+
 # --- helpers ---------------------------------------------------------------
 
 _read_state_key() {
@@ -191,6 +194,7 @@ if [[ "$KIND" == "lgsm" ]]; then
         if _lgsm_restart_backoff_ready; then
             _log "LGSM: still offline after monitor — start attempt $_LGSM_RESTART_COUNT/$MAX_RESTARTS"
             _write_state "restarting" "$_LGSM_RESTART_COUNT" "$_LGSM_WINDOW_START"
+            mc_java_env_apply "$SERVER_DIR"
             ( cd "$SERVER_DIR" && "./$SCRIPT_NAME" start ) >>"$LOG_FILE" 2>&1 || true
             ( cd "$SERVER_DIR" && "./$SCRIPT_NAME" start ) >>"$MONITOR_RUN_LOG" 2>&1 || true
             _lgsm_wait_online "$WAIT_TRIES" "$WAIT_DELAY" 1 || true

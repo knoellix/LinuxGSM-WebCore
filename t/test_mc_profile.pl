@@ -33,7 +33,7 @@ my $neo = build_mc_profile('neoforge', '1.21.1');
 my $neo_out = patch_lgsm_mc_cfg_content($cfg_in, $neo, $tmpdir);
 like($neo_out, qr/serverversion="1\.21\.1"/, 'neoforge sets mc version');
 like($neo_out, qr/executable="\.\/run\.sh"/, 'neoforge sets run.sh');
-like($neo_out, qr/preexecutable=""/, 'neoforge clears preexecutable');
+like($neo_out, qr/preexecutable=.*mc_start_wrapper\.sh/, 'neoforge uses start wrapper');
 
 my $over = mc_lgsm_cfg_overrides($profile, $tmpdir);
 is($over->{'serverversion'}, '1.20.4', 'overrides hash serverversion');
@@ -120,6 +120,29 @@ subtest 'resolve_java_major offline 26.1.2 defaults to 25' => sub {
     local *_mc_fetch_url = sub { return undef; };
     is(resolve_java_major('26.1.2'), 25, 'offline 26.1.2 without java cache → 25 not 21');
     is(resolve_java_major('1.21.1'), 21, 'offline 1.21.1 still defaults to 21 when no compat/cache');
+};
+
+subtest 'mc_profile_java_needs_sync / sync_java_fields' => sub {
+    my $tmpdir = tempdir(CLEANUP => 1);
+    local $module_config_directory = $tmpdir;
+    local $main::module_config_directory = $tmpdir;
+    local *_mc_fetch_url = sub { return undef; };
+    my $stale = {
+        loader => 'neoforge', mc_version => '26.1.2',
+        java_major => 21, java_home => '.java/temurin-21',
+        lgsm_script => 'mcserver', mod_dir => 'mods',
+    };
+    ok(mc_profile_java_needs_sync($stale), '26.1.2 with java 21 needs sync');
+    my $okp = {
+        loader => 'neoforge', mc_version => '26.1.2',
+        java_major => 25, java_home => '.java/temurin-25',
+        lgsm_script => 'mcserver', mod_dir => 'mods',
+    };
+    ok(!mc_profile_java_needs_sync($okp), '26.1.2 with java 25 is synced');
+    my $synced = mc_profile_sync_java_fields($stale);
+    is($synced->{'java_major'}, 25, 'sync sets 25');
+    is($synced->{'java_home'}, '.java/temurin-25', 'sync sets home');
+    is($stale->{'java_major'}, 21, 'original hash unchanged');
 };
 
 # Game-user merge path: write must succeed for live-only MC versions when Mojang

@@ -200,6 +200,36 @@ fi
 
 if [ "$LOADER" = "forge" ] || [ "$LOADER" = "neoforge" ]; then
     [ -f "$SERVERFILES/run.sh" ] && chmod +x "$SERVERFILES/run.sh" || true
+    # Pin absolute Temurin in run.sh — bare `java` would pick system JDK 21.
+    if [ -f "$SERVERFILES/run.sh" ] && [ -x "$JAVA_BIN" ]; then
+        jl "=== Pinning $JAVA_BIN in serverfiles/run.sh ==="
+        if grep -qE '(^|[[:space:]])java[[:space:]]' "$SERVERFILES/run.sh"; then
+            # NeoForge: "exec java @..."; mix quotes so bash keeps sed backrefs
+            sed -i -E 's#(^|[[:space:]])java([[:space:]])#\1'"${JAVA_BIN}"'\2#' "$SERVERFILES/run.sh" || \
+                jl "WARN: could not pin java path in run.sh — relying on LGSM wrapper"
+        else
+            jl "WARN: no java invocation in run.sh — relying on LGSM wrapper"
+        fi
+    fi
+fi
+
+# Ensure start wrapper exists (Forge/NeoForge LGSM preexecutable=wrapper).
+WRAPPER="$SERVER_DIR/mc_start_wrapper.sh"
+if [ ! -x "$WRAPPER" ]; then
+    jl "=== Writing start wrapper (missing) ==="
+    cat > "$WRAPPER" <<EOF
+#!/bin/bash
+set -euo pipefail
+SERVER_DIR="\$(cd "\$(dirname "\$0")" && pwd)"
+export JAVA_HOME="\$SERVER_DIR/$JAVA_HOME_REL"
+export PATH="\$JAVA_HOME/bin:\$PATH"
+if [ ! -x "\$JAVA_HOME/bin/java" ]; then
+    echo "Java not found at \$JAVA_HOME" >&2
+    exit 1
+fi
+exec "\$@"
+EOF
+    chmod +x "$WRAPPER"
 fi
 
 # Expected executable relative to serverfiles (LGSM executabledir)

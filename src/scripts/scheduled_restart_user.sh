@@ -17,6 +17,9 @@ LOG_FILE="$LOG_DIR/schedule.log"
 
 mkdir -p "$STATE_DIR" "$LOG_DIR" 2>/dev/null || true
 
+# shellcheck source=lib/mc_java_env.sh
+. "$MODULE_ROOT/scripts/lib/mc_java_env.sh"
+
 _log() {
     local msg="[$(date '+%Y-%m-%d %T')] [$INSTANCE_ID] $*"
     echo "$msg"
@@ -141,6 +144,7 @@ _rc=0
         ( cd "$SERVER_DIR" && "./$SCRIPT_NAME" stop ) || _rc=1
         sleep 3
         echo "--- start ---"
+        mc_java_env_apply "$SERVER_DIR"
         ( cd "$SERVER_DIR" && "./$SCRIPT_NAME" start ) || _rc=1
     else
         STOP_DIR="$JOB_HOME/.phase_stop"

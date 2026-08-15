@@ -238,6 +238,35 @@ sub mc_java_home_rel {
     return ".java/temurin-$java_major";
 }
 
+# True when profile java_major/java_home disagree with resolve_java_major(mc_version).
+# Typical after MC 26.x / NeoForge while an older Temurin-21 profile remains.
+sub mc_profile_java_needs_sync {
+    my ($profile) = @_;
+    return 0 unless ref($profile) eq 'HASH';
+    my $mc = $profile->{'mc_version'} // '';
+    $mc =~ s/[^0-9.]//g;
+    return 0 unless $mc =~ /^[0-9.]+$/;
+    my $need = resolve_java_major($mc);
+    return 0 unless $need && $need =~ /^\d+$/;
+    my $have = int($profile->{'java_major'} // 0);
+    return 1 if $have != int($need);
+    my $home = $profile->{'java_home'} // '';
+    return 1 if $home ne mc_java_home_rel(int($need));
+    return 0;
+}
+
+# Return a shallow copy with java_major/java_home aligned to MC version.
+sub mc_profile_sync_java_fields {
+    my ($profile) = @_;
+    return $profile unless ref($profile) eq 'HASH';
+    my %p = %$profile;
+    return \%p unless mc_profile_java_needs_sync(\%p);
+    my $need = resolve_java_major($p{'mc_version'} // '');
+    $p{'java_major'} = int($need);
+    $p{'java_home'}  = mc_java_home_rel(int($need));
+    return \%p;
+}
+
 # Build a default profile hash for loader + MC version.
 sub build_mc_profile {
     my ($loader, $mc_version, $opts_ref) = @_;
@@ -353,7 +382,8 @@ sub _mc_cfg_escape {
     return $v;
 }
 
-# Build preexecutable= value for a loader (java_jar | empty | java_home).
+# Build preexecutable= value for a loader (java_jar | empty | java_home | wrapper).
+# Forge/NeoForge run.sh calls bare `java` — must inject Temurin via wrapper or PATH.
 sub mc_lgsm_preexecutable_for_loader {
     my ($profile, $server_dir, $loader_cfg) = @_;
     return '' unless ref($profile) eq 'HASH' && ref($loader_cfg) eq 'HASH';
@@ -367,7 +397,14 @@ sub mc_lgsm_preexecutable_for_loader {
     if ($mode eq 'java_jar') {
         return qq{export JAVA_HOME='$safe_java'; export PATH="\$JAVA_HOME/bin:\$PATH"; java -Xmx\${javaram}M -jar};
     }
-    return qq{export JAVA_HOME='$safe_java'; export PATH="\$JAVA_HOME/bin:\$PATH"};
+    # wrapper: mc_start_wrapper.sh ./run.sh — forces JAVA_HOME for bare `java` in run.sh
+    if ($mode eq 'wrapper') {
+        my $wrapper = "$server_dir/mc_start_wrapper.sh";
+        (my $safe_w = $wrapper) =~ s/'/'\\''/g;
+        return qq{'$safe_w'};
+    }
+    # java_home: export then run.sh (trailing ; required — LGSM concatenates "pre exe")
+    return qq{export JAVA_HOME='$safe_java'; export PATH="\$JAVA_HOME/bin:\$PATH";};
 }
 
 # LGSM instance.cfg overrides derived from .mcprofile.json (Quick Fix + Java setup).

@@ -113,6 +113,29 @@ detect_arch() {
     esac
 }
 
+# Report installed JVM major (e.g. 21 / 25), or empty on failure.
+java_runtime_major() {
+    local bin="$1"
+    [ -x "$bin" ] || return 0
+    # Prefer specification.version (stable); fall back to parsing -version banner.
+    local maj
+    maj="$("$bin" -XshowSettings:properties -version 2>&1 \
+        | sed -n 's/.*java\.specification\.version = *\([0-9][0-9]*\).*/\1/p' \
+        | head -n1)"
+    if [ -z "$maj" ]; then
+        maj="$("$bin" -version 2>&1 \
+            | sed -n 's/.*version "\([0-9][0-9]*\)\..*/\1/p' \
+            | head -n1)"
+    fi
+    # Java 1.8 reports as 1.8 — treat as 8
+    if [ "$maj" = "1" ]; then
+        maj="$("$bin" -version 2>&1 \
+            | sed -n 's/.*version "1\.\([0-9][0-9]*\)\..*/\1/p' \
+            | head -n1)"
+    fi
+    printf '%s' "$maj"
+}
+
 install_temurin() {
     local major="$1"
     local arch os url tarball java_base
@@ -142,14 +165,28 @@ install_temurin() {
     return 0
 }
 
+NEED_INSTALL=0
 if [ ! -x "$JAVA_BIN" ]; then
+    NEED_INSTALL=1
+else
+    ACTUAL_MAJOR="$(java_runtime_major "$JAVA_BIN")"
+    if [ -z "$ACTUAL_MAJOR" ]; then
+        jl "=== WARNING: could not detect Java major at $JAVA_BIN — reinstalling ==="
+        NEED_INSTALL=1
+    elif [ "$ACTUAL_MAJOR" != "$JAVA_MAJOR" ]; then
+        jl "=== Java major mismatch: have $ACTUAL_MAJOR, need $JAVA_MAJOR — reinstalling ==="
+        NEED_INSTALL=1
+    else
+        jl "=== Java $JAVA_MAJOR already present at $JAVA_BIN — skipping download ==="
+    fi
+fi
+
+if [ "$NEED_INSTALL" = "1" ]; then
     if ! install_temurin "$JAVA_MAJOR"; then
         jl "ERROR: Temurin JDK $JAVA_MAJOR install failed"
         set_final_status "failed"
         exit 1
     fi
-else
-    jl "=== Java $JAVA_MAJOR already present at $JAVA_BIN — skipping download ==="
 fi
 
 if ! "$JAVA_BIN" -version >/dev/null 2>&1; then
@@ -157,7 +194,13 @@ if ! "$JAVA_BIN" -version >/dev/null 2>&1; then
     set_final_status "failed"
     exit 1
 fi
-jl "=== Java OK: $JAVA_BIN ==="
+ACTUAL_MAJOR="$(java_runtime_major "$JAVA_BIN")"
+if [ -n "$ACTUAL_MAJOR" ] && [ "$ACTUAL_MAJOR" != "$JAVA_MAJOR" ]; then
+    jl "ERROR: Java at $JAVA_BIN reports major $ACTUAL_MAJOR, expected $JAVA_MAJOR"
+    set_final_status "failed"
+    exit 1
+fi
+jl "=== Java OK: $JAVA_BIN (major ${ACTUAL_MAJOR:-$JAVA_MAJOR}) ==="
 
 WRAPPER="$SERVER_DIR/mc_start_wrapper.sh"
 jl "=== Writing start wrapper ==="

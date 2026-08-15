@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 use strict;
 use warnings;
-use Test::More tests => 63;
+use Test::More tests => 64;
 use File::Temp qw(tempdir);
 use FindBin qw($Bin);
 
@@ -318,6 +318,7 @@ ok(!validate_job_output_path('/home/mcuser/jobs/short/output'), 'validate_job_ou
 is(job_action_label('start', { jobs_action_start => 'Go' }), 'Go', 'job_action_label: localized');
 is(job_action_label('custom_action', {}), 'custom_action', 'job_action_label: fallback');
 is(job_next_instance_status('mc_java_setup'), 'mc_ready', 'job_next_instance_status: mc_java_setup');
+is(job_next_instance_status('reinstall'), 'installed', 'job_next_instance_status: reinstall');
 is(job_next_instance_status('update'), '', 'job_next_instance_status: unknown empty');
 
 subtest 'user_worker_launch_cmd' => sub {
