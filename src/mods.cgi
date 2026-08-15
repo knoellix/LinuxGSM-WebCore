@@ -147,7 +147,8 @@ sub _mods_redirect_job_live {
         . "&job=" . &html_escape($job_id)
         . "&xnavigation=1";
     $url .= "&next_status=" . &html_escape($opts{'next_status'}) if $opts{'next_status'};
-    my $return_target = "mods.cgi?instance_id=" . _mods_query_urlencode($instance_id);
+    my $return_target = $opts{'return_target'}
+        || ("mods.cgi?instance_id=" . _mods_query_urlencode($instance_id));
     $url .= "&return=" . _mods_query_urlencode($return_target);
     &redirect($url);
     exit;
@@ -183,6 +184,74 @@ sub _filemin_path_urlencode {
     return $s;
 }
 
+sub _mods_sanitize_mod_basename {
+    my ($raw) = @_;
+    $raw //= '';
+    $raw =~ s/[^a-zA-Z0-9._-]//g;
+    return &mod_basename_sanitize($raw // '');
+}
+
+sub _mods_find_mod_by_basename {
+    my ($mods, $basename) = @_;
+    return undef unless ref($mods) eq 'ARRAY';
+    return undef unless defined $basename && $basename ne '';
+    for my $mod (@$mods) {
+        next unless ref($mod) eq 'HASH';
+        my $cand = $mod->{'basename'} // '';
+        next unless $cand eq $basename;
+        return $mod;
+    }
+    return undef;
+}
+
+sub _mods_launch_mod_install {
+    my ($instance_id, $inst, $unix_user, $source, $ids_ref, %opts) = @_;
+    my (undef, undef, $server_dir) = _parse_script_info($inst);
+    my $profile = &read_mc_profile($server_dir);
+    &error($text{'mc_profile_missing'} || 'No Minecraft profile.')
+        unless ref($profile) eq 'HASH';
+
+    my ($ok, $meta, $err) = &prepare_mod_install_meta($source, $ids_ref, $profile, $server_dir);
+    unless ($ok) {
+        if ($err eq 'file_exists' || $err eq 'index_project') {
+            &error($text{'mc_mod_already_installed'} || 'This mod is already installed.');
+        } elsif ($err eq 'curseforge_key_missing') {
+            &error($text{'mc_modpack_curseforge_key_missing'});
+        } elsif ($err eq 'client_only') {
+            &error($text{'mc_mod_client_only'} || 'Client-only mod.');
+        } elsif ($err eq 'resolve_failed') {
+            &error($text{'mc_mod_resolve_failed'} || 'Could not resolve mod version.');
+        } else {
+            &error($text{'mc_mod_install_failed'} || 'Could not prepare mod installation.');
+        }
+    }
+
+    if ($opts{'prefer_disabled'}) {
+        $meta->{'prefer_disabled'} = 1;
+    }
+
+    my $job_id = &create_job($unix_user);
+    my $job_dir = &_job_dir($job_id);
+    &write_mod_install_job_meta($job_dir, $meta) or do {
+        &delete_job($job_id);
+        &error($text{'mc_mod_meta_failed'} || 'Job preparation failed.');
+    };
+    &write_job_meta($job_id, $instance_id, 'mc_mod_install', $unix_user)
+        or do { &job_mark_launch_failed($job_id); _mods_job_launch_failed(); };
+
+    my $rc = &system_logged(&user_worker_launch_cmd(
+        unix_user   => $unix_user,
+        module_root => $module_root,
+        worker      => "$module_root/scripts/mc_mod_install_user.sh",
+        args        => [ $job_dir, $unix_user, $server_dir ],
+    ));
+    if ($rc != 0 || !&job_dispatch_verified($job_id)) {
+        &job_mark_launch_failed($job_id);
+        _mods_job_launch_failed();
+    }
+    return $job_id;
+}
+
 my $instance_id = &sanitize_input($in{'instance_id'} || $in{'user'} || '');
 my $inst = &get_instance_flexible($instance_id) or &error($text{'err_not_found'});
 my $unix_user = $inst->{'user'} // '';
@@ -207,7 +276,7 @@ $page = ($page =~ /^\d+$/ && $page > 0) ? int($page) : 1;
 &user_can_manage($instance_id)
     or &error($text{'err_acl_admin_only'} || 'Access denied');
 
-if ($action ne '' && $action !~ /^(?:monitor|start|stop|mod_enable|mod_disable|mod_delete)$/) {
+if ($action ne '' && $action !~ /^(?:monitor|start|stop|mod_enable|mod_disable|mod_delete|mod_versions|mc_mod_install)$/) {
     &error($text{'err_invalid_action'} || 'Invalid action');
 }
 if ($action ne '' && $action ne 'monitor' && &user_is_readonly($instance_id)) {
@@ -275,9 +344,7 @@ if ($action =~ /^(?:mod_enable|mod_disable|mod_delete)$/) {
     &mc_mod_ui_ready($profile, $server_dir)
         or &error($text{'mc_mods_page_gate_not_ready'}
             || 'Mods page is available after Minecraft Java and loader setup is complete.');
-    my $mod_basename = $in{'mod_basename'} // '';
-    $mod_basename =~ s/[^a-zA-Z0-9._-]//g;
-    $mod_basename = &mod_basename_sanitize($mod_basename // '');
+    my $mod_basename = _mods_sanitize_mod_basename($in{'mod_basename'} // '');
     $mod_basename or &error($text{'mc_mods_page_invalid_mod'} || 'Invalid mod file.');
 
     my $mod_dir = $profile->{'mod_dir'} // 'mods';
@@ -301,6 +368,165 @@ if ($action =~ /^(?:mod_enable|mod_disable|mod_delete)$/) {
     }
     my $flash = $want_enabled ? 'mod_enabled' : 'mod_disabled';
     _mods_redirect_with_flash($instance_id, $flash, $q, $status, $sort, $dir, $page);
+}
+
+if ($action eq 'mc_mod_install') {
+    $ENV{'REQUEST_METHOD'} eq 'POST'
+        or &error($text{'err_invalid_action'} || 'Invalid action');
+    &mc_mod_ui_ready($profile, $server_dir)
+        or &error($text{'mc_mods_page_gate_not_ready'}
+            || 'Mods page is available after Minecraft Java and loader setup is complete.');
+
+    my $mod_basename = _mods_sanitize_mod_basename($in{'mod_basename'} // '');
+    $mod_basename or &error($text{'mc_mods_page_invalid_mod'} || 'Invalid mod file.');
+
+    my $installed = &list_installed_mods($server_dir, $profile);
+    my $selected_mod = _mods_find_mod_by_basename($installed, $mod_basename)
+        or &error($text{'mc_mods_page_invalid_mod'} || 'Invalid mod file.');
+    ($selected_mod->{'has_update_meta'} // 0)
+        or &error($text{'mc_mods_page_update_unavailable'} || 'No version data available for this mod.');
+
+    my $source = $selected_mod->{'source'} // '';
+    $source =~ s/[^a-z]//g;
+    my %ids = (
+        project_id   => $selected_mod->{'project_id'} // '',
+        version_id   => $selected_mod->{'version_id'} // '',
+        file_id      => $selected_mod->{'file_id'} // '',
+        hangar_owner => $selected_mod->{'hangar_owner'} // '',
+        hangar_slug  => $selected_mod->{'hangar_slug'} // '',
+        title        => $selected_mod->{'title'} // $selected_mod->{'basename'} // '',
+    );
+
+    $ids{'version_id'} = $in{'mod_version_id'} // '' if defined $in{'mod_version_id'} && $in{'mod_version_id'} ne '';
+    $ids{'file_id'}    = $in{'mod_file_id'} // ''    if defined $in{'mod_file_id'} && $in{'mod_file_id'} ne '';
+    for my $k (keys %ids) {
+        $ids{$k} =~ s/[\t\n\r\0]//g;
+        $ids{$k} = substr($ids{$k}, 0, 128);
+    }
+    $ids{'project_id'} =~ s/[^a-zA-Z0-9_-]//g if $ids{'project_id'};
+    $ids{'version_id'} =~ s/[^a-zA-Z0-9_-]//g if $ids{'version_id'};
+    $ids{'file_id'} =~ s/\D//g if $ids{'file_id'};
+    $ids{'hangar_owner'} =~ s/[^a-zA-Z0-9_-]//g if $ids{'hangar_owner'};
+    $ids{'hangar_slug'} =~ s/[^a-zA-Z0-9_-]//g if $ids{'hangar_slug'};
+    my $prefer_disabled = ($selected_mod->{'enabled'} // 0) ? 0 : 1;
+
+    my $job_id = _mods_launch_mod_install(
+        $instance_id, $inst, $unix_user, $source, \%ids,
+        prefer_disabled => $prefer_disabled,
+    );
+    my $return_target = _mods_list_url($instance_id, $q, $status, $sort, $dir, $page);
+    _mods_redirect_job_live($job_id, $instance_id, return_target => $return_target);
+}
+
+if ($action eq 'mod_versions') {
+    &mc_mod_ui_ready($profile, $server_dir)
+        or &error($text{'mc_mods_page_gate_not_ready'}
+            || 'Mods page is available after Minecraft Java and loader setup is complete.');
+
+    my $mod_basename = _mods_sanitize_mod_basename($in{'basename'} // $in{'mod_basename'} // '');
+    $mod_basename or &error($text{'mc_mods_page_invalid_mod'} || 'Invalid mod file.');
+    my $installed = &list_installed_mods($server_dir, $profile);
+    my $selected_mod = _mods_find_mod_by_basename($installed, $mod_basename)
+        or &error($text{'mc_mods_page_invalid_mod'} || 'Invalid mod file.');
+    ($selected_mod->{'has_update_meta'} // 0)
+        or &error($text{'mc_mods_page_update_unavailable'} || 'No version data available for this mod.');
+
+    my $source = $selected_mod->{'source'} // '';
+    my $versions = [];
+    if ($source eq 'modrinth') {
+        $versions = &modrinth_list_compatible_versions($selected_mod->{'project_id'} // '', $profile);
+    } elsif ($source eq 'curseforge') {
+        $versions = &curseforge_list_compatible_files($selected_mod->{'project_id'} // '', $profile);
+    } elsif ($source eq 'hangar') {
+        $versions = &hangar_list_compatible_versions(
+            $selected_mod->{'hangar_owner'} // '',
+            $selected_mod->{'hangar_slug'} // '',
+            $profile,
+        );
+    }
+    $versions = [] unless ref($versions) eq 'ARRAY';
+
+    my $safe_id = &html_escape($instance_id);
+    my $display_name = $selected_mod->{'title'} // '';
+    $display_name = $selected_mod->{'basename'} // '' unless $display_name =~ /\S/;
+    my $current_file = $selected_mod->{'filename_on_disk'} // ($selected_mod->{'basename'} // '');
+    my $status_label = _mods_status_label_for_row(($selected_mod->{'enabled'} // 0) ? 1 : 0);
+
+    &header($text{'mc_mods_page_versions_title'} || 'Choose mod version', '');
+    print "<h3>" . &html_escape($text{'mc_mods_page_versions_title'} || 'Choose mod version') . "</h3>\n";
+    print "<p><strong>" . &html_escape($text{'mc_mods_page_versions_mod'} || 'Mod')
+        . ":</strong> " . &html_escape($display_name) . "<br>\n";
+    print "<strong>" . &html_escape($text{'mc_mods_page_versions_current'} || 'Current file')
+        . ":</strong> " . &html_escape($current_file) . "<br>\n";
+    print "<strong>" . &html_escape($text{'mc_mods_page_versions_status'} || 'Status')
+        . ":</strong> " . &html_escape($status_label) . "</p>\n";
+
+    if (!@$versions) {
+        print "<p>" . &html_escape($text{'mc_mods_page_versions_empty'}
+            || 'No compatible versions found for this profile.')
+            . "</p>\n";
+    } else {
+        my @rows;
+        for my $row (@$versions) {
+            next unless ref($row) eq 'HASH';
+            my $name = $row->{'name'} // $row->{'display_name'} // '';
+            $name = $row->{'version_id'} // $row->{'file_id'} // '?' unless $name =~ /\S/;
+            my $file = $row->{'filename'} // '';
+            my $published = $row->{'published'} // '';
+            my $is_current = 0;
+            $is_current = 1 if ($source eq 'modrinth' && ($selected_mod->{'version_id'} // '') ne ''
+                && ($selected_mod->{'version_id'} // '') eq ($row->{'version_id'} // ''));
+            $is_current = 1 if ($source eq 'curseforge' && ($selected_mod->{'file_id'} // '') ne ''
+                && ($selected_mod->{'file_id'} // '') eq ($row->{'file_id'} // ''));
+            $is_current = 1 if ($source eq 'hangar' && ($selected_mod->{'version_id'} // '') ne ''
+                && ($selected_mod->{'version_id'} // '') eq ($row->{'version_id'} // ''));
+            my $current_mark = $is_current
+                ? (' <small>(' . &html_escape($text{'mc_mods_page_versions_current_mark'} || 'Current') . ')</small>')
+                : '';
+
+            my $action_form = &html_escape($text{'mc_mods_page_readonly_mod_hint'} || 'Read-only');
+            unless (&user_is_readonly($instance_id)) {
+                $action_form = &ui_form_start('mods.cgi', 'post');
+                $action_form .= &ui_hidden('instance_id', $safe_id);
+                $action_form .= &ui_hidden('xnavigation', '1');
+                $action_form .= _mods_hidden_list_state($q, $status, $sort, $dir, $page);
+                $action_form .= &ui_hidden('action', 'mc_mod_install');
+                $action_form .= &ui_hidden('mod_basename', $selected_mod->{'basename'} // '');
+                $action_form .= &ui_hidden('mod_version_id', $row->{'version_id'} // '');
+                $action_form .= &ui_hidden('mod_file_id', $row->{'file_id'} // '');
+                $action_form .= &ui_submit($text{'mc_mods_page_versions_install_btn'} || 'Install version',
+                    undef, undef, undef, 'btn-primary');
+                $action_form .= &ui_form_end();
+            }
+
+            push @rows, [
+                &html_escape($name) . $current_mark,
+                &html_escape($file),
+                &html_escape($published),
+                $action_form,
+            ];
+        }
+        print &ui_columns_table(
+            [
+                $text{'mc_mods_page_versions_col_version'} || 'Version',
+                $text{'mc_mods_page_versions_col_file'}    || 'File',
+                $text{'mc_mods_page_versions_col_date'}    || 'Published',
+                $text{'mc_mods_page_versions_col_action'}  || 'Action',
+            ],
+            '100%',
+            \@rows,
+        );
+    }
+
+    print &ui_form_start('mods.cgi', 'get');
+    print &ui_hidden('instance_id', $safe_id);
+    print &ui_hidden('xnavigation', '1');
+    print _mods_hidden_list_state($q, $status, $sort, $dir, $page);
+    print &ui_submit($text{'mc_mods_page_versions_back_btn'} || 'Back to mods',
+        undef, undef, undef, 'btn-default');
+    print &ui_form_end();
+    &footer('', '');
+    exit;
 }
 
 if ($action eq 'monitor') {
@@ -592,9 +818,20 @@ if ($total_mods == 0) {
                 undef, undef, undef, 'btn-danger');
             $actions .= &ui_form_end();
 
-            $actions .= "<small>" . &html_escape(
-                $text{'mc_mods_page_update_stub'} || 'Update selection follows in Task 7.'
-            ) . "</small>";
+            if ($mod->{'has_update_meta'}) {
+                my $versions_url = "mods.cgi?instance_id=" . _mods_query_urlencode($instance_id)
+                    . "&action=mod_versions&basename=" . _mods_query_urlencode($basename)
+                    . "&xnavigation=1";
+                my $qs = _mods_list_qs($q, $status, $sort, $dir, $page);
+                $versions_url .= "&$qs" if $qs ne '';
+                $actions .= "<a href=\"" . &html_escape($versions_url) . "\">"
+                    . &html_escape($text{'mc_mods_page_update_btn'} || 'Choose version')
+                    . "</a>";
+            } else {
+                $actions .= "<small>" . &html_escape(
+                    $text{'mc_mods_page_update_unavailable'} || 'No version data available.'
+                ) . "</small>";
+            }
         }
 
         push @rows, [

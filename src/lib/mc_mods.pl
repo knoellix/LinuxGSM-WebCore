@@ -464,8 +464,9 @@ sub _mc_mods_index_entry_has_update_meta {
         return ($pid =~ /\S/) ? 1 : 0;
     }
     if ($source eq 'hangar') {
+        my $owner = $rec->{'hangar_owner'} // '';
         my $slug = $rec->{'hangar_slug'} // '';
-        return ($slug =~ /\S/) ? 1 : 0;
+        return ($owner =~ /\S/ && $slug =~ /\S/) ? 1 : 0;
     }
     return 0;
 }
@@ -480,6 +481,7 @@ sub _mc_mods_index_entry_fields {
         project_id      => '',
         version_id      => '',
         file_id         => $rec->{'file_id'} // '',
+        hangar_owner    => $rec->{'hangar_owner'} // '',
         hangar_slug     => $rec->{'hangar_slug'} // '',
         has_update_meta => _mc_mods_index_entry_has_update_meta($source, $rec),
     );

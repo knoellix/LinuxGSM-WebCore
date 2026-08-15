@@ -71,6 +71,7 @@ read_meta() {
         print $m->{mod_dir} // "mods", "\n";
         print $m->{source} // "", "\n";
         print ($m->{hashes}{sha1} // ""), "\n";
+        print (($m->{prefer_disabled} // 0) ? 1 : 0), "\n";
     ' "$META_FILE"
 }
 
@@ -86,6 +87,7 @@ DL_URL="${_META[2]}"
 MOD_DIR="${_META[3]}"
 SOURCE="${_META[4]}"
 SHA1="${_META[5]}"
+PREFER_DISABLED="${_META[6]:-0}"
 
 if [ -z "$FNAME" ] || [ -z "$DL_URL" ]; then
     echo "ERROR: missing filename or download URL"
@@ -134,6 +136,15 @@ if ! mv -f "$TMP" "$DEST"; then
     echo "ERROR: cannot install $FNAME"
     set_final_status "failed"
     exit 1
+fi
+
+if [ "$PREFER_DISABLED" = "1" ]; then
+    if ! mv -f "$DEST" "${DEST}.disabled"; then
+        echo "ERROR: cannot mark $FNAME as disabled"
+        set_final_status "failed"
+        exit 1
+    fi
+    echo "OK: preserved disabled state for $FNAME"
 fi
 
 echo "OK: installed $FNAME"
