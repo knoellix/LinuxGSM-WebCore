@@ -507,9 +507,10 @@ my $filtered_mods = &filter_installed_mods($all_mods, {
     status => $status,
 });
 my $sorted_mods = &sort_installed_mods($filtered_mods, $sort, $dir);
-my ($paged_mods, $total_mods, $total_pages) = &paginate_installed_mods($sorted_mods, $page, 25);
+my ($paged_mods, $total_mods, $total_pages) = &paginate_installed_mods($sorted_mods, $page, 50);
 $total_mods ||= 0;
 $total_pages ||= 1;
+$page = $total_pages if $page > $total_pages;
 
 print "<h4>" . &html_escape($text{'mc_mods_page_installed_title'} || 'Installed mods') . "</h4>\n";
 
