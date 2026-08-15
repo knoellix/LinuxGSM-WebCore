@@ -53,7 +53,7 @@ User instruction > project rules (`.cursor/rules/`) > agent defaults. **Security
 | Config editor | `src/lib/config_editor.pl` |
 | Steam accounts | `src/lib/steam.pl` |
 | Module config load/save/flash, worker bootstrap | `src/lib/module_config.pl` |
-| MC profile / loader | `src/lib/mc_profile.pl`, `src/lib/mc_loader.pl` |
+| MC profile / loader / compat | `src/lib/mc_profile.pl`, `src/lib/mc_loader.pl`, `src/lib/mc_compat.json` (+ optional `mc_compat_local.json`) |
 | Mods API, download whitelist | `src/lib/mc_mods.pl` |
 | Modpack search/import/resolve/errors | `src/lib/mc_modpack.pl` |
 | Monitor cron rebuild | `src/lib/monitor.pl` |

@@ -16,10 +16,28 @@ alwaysApply: false
 
 | File | Role |
 |------|------|
-| `mc_profile.pl` | Profile read/write, LGSM cfg patch hooks |
-| `mc_loader.pl` | Fabric/Forge/NeoForge install + version lists |
+| `mc_profile.pl` | Profile read/write, LGSM cfg patch hooks; merges `mc_compat` + local; `mc_list_mc_versions` / `resolve_java_major` |
+| `mc_loader.pl` | Fabric/Forge/NeoForge install + version lists; Mojang fetch/cache helpers |
 | `mc_mods.pl` | Mod API, download host whitelist, CurseForge download URL helpers |
 | `mc_modpack.pl` | Parse/validate modpacks, search, resolve, job expand, error messages |
+
+## Versions: static policy vs live
+
+`mc_compat.json` is the **policy** layer (loaders, LGSM script map, exclusions, curated offline fallbacks). MC release IDs and Java majors resolve **live** from Mojang with cache + fallback.
+
+| Data | Source |
+|------|--------|
+| Loader definitions / LGSM script map | `mc_compat.json` (+ local) |
+| MC release list | Mojang manifest (cache) → fallback `mc_versions` |
+| Java major | Mojang version JSON (cache) → fallback `versions` |
+| Forge/NeoForge/Fabric builds | Maven / Fabric meta (existing) |
+
+Paths (under `$module_config_directory`, else `$config_directory`):
+
+- `mc_compat_local.json` — optional admin override merge (same idea as `games_meta_local.json`)
+- `mc_versions_cache.json` — Mojang release IDs + Java majors (TTL ~24h; stale OK offline)
+
+Resolution order for the wizard list: live/fresh cache → stale cache → static `mc_versions` (local non-empty `mc_versions` replaces that offline fallback only).
 
 ## Modpack import flows
 
