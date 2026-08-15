@@ -222,4 +222,104 @@ subtest 'curseforge file record cache' => sub {
     is($calls, 1, 'single API record fetch per project/file');
 };
 
+subtest 'modrinth list compatible versions filters and caps' => sub {
+    my $profile = { loader => 'fabric', mc_version => '1.21.1' };
+    my $hits = [];
+    for my $i (1 .. 35) {
+        push @$hits, {
+            id   => "v$i",
+            name => "Version $i",
+            env  => { server => 'required', client => 'unsupported' },
+            date_published => "2026-01-$i",
+            files => [
+                {
+                    primary  => 1,
+                    filename => "mod-$i.jar",
+                    url      => "https://cdn.modrinth.com/data/x/y/mod-$i.jar",
+                },
+            ],
+        };
+    }
+    # Should be filtered out (client-only env).
+    push @$hits, {
+        id   => 'client-only',
+        env  => { server => 'unsupported', client => 'required' },
+        files => [
+            {
+                primary  => 1,
+                filename => 'client.jar',
+                url      => 'https://cdn.modrinth.com/data/x/y/client.jar',
+            },
+        ],
+    };
+
+    no warnings 'redefine';
+    local *_mc_mods_http_get_json = sub { return $hits; };
+
+    my $list = modrinth_list_compatible_versions('some-project', $profile);
+    is(ref($list), 'ARRAY', 'returns arrayref');
+    is(scalar @$list, 30, 'caps compatible versions at 30');
+    is($list->[0]{version_id}, 'v1', 'keeps API order');
+    is($list->[0]{name}, 'Version 1', 'includes version name');
+    is($list->[0]{filename}, 'mod-1.jar', 'includes sanitized filename');
+    like($list->[0]{download_url}, qr{^https://cdn\.modrinth\.com/}, 'includes download url');
+    is($list->[0]{env}, 'server', 'includes normalized env');
+};
+
+subtest 'modrinth resolve uses list helper first entry' => sub {
+    no warnings 'redefine';
+    local *modrinth_list_compatible_versions = sub {
+        my ($project_id, $profile) = @_;
+        is($project_id, 'abc-123', 'resolve passes project id to list helper');
+        is($profile->{mc_version}, '1.21.1', 'resolve forwards profile');
+        return [
+            { version_id => 'first', filename => 'first.jar', download_url => 'https://cdn.modrinth.com/data/x/y/first.jar', hashes => { sha1 => 'a' }, env => 'server' },
+            { version_id => 'second', filename => 'second.jar', download_url => 'https://cdn.modrinth.com/data/x/y/second.jar', hashes => { sha1 => 'b' }, env => 'both' },
+        ];
+    };
+
+    my $resolved = modrinth_resolve_version_file('abc-123', { loader => 'fabric', mc_version => '1.21.1' });
+    is($resolved->{version_id}, 'first', 'resolve picks first compatible version');
+    is($resolved->{filename}, 'first.jar', 'resolve returns first compatible filename');
+};
+
+subtest 'curseforge list compatible files filters by server pack and download' => sub {
+    no warnings 'redefine';
+    local *_curseforge_api_headers = sub { return { 'x-api-key' => 'abc' }; };
+    local *_mc_mods_http_get_json = sub {
+        return {
+            data => [
+                { id => 1001, fileName => 'ServerPack.jar', isServerPack => 1, hashes => [] },
+                { id => 1002, fileName => 'NoDownload.jar', isServerPack => 0, hashes => [] },
+                { id => 1003, fileName => 'Good File.jar', isServerPack => 0, hashes => [] },
+            ],
+        };
+    };
+    local *curseforge_mod_file_download_url = sub {
+        my ($project_id, $file_id) = @_;
+        return undef if $file_id == 1002;
+        return "https://edge.forgecdn.net/files/1/$file_id/mod.jar";
+    };
+
+    my $list = curseforge_list_compatible_files(703224, { loader => 'neoforge', mc_version => '1.21.1' });
+    is(ref($list), 'ARRAY', 'returns arrayref');
+    is(scalar @$list, 1, 'keeps only downloadable non-server-pack files');
+    is($list->[0]{file_id}, 1003, 'keeps expected file id');
+    is($list->[0]{filename}, 'GoodFile.jar', 'sanitizes filename');
+    is($list->[0]{env}, 'both', 'sets env to both for CF');
+};
+
+subtest 'curseforge resolve uses list helper first entry' => sub {
+    no warnings 'redefine';
+    local *curseforge_list_compatible_files = sub {
+        return [
+            { file_id => 10, filename => 'one.jar', download_url => 'https://edge.forgecdn.net/files/1/10/one.jar', hashes => {}, env => 'both' },
+            { file_id => 11, filename => 'two.jar', download_url => 'https://edge.forgecdn.net/files/1/11/two.jar', hashes => {}, env => 'both' },
+        ];
+    };
+    my $resolved = curseforge_resolve_mod_file('703224', { loader => 'neoforge', mc_version => '1.21.1' });
+    is($resolved->{file_id}, 10, 'resolve picks first compatible file');
+    is($resolved->{filename}, 'one.jar', 'resolve returns first compatible filename');
+};
+
 done_testing();

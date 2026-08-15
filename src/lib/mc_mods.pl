@@ -966,15 +966,16 @@ sub modrinth_search_mods {
     return @out;
 }
 
-sub modrinth_resolve_version_file {
+sub modrinth_list_compatible_versions {
     my ($project_id, $profile) = @_;
-    return undef unless defined $project_id && $project_id =~ /\S/;
-    return undef unless ref($profile) eq 'HASH';
+    return [] unless defined $project_id && $project_id =~ /\S/;
+    return [] unless ref($profile) eq 'HASH';
     $project_id =~ s/[^a-zA-Z0-9_-]//g;
+    return [] unless $project_id;
     my $mc = $profile->{'mc_version'} // '';
     $mc =~ s/[^0-9.]//g;
     my $loader = mc_loader_modrinth_slug($profile->{'loader'} // '');
-    return undef unless $mc && $loader;
+    return [] unless $mc && $loader;
     require JSON::PP;
     my $loaders = _mc_mods_urlencode(JSON::PP::encode_json([$loader]));
     my $vers    = _mc_mods_urlencode(JSON::PP::encode_json([$mc]));
@@ -983,7 +984,8 @@ sub modrinth_resolve_version_file {
     my $list = _mc_mods_http_get_json($url, {
         'User-Agent' => modrinth_user_agent(),
     });
-    return undef unless ref($list) eq 'ARRAY' && @$list;
+    return [] unless ref($list) eq 'ARRAY' && @$list;
+    my @out;
     for my $ver (@$list) {
         next unless ref($ver) eq 'HASH';
         my $env = 'unknown';
@@ -999,16 +1001,143 @@ sub modrinth_resolve_version_file {
             my $fname = $f->{'filename'} // 'mod.jar';
             $fname =~ s/[^a-zA-Z0-9._-]//g;
             $fname = 'mod.jar' unless $fname =~ /\S/;
-            return {
+            push @out, {
                 version_id => $ver->{'id'} // '',
+                name       => $ver->{'name'} // '',
                 filename   => $fname,
                 download_url => $dl,
                 hashes     => $f->{'hashes'} // {},
                 env        => $env,
+                published  => $ver->{'date_published'} // '',
             };
+            last;
         }
+        last if @out >= 30;
     }
-    return undef;
+    return \@out;
+}
+
+sub modrinth_resolve_version_file {
+    my ($project_id, $profile) = @_;
+    my $list = modrinth_list_compatible_versions($project_id, $profile);
+    return undef unless ref($list) eq 'ARRAY' && @$list;
+    my $ver = $list->[0];
+    return undef unless ref($ver) eq 'HASH';
+    return {
+        version_id   => $ver->{'version_id'} // '',
+        filename     => $ver->{'filename'} // 'mod.jar',
+        download_url => $ver->{'download_url'},
+        hashes       => $ver->{'hashes'} // {},
+        env          => $ver->{'env'} // 'unknown',
+    };
+}
+
+sub curseforge_list_compatible_files {
+    my ($project_id, $profile) = @_;
+    my $headers = _curseforge_api_headers() or return [];
+    $project_id =~ s/\D//g;
+    return [] unless $project_id;
+    return [] unless ref($profile) eq 'HASH';
+    my $mc = $profile->{'mc_version'} // '';
+    $mc =~ s/[^0-9.]//g;
+    my $loader_type = curseforge_mod_loader_type($profile->{'loader'} // '');
+    return [] unless $mc && defined $loader_type;
+    my $url = "https://api.curseforge.com/v1/mods/$project_id/files"
+        . "?gameVersion=$mc&modLoaderType=$loader_type&pageSize=30";
+    my $resp = _mc_mods_http_get_json($url, $headers);
+    return [] unless ref($resp) eq 'HASH' && ref($resp->{'data'}) eq 'ARRAY';
+    my @out;
+    for my $f (@{ $resp->{'data'} }) {
+        next unless ref($f) eq 'HASH';
+        next if ($f->{'isServerPack'} // 0);
+        my $fid = $f->{'id'};
+        next unless defined $fid;
+        my $dl = curseforge_mod_file_download_url($project_id, $fid);
+        next unless $dl;
+        my $fname = $f->{'fileName'} // 'mod.jar';
+        $fname =~ s/[^a-zA-Z0-9._-]//g;
+        $fname = 'mod.jar' unless $fname =~ /\S/;
+        my $norm = curseforge_normalize_hashes($f->{'hashes'});
+        my %hashes = ref($norm) eq 'HASH' ? %$norm : ();
+        push @out, {
+            file_id      => $fid,
+            display_name => $f->{'displayName'} // $f->{'fileName'} // '',
+            filename     => $fname,
+            download_url => $dl,
+            hashes       => \%hashes,
+            env          => 'both',
+        };
+    }
+    return \@out;
+}
+
+sub curseforge_resolve_mod_file {
+    my ($project_id, $profile) = @_;
+    my $list = curseforge_list_compatible_files($project_id, $profile);
+    return undef unless ref($list) eq 'ARRAY' && @$list;
+    my $f = $list->[0];
+    return undef unless ref($f) eq 'HASH';
+    return {
+        file_id      => $f->{'file_id'},
+        filename     => $f->{'filename'} // 'mod.jar',
+        download_url => $f->{'download_url'},
+        hashes       => $f->{'hashes'} // {},
+        env          => $f->{'env'} // 'both',
+    };
+}
+
+sub hangar_list_compatible_versions {
+    my ($owner, $slug, $profile) = @_;
+    return [] unless defined $owner && defined $slug;
+    $owner =~ s/[^a-zA-Z0-9_-]//g;
+    $slug  =~ s/[^a-zA-Z0-9_-]//g;
+    return [] unless $owner && $slug;
+    return [] unless ref($profile) eq 'HASH';
+    my $mc = $profile->{'mc_version'} // '';
+    $mc =~ s/[^0-9.]//g;
+    return [] unless $mc;
+    my $vf = _mc_mods_urlencode($mc);
+    my $url = "https://hangar.papermc.io/api/v1/projects/$owner/$slug/versions"
+        . "?limit=30&sort=DATE&platform=PAPER&versionFilter=$vf";
+    my $resp = _mc_mods_http_get_json($url, _hangar_api_headers());
+    return [] unless ref($resp) eq 'HASH' && ref($resp->{'result'}) eq 'ARRAY';
+    my @out;
+    for my $ver (@{ $resp->{'result'} }) {
+        next unless ref($ver) eq 'HASH';
+        my $downloads = $ver->{'downloads'} // {};
+        my $paper = ref($downloads) eq 'HASH' ? ($downloads->{'PAPER'} // {}) : {};
+        next unless ref($paper) eq 'HASH';
+        my $dl = $paper->{'downloadUrl'} // $paper->{'externalUrl'} // '';
+        next unless $dl && mc_download_url_allowed($dl);
+        my $fname = $paper->{'fileInfo'}{'name'} // ($slug . '.jar');
+        $fname =~ s/[^a-zA-Z0-9._-]//g;
+        $fname = "$slug.jar" unless $fname =~ /\S/;
+        push @out, {
+            version_id   => $ver->{'name'} // $ver->{'id'} // '',
+            name         => $ver->{'name'} // '',
+            filename     => $fname,
+            download_url => $dl,
+            hashes       => {},
+            env          => 'server',
+            published    => $ver->{'createdAt'} // '',
+        };
+    }
+    return \@out;
+}
+
+sub hangar_resolve_plugin_file {
+    my ($owner, $slug, $profile) = @_;
+    my $list = hangar_list_compatible_versions($owner, $slug, $profile);
+    return undef unless ref($list) eq 'ARRAY' && @$list;
+    my $ver = $list->[0];
+    return undef unless ref($ver) eq 'HASH';
+    return {
+        version_id   => $ver->{'version_id'} // '',
+        filename     => $ver->{'filename'} // "$slug.jar",
+        download_url => $ver->{'download_url'},
+        hashes       => $ver->{'hashes'} // {},
+        env          => $ver->{'env'} // 'server',
+    };
 }
 
 sub curseforge_search_mods {
@@ -1045,43 +1174,6 @@ sub curseforge_search_mods {
         };
     }
     return @out;
-}
-
-sub curseforge_resolve_mod_file {
-    my ($project_id, $profile) = @_;
-    my $headers = _curseforge_api_headers() or return undef;
-    $project_id =~ s/\D//g;
-    return undef unless $project_id;
-    my $mc = $profile->{'mc_version'} // '';
-    $mc =~ s/[^0-9.]//g;
-    my $loader_type = curseforge_mod_loader_type($profile->{'loader'} // '');
-    return undef unless $mc && defined $loader_type;
-    my $url = "https://api.curseforge.com/v1/mods/$project_id/files"
-        . "?gameVersion=$mc&modLoaderType=$loader_type&pageSize=5";
-    my $resp = _mc_mods_http_get_json($url, $headers);
-    return undef unless ref($resp) eq 'HASH' && ref($resp->{'data'}) eq 'ARRAY';
-    for my $f (@{ $resp->{'data'} }) {
-        next unless ref($f) eq 'HASH';
-        next if ($f->{'isServerPack'} // 0);
-        my $fid = $f->{'id'};
-        next unless defined $fid;
-        my $dl = curseforge_mod_file_download_url($project_id, $fid);
-        next unless $dl;
-        my $fname = $f->{'fileName'} // 'mod.jar';
-        $fname =~ s/[^a-zA-Z0-9._-]//g;
-        my $norm = curseforge_normalize_hashes($f->{'hashes'});
-        my %hashes = ref($norm) eq 'HASH' ? %$norm : ();
-        return {
-            file_id      => $fid,
-            filename     => $fname,
-            download_url => $dl,
-            hashes       => \%hashes,
-            # CF API has no Modrinth-style env; treat as both so server install works
-            # (FTB Chunks/Library etc. are dual-side and were blocked as "client_only").
-            env          => 'both',
-        };
-    }
-    return undef;
 }
 
 sub _hangar_api_headers {
@@ -1124,42 +1216,6 @@ sub hangar_search_plugins {
         };
     }
     return @out;
-}
-
-sub hangar_resolve_plugin_file {
-    my ($owner, $slug, $profile) = @_;
-    return undef unless defined $owner && defined $slug;
-    $owner =~ s/[^a-zA-Z0-9_-]//g;
-    $slug  =~ s/[^a-zA-Z0-9_-]//g;
-    return undef unless $owner && $slug;
-    return undef unless ref($profile) eq 'HASH';
-    my $mc = $profile->{'mc_version'} // '';
-    $mc =~ s/[^0-9.]//g;
-    return undef unless $mc;
-    my $vf = _mc_mods_urlencode($mc);
-    my $url = "https://hangar.papermc.io/api/v1/projects/$owner/$slug/versions"
-        . "?limit=10&sort=DATE&platform=PAPER&versionFilter=$vf";
-    my $resp = _mc_mods_http_get_json($url, _hangar_api_headers());
-    return undef unless ref($resp) eq 'HASH' && ref($resp->{'result'}) eq 'ARRAY';
-    for my $ver (@{ $resp->{'result'} }) {
-        next unless ref($ver) eq 'HASH';
-        my $downloads = $ver->{'downloads'} // {};
-        my $paper = ref($downloads) eq 'HASH' ? ($downloads->{'PAPER'} // {}) : {};
-        next unless ref($paper) eq 'HASH';
-        my $dl = $paper->{'downloadUrl'} // $paper->{'externalUrl'} // '';
-        next unless $dl && mc_download_url_allowed($dl);
-        my $fname = $paper->{'fileInfo'}{'name'} // ($slug . '.jar');
-        $fname =~ s/[^a-zA-Z0-9._-]//g;
-        $fname = "$slug.jar" unless $fname =~ /\S/;
-        return {
-            version_id   => $ver->{'name'} // $ver->{'id'} // '',
-            filename     => $fname,
-            download_url => $dl,
-            hashes       => {},
-            env          => 'server',
-        };
-    }
-    return undef;
 }
 
 # Unified search — returns { ok => 1, results => [...], errors => [...] }
