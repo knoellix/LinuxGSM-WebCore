@@ -28,6 +28,7 @@ my $next_status = $in{'next_status'} // '';
 $next_status =~ s/[^a-z_]//g;
 my $next_action = $in{'next_action'} // '';
 $next_action =~ s/[^a-z_]//g;
+my $return_raw = $in{'return'} // '';
 
 sub _job_live_trim_search_param {
     my ($raw) = @_;
@@ -44,6 +45,18 @@ sub _job_live_query_urlencode {
     return $v;
 }
 
+sub _job_live_safe_return_query {
+    my ($raw, $instance_id) = @_;
+    $raw //= '';
+    $raw =~ s/[\t\n\r\0]//g;
+    $raw =~ s/^\s+|\s+$//g;
+    return '' unless length($raw) <= 200;
+    return '' unless $raw =~ m{\Amods\.cgi\?instance_id=([A-Za-z0-9_.-]+)(?:&xnavigation=1)?\z};
+    my $ret_id = $1;
+    return '' unless defined $instance_id && $ret_id eq $instance_id;
+    return "mods.cgi?instance_id=" . _job_live_query_urlencode($ret_id) . "&xnavigation=1";
+}
+
 sub _job_live_mc_search_url_suffix {
     my $suffix = '';
     my $pack_q = _job_live_trim_search_param($in{'pack_q'} // '');
@@ -54,6 +67,7 @@ sub _job_live_mc_search_url_suffix {
 }
 
 my $mc_search_suffix = _job_live_mc_search_url_suffix();
+my $return_query = _job_live_safe_return_query($return_raw, $instance_id);
 
 $instance_id && $job_id or &error($text{'err_invalid_input'});
 &validate_job_for_instance($job_id, $instance_id)
@@ -91,9 +105,11 @@ my $poll_q = "manage.cgi?instance_id=$instance_id&action=poll_job&job=$job_id&po
     . ($next_status ? "&next_status=$next_status" : '')
     . ($next_action ? "&next_action=$next_action" : '');
 my $poll_path = "/$module_name/$poll_q";
-my $manage_path = "/$module_name/manage.cgi?instance_id=$instance_id&xnavigation=1"
-    . $mc_search_suffix
-    . ($job_done && $status eq 'ok' ? "&action_result=$job_id" : '');
+my $return_path = "/$module_name/"
+    . ($return_query ne ''
+        ? $return_query
+        : "manage.cgi?instance_id=$instance_id&xnavigation=1" . $mc_search_suffix);
+$return_path .= "&action_result=$job_id" if ($return_query eq '' && $job_done && $status eq 'ok');
 
 require JSON::PP;
 my $fail_hint_key = '';
@@ -108,7 +124,7 @@ if ($fail_hint_key ne '') {
         . ":</strong> " . &html_escape($hint_text) . "</p>\n";
 }
 
-my $manage_path_js = job_log_json_for_script({ url => $manage_path });
+my $manage_path_js = job_log_json_for_script({ url => $return_path });
 my $copy_cfg_js    = job_log_json_for_script({
     failMsg => $text{'job_live_copy_fail'} || 'Kopieren fehlgeschlagen',
     waitMsg => $text{'job_waiting_output'} || 'Warte auf Worker-Ausgabe…',
@@ -144,7 +160,8 @@ unless ($job_done) {
         . "</i></small></p>\n";
 }
 
-print &ui_form_start('manage.cgi', 'get');
+my $back_target = $return_query ne '' ? 'mods.cgi' : 'manage.cgi';
+print &ui_form_start($back_target, 'get');
 print &ui_hidden('instance_id', &html_escape($instance_id));
 print &ui_hidden('xnavigation', '1');
 print &ui_submit($text{'job_back_to_instance'} || 'Zur Instanz', undef, undef, undef, 'btn-default');
@@ -228,7 +245,7 @@ EOF
 unless ($job_done) {
     print &job_log_live_poll_client_js(
         poll_url        => $poll_path,
-        manage_url      => $manage_path,
+        manage_url      => $return_path,
         out_id          => 'job_out',
         status_id       => 'job_live_status',
         wait_msg        => $text{'job_waiting_output'} || 'Warte auf Worker-Ausgabe…',
