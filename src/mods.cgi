@@ -633,7 +633,7 @@ sub _mods_rebuild_monitor_cron {
     &rebuild_monitor_cron($module_root, $config_directory);
 }
 
-# Webmin has no ui_success(); match manage/integrations alert pattern.
+# Webmin has no dedicated success helper; match manage/integrations alert pattern.
 sub _mods_print_success {
     my ($msg) = @_;
     return unless defined $msg && $msg =~ /\S/;
