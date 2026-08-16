@@ -513,7 +513,12 @@ subtest 'prepare_mod_install_meta allows replace when force_replace set' => sub 
     like($src, qr/ReadParseMime/, 'mods.cgi supports multipart upload');
     like($src, qr/ui_form_start\('mods\.cgi',\s*'form-data'\)/,
         'mods.cgi has browser upload form');
-    like($src, qr/text-align:right/, 'mods.cgi right-aligns pagination');
+    like($src, qr/sync_monitor_job_pointers/,
+        'mods.cgi syncs monitor restart jobs into UI');
+    like($src, qr/monitor_last_restart/,
+        'mods.cgi shows last auto-restart like manage');
+    like($src, qr/monitor_disable/,
+        'mods.cgi can disable monitoring');
 }
 
 done_testing();

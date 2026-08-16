@@ -633,6 +633,84 @@ sub _mods_rebuild_monitor_cron {
     &rebuild_monitor_cron($module_root, $config_directory);
 }
 
+sub _mods_last_run_row_html {
+    my ($epoch, $text_template, $job_id, $instance_id) = @_;
+    return '' unless defined $epoch && $epoch =~ /^\d+$/ && $epoch > 0;
+    my $lr_ts = &monitor_format_restart_time($epoch);
+    $lr_ts = '—' unless defined $lr_ts && $lr_ts ne '';
+    my $lr_html = &html_escape(&text($text_template, $lr_ts));
+    $job_id = '' unless defined $job_id;
+    $job_id =~ s/[^0-9a-f]//g;
+    if (length($job_id) == 16 && defined $instance_id && $instance_id =~ /\S/) {
+        my $job_url = "jobs.cgi?action=view_output&amp;job_id=" . &html_escape($job_id);
+        $lr_html .= ' — <a href="' . $job_url . '">'
+            . &html_escape($text{'jobs_view_log'} || $text{'monitor_job_link'} || 'Log')
+            . '</a>';
+    }
+    return $lr_html;
+}
+
+sub _mods_render_instance_jobs_table {
+    my ($instance_id, $max_rows) = @_;
+    $max_rows //= 8;
+    return unless defined $instance_id && $instance_id =~ /\S/;
+    &sync_monitor_job_pointers();
+    my @inst_jobs = &get_instance_jobs($instance_id);
+    return unless @inst_jobs;
+    @inst_jobs = @inst_jobs[0 .. ($max_rows - 1)] if @inst_jobs > $max_rows;
+
+    print "<h4>" . &html_escape($text{'jobs_title'} || 'Jobs') . "</h4>\n";
+    my $labels = &job_action_labels_hash(\%text);
+    my %status_icons = (
+        running => '&#x23F3;',
+        ok      => '&#x2705;',
+        failed  => '&#x1F534;',
+        aborted => '&#x1F6AB;',
+    );
+    my @rows;
+    for my $job (@inst_jobs) {
+        my $jid    = $job->{job_id};
+        my $status = $job->{status};
+        my $act    = $job->{action} // '';
+        my $ts     = $job->{started_at} || 0;
+        my @lt     = localtime($ts);
+        my $ts_str = $ts ? sprintf('%02d:%02d', $lt[2], $lt[1]) : '—';
+        my $st_icon = $status_icons{$status} // '';
+        my $out_cell = '—';
+        if ($status eq 'running') {
+            my $live_url = "job_live.cgi?instance_id=" . &html_escape($instance_id)
+                . "&amp;job=" . &html_escape($jid) . "&amp;xnavigation=1";
+            $out_cell = "<a href='$live_url'>"
+                . &html_escape($text{'manage_job_open_live'} || 'Live log') . "</a>";
+        } elsif ($status eq 'ok' || $status eq 'failed' || $status eq 'aborted') {
+            $out_cell = "<a href='jobs.cgi?action=view_output&amp;job_id="
+                . &html_escape($jid) . "'>"
+                . &html_escape($text{'jobs_view_log'} || 'Log') . "</a>";
+        }
+        my $act_label = $labels->{$act} // $act // '—';
+        my $act_cell = ($act eq 'monitor_restart' || $act eq 'scheduled_restart')
+            ? '&#x1F504; ' . &html_escape($act_label)
+            : &html_escape($act_label);
+        my $st_label = &job_status_label($status, \%text);
+        push @rows, [
+            $act_cell,
+            $ts_str,
+            "$st_icon " . &html_escape($st_label),
+            $out_cell,
+        ];
+    }
+    print &ui_columns_table(
+        [
+            $text{'jobs_col_action'}  || 'Aktion',
+            $text{'jobs_col_started'} || 'Gestartet',
+            $text{'jobs_col_status'}  || 'Status',
+            $text{'jobs_col_output'}  || 'Ausgabe',
+        ],
+        '100%',
+        \@rows,
+    );
+}
+
 sub _mods_steamcmd_worker_cmd {
     my ($action, $job_dir, $unix_user, $server_dir) = @_;
     return &user_worker_launch_cmd(
@@ -753,11 +831,34 @@ my $pack_q = _mods_pack_search_query($in{'pack_q'} // '');
 &user_can_manage($instance_id)
     or &error($text{'err_acl_admin_only'} || 'Access denied');
 
-if ($action ne '' && $action !~ /^(?:monitor|start|stop|mod_enable|mod_disable|mod_delete|mod_versions|mod_search_versions|mc_mod_install|modpack_import|modpack_import_path|modpack_import_remote|modpack_import_resume)$/) {
+if ($action ne '' && $action !~ /^(?:monitor|monitor_disable|monitor_reset|start|stop|mod_enable|mod_disable|mod_delete|mod_versions|mod_search_versions|mc_mod_install|modpack_import|modpack_import_path|modpack_import_remote|modpack_import_resume)$/) {
     &error($text{'err_invalid_action'} || 'Invalid action');
 }
 if ($action ne '' && $action ne 'monitor' && &user_is_readonly($instance_id)) {
     &error($text{'err_readonly'} || 'This server is read-only for your account');
+}
+
+if ($action eq 'monitor_disable') {
+    &user_can_operate($instance_id)
+        or &error($text{'err_acl_admin_only'} || 'Access denied');
+    &set_monitor_disabled($server_dir, $config_directory, $instance_id);
+    _mods_rebuild_monitor_cron();
+    &module_config_flash_mark('monitor_disabled')
+        or &error($text{'err_generic'} || 'Could not confirm action.');
+    &redirect('mods.cgi?instance_id=' . &urlize($instance_id)
+        . '&monitor_disabled=1&xnavigation=1');
+    exit;
+}
+if ($action eq 'monitor_reset') {
+    &user_can_operate($instance_id)
+        or &error($text{'err_acl_admin_only'} || 'Access denied');
+    &set_monitor_running($server_dir, $config_directory, $instance_id);
+    _mods_rebuild_monitor_cron();
+    &module_config_flash_mark('monitor_enabled')
+        or &error($text{'err_generic'} || 'Could not confirm action.');
+    &redirect('mods.cgi?instance_id=' . &urlize($instance_id)
+        . '&monitor_enabled=1&xnavigation=1');
+    exit;
 }
 
 if ($action eq 'start' || $action eq 'stop') {
@@ -1398,12 +1499,82 @@ if (($in{'mod_disabled'} // '') eq '1' && &module_config_flash_consume('mod_disa
 if (($in{'mod_deleted'} // '') eq '1' && &module_config_flash_consume('mod_deleted')) {
     print &ui_success($text{'mc_mods_page_deleted_ok'} || 'Mod deleted.');
 }
+if (($in{'monitor_disabled'} // '') eq '1' && &module_config_flash_consume('monitor_disabled')) {
+    print &ui_success($text{'mc_mods_page_monitor_disabled_ok'} || 'Monitoring disabled.');
+}
+if (($in{'monitor_enabled'} // '') eq '1' && &module_config_flash_consume('monitor_enabled')) {
+    print &ui_success($text{'mc_mods_page_monitor_enabled_ok'} || 'Monitoring enabled.');
+}
+{
+    my $flash_id = $instance_id // '';
+    $flash_id =~ s/[^a-zA-Z0-9_-]//g;
+    if ($flash_id ne '' && &module_config_flash_consume("monitor_restart_$flash_id")) {
+        &sync_monitor_job_pointers();
+        my $mon_flash = &read_monitor_state($server_dir, $config_directory, $instance_id);
+        my $lr_ts = &monitor_format_restart_time($mon_flash->{'last_restart_at'});
+        $lr_ts = '—' unless $lr_ts ne '';
+        my $banner = &text('manage_monitor_restart_banner', $lr_ts);
+        $banner = "Der Server wurde automatisch durch Monitoring neugestartet ($lr_ts)."
+            unless defined $banner && $banner =~ /\S/;
+        my $banner_html = &html_escape($banner);
+        my $lr_job = $mon_flash->{'last_restart_job'} // '';
+        $lr_job =~ s/[^0-9a-f]//g;
+        if (length($lr_job) == 16) {
+            $banner_html .= ' <a href="jobs.cgi?action=view_output&amp;job_id='
+                . &html_escape($lr_job) . '">'
+                . &html_escape($text{'jobs_view_log'} || 'Log') . '</a>';
+        }
+        print "<div class='alert alert-warning'>" . $banner_html . "</div>\n";
+    }
+}
 
 print "<h3>" . &html_escape($text{'mc_mods_page_header'} || 'Minecraft mods') . "</h3>\n";
 print "<p><strong>" . &html_escape($text{'mc_mods_page_instance_label'} || 'Instance')
     . ":</strong> $safe_id<br>\n";
 print "<strong>" . &html_escape($text{'mc_mods_page_status_label'} || 'Status')
     . ":</strong> " . _mods_status_badge_html($runtime_status) . "</p>\n";
+
+&sync_monitor_job_pointers();
+my $mon_state = &read_monitor_state($server_dir, $config_directory, $instance_id);
+{
+    my $mon_status_key = 'monitor_status_' . ($mon_state->{'status'} // 'disabled');
+    my $mon_label = $text{$mon_status_key} || ($mon_state->{'status'} // 'disabled');
+    print "<p><strong>" . &html_escape($text{'monitor_col'} || 'Monitor')
+        . ":</strong> " . &html_escape($mon_label);
+    if (($mon_state->{'last_restart_at'} // 0) > 0) {
+        my $lr_html = _mods_last_run_row_html(
+            $mon_state->{'last_restart_at'}, 'monitor_last_restart',
+            $mon_state->{'last_restart_job'}, $instance_id);
+        print "<br><strong>" . &html_escape($text{'monitor_last_restart_col'} || 'Last auto-restart')
+            . ":</strong> " . $lr_html;
+    }
+    print "</p>\n";
+    if (&user_can_operate($instance_id) && !&user_is_readonly($instance_id)) {
+        my $mon_s = $mon_state->{'status'} // 'disabled';
+        print "<div style='margin:0 0 12px 0'>\n";
+        if ($mon_s eq 'failed' || $mon_s eq 'paused' || $mon_s eq 'disabled') {
+            my $en = &ui_form_start('mods.cgi', 'post');
+            $en .= &ui_hidden('instance_id', $safe_id);
+            $en .= &ui_hidden('xnavigation', '1');
+            $en .= &ui_hidden('action', 'monitor_reset');
+            $en .= &ui_submit($text{'monitor_reset_btn'} || 'Enable monitoring',
+                undef, undef, undef, 'btn-success');
+            $en .= &ui_form_end();
+            print _mods_inline_action_btn($en);
+        }
+        if ($mon_s ne 'disabled') {
+            my $dis = &ui_form_start('mods.cgi', 'post');
+            $dis .= &ui_hidden('instance_id', $safe_id);
+            $dis .= &ui_hidden('xnavigation', '1');
+            $dis .= &ui_hidden('action', 'monitor_disable');
+            $dis .= &ui_submit($text{'monitor_disable_btn'} || 'Disable monitoring',
+                undef, undef, undef, 'btn-default');
+            $dis .= &ui_form_end();
+            print _mods_inline_action_btn($dis);
+        }
+        print "</div>\n";
+    }
+}
 
 print "<div style='margin:4px 0 12px 0'>\n";
 if (&user_is_readonly($instance_id)) {
@@ -1450,6 +1621,8 @@ if (&user_is_readonly($instance_id)) {
     print _mods_inline_action_btn($back_form);
 }
 print "</div>\n";
+
+_mods_render_instance_jobs_table($instance_id, 8);
 
 print "<h4>" . &html_escape($text{'mc_modpack_section'} || 'Import modpack') . "</h4>\n";
 print "<p>" . &html_escape($text{'mc_modpack_section_desc'}

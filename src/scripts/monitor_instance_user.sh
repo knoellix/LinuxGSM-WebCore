@@ -216,13 +216,13 @@ if [[ "$KIND" == "lgsm" ]]; then
     fi
 
     if _lgsm_is_online; then
-        _write_state "running" "0" "$(date +%s)"
         if [[ "$monitor_recovery" -eq 1 ]]; then
             _log "LGSM: server recovered — recording monitor_restart job"
             _lgsm_record_restart_job "$MONITOR_RUN_LOG"
         else
             _log "LGSM: server online"
         fi
+        _write_state "running" "0" "$(date +%s)"
     else
         _write_state "failed" "${_LGSM_RESTART_COUNT:-1}" "${_LGSM_WINDOW_START:-$(date +%s)}"
         _log "LGSM: server offline after monitor+start (will retry next cron run)"
