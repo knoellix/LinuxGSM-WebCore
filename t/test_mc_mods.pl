@@ -519,6 +519,10 @@ subtest 'prepare_mod_install_meta allows replace when force_replace set' => sub 
         'mods.cgi shows last auto-restart like manage');
     like($src, qr/monitor_disable/,
         'mods.cgi can disable monitoring');
+    unlike($src, qr/\bui_success\b/,
+        'mods.cgi must not call non-existent ui_success');
+    like($src, qr/_mods_print_success|alert alert-success/,
+        'mods.cgi uses Webmin-compatible success banner');
 }
 
 done_testing();

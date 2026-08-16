@@ -633,6 +633,13 @@ sub _mods_rebuild_monitor_cron {
     &rebuild_monitor_cron($module_root, $config_directory);
 }
 
+# Webmin has no ui_success(); match manage/integrations alert pattern.
+sub _mods_print_success {
+    my ($msg) = @_;
+    return unless defined $msg && $msg =~ /\S/;
+    print "<div class='alert alert-success'>" . &html_escape($msg) . "</div>\n";
+}
+
 sub _mods_last_run_row_html {
     my ($epoch, $text_template, $job_id, $instance_id) = @_;
     return '' unless defined $epoch && $epoch =~ /^\d+$/ && $epoch > 0;
@@ -1491,19 +1498,19 @@ unless (&mc_mod_ui_ready($profile, $server_dir)) {
 
 my $runtime_status = &instance_runtime_status($inst);
 if (($in{'mod_enabled'} // '') eq '1' && &module_config_flash_consume('mod_enabled')) {
-    print &ui_success($text{'mc_mods_page_enabled_ok'} || 'Mod enabled.');
+    _mods_print_success($text{'mc_mods_page_enabled_ok'} || 'Mod enabled.');
 }
 if (($in{'mod_disabled'} // '') eq '1' && &module_config_flash_consume('mod_disabled')) {
-    print &ui_success($text{'mc_mods_page_disabled_ok'} || 'Mod disabled.');
+    _mods_print_success($text{'mc_mods_page_disabled_ok'} || 'Mod disabled.');
 }
 if (($in{'mod_deleted'} // '') eq '1' && &module_config_flash_consume('mod_deleted')) {
-    print &ui_success($text{'mc_mods_page_deleted_ok'} || 'Mod deleted.');
+    _mods_print_success($text{'mc_mods_page_deleted_ok'} || 'Mod deleted.');
 }
 if (($in{'monitor_disabled'} // '') eq '1' && &module_config_flash_consume('monitor_disabled')) {
-    print &ui_success($text{'mc_mods_page_monitor_disabled_ok'} || 'Monitoring disabled.');
+    _mods_print_success($text{'mc_mods_page_monitor_disabled_ok'} || 'Monitoring disabled.');
 }
 if (($in{'monitor_enabled'} // '') eq '1' && &module_config_flash_consume('monitor_enabled')) {
-    print &ui_success($text{'mc_mods_page_monitor_enabled_ok'} || 'Monitoring enabled.');
+    _mods_print_success($text{'mc_mods_page_monitor_enabled_ok'} || 'Monitoring enabled.');
 }
 {
     my $flash_id = $instance_id // '';
