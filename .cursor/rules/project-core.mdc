@@ -26,6 +26,12 @@ alwaysApply: true
 - Use local git config as author.
 - Do not commit unless the user asks.
 
+## Releases / version bumps
+
+- **Never** bump `module.info` / packaging version, create a git tag, or push a release tag unless the user **explicitly** says to (e.g. “hoch auf 0.2.x” / “Tag v0.2.x”).
+- Feature commits may land on `master` without a version bump; the user decides when the installed module version advances.
+- Do not invent intermediate versions (e.g. 0.2.2) just because a fix shipped.
+
 ## Integrations page
 
 - `integrations.cgi`: Steam (accounts, SteamCMD), download-source API keys (Modrinth contact, CurseForge key, optional Hangar token, custom URL hosts), debug logging.

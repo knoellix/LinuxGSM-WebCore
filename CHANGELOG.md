@@ -5,17 +5,11 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.2] - 2026-08-16
+## [0.2.1] - 2026-08-16
 
 ### Added
 
 - Mods page: monitor status, last auto-restart (with job log link), jobs table, enable/disable monitoring — same visibility as manage for other games
-
-### Fixed
-
-- Monitor restart job is recorded before state write so `last_restart_*` is reliable on the mods page
-
-## [0.2.1] - 2026-08-16
 
 ### Fixed
 
@@ -27,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Forge/NeoForge start: LGSM uses `preexecutable=bash` + `executable=./run.sh` (not `java -jar ./run.sh`)
 - Minecraft LGSM monitor: `querymode=1` (session only) so failed gamedig no longer stop/start-loops players
 - Monitor UI: LGSM query-fail → graceful stop → start now records `monitor_restart` + `last_restart_*`
+- Monitor restart job is recorded before state write so `last_restart_*` is reliable on the mods page
 
 ### Changed
 

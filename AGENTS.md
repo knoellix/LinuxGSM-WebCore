@@ -6,6 +6,11 @@ Webmin module (`.wbm`) for provisioning and managing LinuxGSM, SteamCMD, and Win
 
 User instruction > project rules (`.cursor/rules/`) > agent defaults. **Security and runtime stability over convenience.**
 
+## Releases
+
+- Bump version / create or push git tags **only** when the user explicitly requests it.
+- Otherwise ship fixes on `master` under the current `module.info` version (no silent 0.x.y++).
+
 ## Agent workflow
 
 1. **Plan** before non-trivial code changes (`docs/superpowers/plans/` for larger features).

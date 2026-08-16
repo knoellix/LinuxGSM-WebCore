@@ -1,13 +1,9 @@
-linuxgsm-webcore (0.2.2-1) unstable; urgency=low
-
-  * Mods page: monitor status, last auto-restart, jobs table, enable/disable.
-
- -- Christian Möllmann <moellix@knoellix.net>  Sun, 16 Aug 2026 11:10:00 +0200
-
 linuxgsm-webcore (0.2.1-1) unstable; urgency=low
 
   * Fix mods start/stop logging require, mod install SHA1 parse, live-log
     picker (incl. .gz) and back-to-instance button.
+  * Mods page: monitor status, last auto-restart, jobs table, enable/disable.
+  * MC querymode=1, bash+run.sh start, monitor_restart visibility.
 
  -- Christian Möllmann <moellix@knoellix.net>  Sun, 16 Aug 2026 09:15:00 +0200
 
