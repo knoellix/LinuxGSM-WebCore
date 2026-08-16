@@ -13,10 +13,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Single-mod install SHA1 check: Perl `print (EXPR), "\n"` gotcha no longer glues `prefer_disabled` onto the hash
 - Live log: pick Minecraft `latest.log` / `debug.log` / rotated `*.log.gz` (gzip decompressed in-panel)
 - Live log: “Back to instance” button; replace broken middle-dot separators with ASCII `-`
+- Panel Start no longer re-enables an explicitly **disabled** monitor (`set_monitor_resume_after_start`)
+- Forge/NeoForge start: LGSM uses `preexecutable=bash` + `executable=./run.sh` (not `java -jar ./run.sh`)
+- Minecraft LGSM monitor: `querymode=1` (session only) so failed gamedig no longer stop/start-loops players
+- Monitor UI: LGSM query-fail → graceful stop → start now records `monitor_restart` + `last_restart_*`
 
 ### Changed
 
 - Friendlier installed-mod display names and server/client/unknown side column on the mods list
+- Install/Java patch aligns `enable-query=true` and `query.port` with `server-port` in `server.properties`
 
 ## [0.2.0] - 2026-08-15
 

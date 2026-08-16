@@ -143,6 +143,17 @@ sub set_monitor_running {
     }, _monitor_unix_user_for_id($id));
 }
 
+# After Start/Restart from the panel: resume only if monitor was paused (Stop).
+# Never override an explicit "disabled" — that re-enabled LGSM query-restart loops.
+sub set_monitor_resume_after_start {
+    my ($server_dir, $config_dir, $id) = @_;
+    my $s = read_monitor_state($server_dir, $config_dir, $id);
+    my $st = $s->{status} // 'disabled';
+    return 0 if $st eq 'disabled';
+    set_monitor_running($server_dir, $config_dir, $id);
+    return 1;
+}
+
 sub set_monitor_disabled {
     my ($server_dir, $config_dir, $id) = @_;
     my $s = read_monitor_state($server_dir, $config_dir, $id);

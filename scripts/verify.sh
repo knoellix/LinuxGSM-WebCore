@@ -83,6 +83,7 @@ critical_tests=(
   "t/test_monitor_state.pl"
   "t/test_monitor_cron.pl"
   "t/test_monitor_lgsm.sh"
+  "t/test_monitor_query_restart.sh"
   "t/test_schedule_cron.pl"
   "t/test_schedule_restart.sh"
   "t/test_job_log.sh"

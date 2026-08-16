@@ -249,5 +249,14 @@ if ! grep -q "serverversion=\"$MC_VERSION\"" "$CFG_FILE" 2>/dev/null; then
     exit 1
 fi
 
+if [ -f "$SERVER_DIR/serverfiles/server.properties" ]; then
+    jl "=== Ensuring enable-query + query.port=server-port ==="
+    perl -I"$MODULE_ROOT/lib" -e '
+        require "mc_profile.pl";
+        write_mc_server_properties_query($ARGV[0], $ARGV[1]) or exit 1;
+    ' "$SERVER_DIR" "$UNIX_USER" 2>/dev/null \
+        || jl "WARN: could not patch server.properties query settings"
+fi
+
 jl "=== Minecraft profile applied (MC $MC_VERSION, Java $JAVA_MAJOR) ==="
 set_final_status "ok"

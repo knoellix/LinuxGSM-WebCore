@@ -6,7 +6,7 @@ use FindBin qw($Bin);
 use lib "$Bin/..";
 chdir "$Bin/.." or die "Cannot chdir: $!";
 
-print "1..12\n";
+print "1..14\n";
 sub pass { print "ok - $_[0]\n" }
 sub fail { print "not ok - $_[0]\n" }
 
@@ -139,4 +139,26 @@ require './src/lib/monitor.pl';
     ($s->{last_restart_at} == 1700000000 && $s->{last_restart_job} eq 'abcd1234abcd1234')
         ? pass('last_restart fields round-trip')
         : fail("last_restart round-trip: at=$s->{last_restart_at} job=$s->{last_restart_job}");
+}
+
+# 13. set_monitor_resume_after_start: paused -> running
+{
+    my $server_dir = "$tmp/resume_paused";
+    set_monitor_paused($server_dir, $tmp, 'resume_paused');
+    my $changed = set_monitor_resume_after_start($server_dir, $tmp, 'resume_paused');
+    my $s = read_monitor_state($server_dir, $tmp, 'resume_paused');
+    ($changed && $s->{status} eq 'running')
+        ? pass('resume_after_start: paused -> running')
+        : fail("resume_after_start paused: changed=$changed status=$s->{status}");
+}
+
+# 14. set_monitor_resume_after_start: disabled stays disabled
+{
+    my $server_dir = "$tmp/resume_dis";
+    set_monitor_disabled($server_dir, $tmp, 'resume_dis');
+    my $changed = set_monitor_resume_after_start($server_dir, $tmp, 'resume_dis');
+    my $s = read_monitor_state($server_dir, $tmp, 'resume_dis');
+    (!$changed && $s->{status} eq 'disabled')
+        ? pass('resume_after_start: disabled stays disabled')
+        : fail("resume_after_start disabled: changed=$changed status=$s->{status}");
 }

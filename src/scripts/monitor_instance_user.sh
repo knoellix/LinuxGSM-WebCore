@@ -98,12 +98,24 @@ _lgsm_details_online() {
         | grep -Eqi 'Status:[[:space:]]*STARTED'
 }
 
-# LGSM monitor may restart internally even when tmux looked alive (zombie session).
+# LGSM monitor may restart internally even when tmux looked alive:
+# - session FAIL → start
+# - query FAIL (gamedig) → graceful stop → start  (Minecraft false positives)
 _lgsm_monitor_showed_restart() {
     local run_log="$1"
     [[ -f "$run_log" ]] || return 1
-    grep -qiE 'Checking session \.+ FAIL|\[ ERROR \].*FAIL|Session check.*FAIL' "$run_log" 2>/dev/null \
-        && grep -qiE '\[  OK  \].*Starting|Starting '"$SCRIPT_NAME" "$run_log" 2>/dev/null
+    local started=0
+    grep -qiE '\[  OK  \].*Starting|Starting '"$SCRIPT_NAME" "$run_log" 2>/dev/null && started=1
+    [[ "$started" -eq 1 ]] || return 1
+
+    if grep -qiE 'Checking session \.+ FAIL|\[ ERROR \].*FAIL|Session check.*FAIL' "$run_log" 2>/dev/null; then
+        return 0
+    fi
+    if grep -qiE 'Querying port:.*FAIL' "$run_log" 2>/dev/null \
+        && grep -qiE 'Stopping .*|Graceful:.*stop' "$run_log" 2>/dev/null; then
+        return 0
+    fi
+    return 1
 }
 
 # After monitor/start, poll until LGSM reports STARTED (Palworld can take >30s).
@@ -184,7 +196,7 @@ if [[ "$KIND" == "lgsm" ]]; then
 
     if _lgsm_monitor_showed_restart "$MONITOR_RUN_LOG"; then
         monitor_recovery=1
-        _log "LGSM: monitor triggered restart (session fail → start)"
+        _log "LGSM: monitor triggered restart (session/query fail → start)"
     fi
 
     if ! _lgsm_wait_online "$WAIT_TRIES" "$WAIT_DELAY" "$monitor_recovery"; then

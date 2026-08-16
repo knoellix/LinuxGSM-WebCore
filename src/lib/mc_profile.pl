@@ -382,8 +382,9 @@ sub _mc_cfg_escape {
     return $v;
 }
 
-# Build preexecutable= value for a loader (java_jar | empty | java_home | wrapper).
-# Forge/NeoForge run.sh calls bare `java` — must inject Temurin via wrapper or PATH.
+# Build preexecutable= value for a loader (java_jar | bash | empty | java_home | wrapper).
+# Forge/NeoForge: executable=./run.sh — MUST NOT use java -jar (Invalid or corrupt jarfile).
+# Use bash + absolute java pin inside run.sh (mc_loader_install / mc_java_env).
 sub mc_lgsm_preexecutable_for_loader {
     my ($profile, $server_dir, $loader_cfg) = @_;
     return '' unless ref($profile) eq 'HASH' && ref($loader_cfg) eq 'HASH';
@@ -391,13 +392,16 @@ sub mc_lgsm_preexecutable_for_loader {
     my $java_home = $profile->{'java_home'} // '';
     return '' if $mode eq 'empty';
 
+    # bash ./run.sh — LGSM concatenates preexecutable + executable (+ parms)
+    return 'bash' if $mode eq 'bash';
+
     my $abs_java = "$server_dir/$java_home";
     (my $safe_java = $abs_java) =~ s/'/'\\''/g;
 
     if ($mode eq 'java_jar') {
         return qq{export JAVA_HOME='$safe_java'; export PATH="\$JAVA_HOME/bin:\$PATH"; java -Xmx\${javaram}M -jar};
     }
-    # wrapper: mc_start_wrapper.sh ./run.sh — forces JAVA_HOME for bare `java` in run.sh
+    # wrapper: legacy — prefer bash + pinned run.sh; kept for older profiles/tests
     if ($mode eq 'wrapper') {
         my $wrapper = "$server_dir/mc_start_wrapper.sh";
         (my $safe_w = $wrapper) =~ s/'/'\\''/g;
@@ -426,7 +430,74 @@ sub mc_lgsm_cfg_overrides {
     if (exists $lcfg->{'lgsm_preexecutable'}) {
         $o{'preexecutable'} = mc_lgsm_preexecutable_for_loader($profile, $server_dir, $lcfg);
     }
+    # Session-only: LGSM gamedig often fails on modded/new MC even with enable-query
+    # set (wrong port vs server-port, protocol quirks) and then stop/start-loops players.
+    $o{'querymode'} = '1';
     return \%o;
+}
+
+# Ensure server.properties has enable-query=true and query.port == server-port.
+# Returns updated properties text (does not write disk).
+sub mc_server_properties_ensure_query {
+    my ($raw, $port_override) = @_;
+    $raw //= '';
+    my $port = int($port_override // 0);
+    if ($port < 1 || $port > 65535) {
+        $port = ($raw =~ /^server-port\s*=\s*(\d+)/m) ? int($1) : 0;
+    }
+    return $raw if $port < 1 || $port > 65535;
+
+    my %want = (
+        'enable-query' => 'true',
+        'query.port'   => "$port",
+    );
+    my %seen;
+    my @out;
+    for my $line (split /\n/, $raw) {
+        (my $check = $line) =~ s/\r$//;
+        if ($check =~ /^\s*([\w.\-]+)\s*=/) {
+            my $k = $1;
+            if (exists $want{$k}) {
+                push @out, "$k=$want{$k}" unless $seen{$k}++;
+                next;
+            }
+        }
+        push @out, $line;
+    }
+    for my $k (qw(enable-query query.port)) {
+        push @out, "$k=$want{$k}" unless $seen{$k};
+    }
+    my $out = join("\n", @out);
+    $out .= "\n" unless $out =~ /\n\z/;
+    return $out;
+}
+
+# Write server.properties query keys as game user when possible. Returns 1/0.
+sub write_mc_server_properties_query {
+    my ($server_dir, $unix_user, $port_override) = @_;
+    return 0 unless defined $server_dir && length $server_dir;
+    my $path = "$server_dir/serverfiles/server.properties";
+    return 0 unless -f $path;
+    open(my $fh, '<', $path) or return 0;
+    local $/;
+    my $raw = <$fh>;
+    close($fh);
+    my $out = mc_server_properties_ensure_query($raw, $port_override);
+    return 1 if defined $raw && $out eq $raw;
+
+    my $uid = (defined $unix_user && $unix_user ne '') ? (getpwnam($unix_user))[2] : undef;
+    if (!defined $unix_user || $unix_user eq '' || (defined $uid && $> == $uid)) {
+        open(my $out_fh, '>', $path) or return 0;
+        print {$out_fh} $out or do { close($out_fh); return 0; };
+        close($out_fh) or return 0;
+        return 1;
+    }
+    (my $safe_path = $path) =~ s/'/'\\''/g;
+    open(my $pipe, '|-', 'su', '-s', '/bin/bash', '-c', "cat > '$safe_path'", $unix_user)
+        or return 0;
+    print $pipe $out;
+    close($pipe) or return 0;
+    return 1;
 }
 
 # Merge profile overrides (serverversion, executable, preexecutable) into LGSM cfg content.

@@ -18,10 +18,12 @@ alwaysApply: false
 
 - `resolve_java_major($mc)` is authoritative; if profile lags → `mc_profile_java_needs_sync` / `mc_profile_sync_java_fields` (manage reconcile, modpack adopt, `mc_profile_sync_java.pl`).
 - `mc_java_install_user.sh` must verify the installed JVM major matches the profile (reinstall if wrong).
-- Forge/NeoForge: `run.sh` often has `exec java …` with empty LGSM `preexecutable` → system JDK. Fix:
-  - `mc_compat.json`: `lgsm_preexecutable: "wrapper"` for forge/neoforge
-  - `mc_java_env_apply` (`scripts/lib/mc_java_env.sh`) on start/monitor/scheduled restart: set `JAVA_HOME` and pin absolute java in `run.sh` (match `exec java`, not only line-leading `java`)
+- Forge/NeoForge: `executable=./run.sh` — never `java -jar` (corrupt jarfile). Fix:
+  - `mc_compat.json`: `lgsm_preexecutable: "bash"` → LGSM runs `bash ./run.sh`
+  - Pin absolute Temurin inside `run.sh` via `mc_java_env_apply` / loader install (`exec java` → absolute path)
   - Pin sed: use `#` as delimiter when the pattern contains `|`
+- LGSM monitor: patch `querymode="1"` (session only) — gamedig often false-fails on modded MC and stop/start-loops players. Still set `enable-query=true` + `query.port=<server-port>` in `server.properties` for external tools.
+- Monitor UI: query-fail → graceful stop → start must record `monitor_restart` job + `last_restart_*` (not only session FAIL).
 
 ## Libraries
 

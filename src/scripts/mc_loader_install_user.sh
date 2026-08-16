@@ -206,17 +206,17 @@ if [ "$LOADER" = "forge" ] || [ "$LOADER" = "neoforge" ]; then
         if grep -qE '(^|[[:space:]])java[[:space:]]' "$SERVERFILES/run.sh"; then
             # NeoForge: "exec java @..."; mix quotes so bash keeps sed backrefs
             sed -i -E 's#(^|[[:space:]])java([[:space:]])#\1'"${JAVA_BIN}"'\2#' "$SERVERFILES/run.sh" || \
-                jl "WARN: could not pin java path in run.sh — relying on LGSM wrapper"
+                jl "WARN: could not pin java path in run.sh"
         else
-            jl "WARN: no java invocation in run.sh — relying on LGSM wrapper"
+            jl "WARN: no java invocation in run.sh — start may use system java"
         fi
     fi
 fi
 
-# Ensure start wrapper exists (Forge/NeoForge LGSM preexecutable=wrapper).
+# Optional legacy wrapper (older installs). New Forge/NeoForge use preexecutable=bash.
 WRAPPER="$SERVER_DIR/mc_start_wrapper.sh"
 if [ ! -x "$WRAPPER" ]; then
-    jl "=== Writing start wrapper (missing) ==="
+    jl "=== Writing start wrapper (optional fallback) ==="
     cat > "$WRAPPER" <<EOF
 #!/bin/bash
 set -euo pipefail
@@ -272,6 +272,17 @@ if ! cat > "$CFG_FILE" <<< "$PATCHED"; then
     echo "ERROR: cannot write $CFG_FILE"
     set_final_status "failed"
     exit 1
+fi
+
+# Align query.port with server-port when properties already exist (after first boot).
+if [ -f "$SERVERFILES/server.properties" ]; then
+    jl "=== Ensuring enable-query + query.port=server-port ==="
+    perl -I"$MODULE_ROOT/lib" -e '
+        require "mc_profile.pl";
+        my ($dir, $user) = @ARGV;
+        write_mc_server_properties_query($dir, $user) or exit 1;
+    ' "$SERVER_DIR" "$UNIX_USER" 2>/dev/null \
+        || jl "WARN: could not patch server.properties query settings"
 fi
 
 # Ensure eula.txt when wizard accepted EULA (file is created by the game user).

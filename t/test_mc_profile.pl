@@ -33,7 +33,16 @@ my $neo = build_mc_profile('neoforge', '1.21.1');
 my $neo_out = patch_lgsm_mc_cfg_content($cfg_in, $neo, $tmpdir);
 like($neo_out, qr/serverversion="1\.21\.1"/, 'neoforge sets mc version');
 like($neo_out, qr/executable="\.\/run\.sh"/, 'neoforge sets run.sh');
-like($neo_out, qr/preexecutable=.*mc_start_wrapper\.sh/, 'neoforge uses start wrapper');
+like($neo_out, qr/preexecutable="bash"/, 'neoforge uses bash (not java -jar) for run.sh');
+unlike($neo_out, qr/preexecutable=.*-jar/, 'neoforge must not keep java -jar preexecutable');
+like($neo_out, qr/querymode="1"/, 'neoforge forces LGSM session-only query (no gamedig kill loop)');
+
+# server.properties query upsert
+my $props_in = "server-port=25577\nenable-query=false\nquery.port=25565\nmotd=x\n";
+my $props_out = mc_server_properties_ensure_query($props_in);
+like($props_out, qr/^enable-query=true$/m, 'enables query');
+like($props_out, qr/^query\.port=25577$/m, 'query.port follows server-port');
+unlike($props_out, qr/^query\.port=25565$/m, 'old query.port replaced');
 
 my $over = mc_lgsm_cfg_overrides($profile, $tmpdir);
 is($over->{'serverversion'}, '1.20.4', 'overrides hash serverversion');

@@ -55,7 +55,8 @@ User instruction > project rules (`.cursor/rules/`) > agent defaults. **Security
 
 - **UI:** mods/modpacks live on `mods.cgi`; manage only shows a gated link when `mc_mod_ui_ready`.
 - **Java:** profile `java_major` must match `resolve_java_major(mc_version)` — heal via `mc_profile_java_needs_sync` / `mc_profile_sync_java_fields`; install verifies real JVM major.
-- **Start:** Forge/NeoForge `run.sh` uses bare `java` — `lgsm_preexecutable=wrapper` + `mc_java_env_apply` (pin absolute Temurin; handle `exec java`). Sed pin patterns: use `#` delimiter when the regex contains `|`.
+- **Start:** Forge/NeoForge: `executable=./run.sh` + `lgsm_preexecutable=bash` (never `java -jar ./run.sh`). Pin absolute Temurin in `run.sh` via `mc_java_env_apply` / loader install. Sed pin: `#` delimiter when the regex contains `|`.
+- **Monitor:** MC LGSM `querymode=1` (session only) — gamedig false-fails kill players; still sync `enable-query`/`query.port=server-port`. Query-fail restarts must appear as `monitor_restart` jobs + `last_restart_*`.
 - **Reinstall (modded):** `mc_reinstall_user.sh` (wipe `serverfiles/` → Java + loader). Vanilla/Paper stay on `game_action_user.sh`.
 - **Disable mods:** rename `.jar` ↔ `.jar.disabled` as game user; restart needed for loader pickup.
 - Details: `.cursor/rules/minecraft-mods.mdc`.
