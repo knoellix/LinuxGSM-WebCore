@@ -86,6 +86,7 @@ critical_tests=(
   "t/test_schedule_cron.pl"
   "t/test_schedule_restart.sh"
   "t/test_job_log.sh"
+  "t/test_mc_mod_install_meta.sh"
   "t/test_user_native_workers.pl"
 )
 for test_file in "${critical_tests[@]}"; do

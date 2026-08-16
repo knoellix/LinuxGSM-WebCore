@@ -501,6 +501,11 @@ if ! perl -MJSON::PP=decode_json,encode_json -e '
         next unless $base =~ /\S/;
         my $key = $mod_dir . "/" . $base;
         my $rec = { env => ($e->{env} // "unknown") };
+        if (defined $e->{title} && $e->{title} =~ /\S/) {
+            $rec->{title} = $e->{title};
+        } elsif (defined $e->{name} && $e->{name} =~ /\S/) {
+            $rec->{title} = $e->{name};
+        }
         if ($e->{modrinth_project}) {
             $rec->{source} = "modrinth";
             $rec->{modrinth_project} = $e->{modrinth_project};

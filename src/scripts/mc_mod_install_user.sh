@@ -62,18 +62,22 @@ if [ ! -f "$META_FILE" ]; then
 fi
 
 read_meta() {
+    # IMPORTANT: never use `print (EXPR), "\n"` — Perl treats that as
+    # (print EXPR), "\n" and drops the newline (sha1 then glues to prefer_disabled=0).
     perl -MJSON::PP=decode_json -e '
         open my $f, "<", shift or exit 1;
         local $/; my $m = decode_json(<$f>);
+        my $sha1 = $m->{hashes}{sha1} // "";
+        $sha1 = "" unless $sha1 =~ /^[0-9a-fA-F]{40}$/;
         print $m->{title} // "", "\n";
         print $m->{filename} // "", "\n";
         print $m->{download_url} // "", "\n";
         print $m->{mod_dir} // "mods", "\n";
         print $m->{source} // "", "\n";
-        print ($m->{hashes}{sha1} // ""), "\n";
-        print (($m->{prefer_disabled} // 0) ? 1 : 0), "\n";
+        print $sha1, "\n";
+        print(($m->{prefer_disabled} // 0) ? 1 : 0, "\n");
         print $m->{replace_basename} // "", "\n";
-        print (($m->{force_replace} // 0) ? 1 : 0), "\n";
+        print(($m->{force_replace} // 0) ? 1 : 0, "\n");
     ' "$META_FILE"
 }
 
@@ -151,8 +155,14 @@ if ! $PRIO_LOW curl -fsSL --max-time 600 -o "$TMP" "$DL_URL"; then
 fi
 
 if [ -n "$SHA1" ]; then
+    if [[ ! "$SHA1" =~ ^[0-9a-fA-F]{40}$ ]]; then
+        echo "WARN: ignoring invalid SHA1 from meta ($SHA1)"
+        SHA1=""
+    fi
+fi
+if [ -n "$SHA1" ]; then
     GOT_SHA1="$(sha1sum "$TMP" | awk '{print $1}' 2>/dev/null || true)"
-    if [ -n "$GOT_SHA1" ] && [ "$GOT_SHA1" != "$SHA1" ]; then
+    if [ -n "$GOT_SHA1" ] && [ "${GOT_SHA1,,}" != "${SHA1,,}" ]; then
         echo "ERROR: SHA1 mismatch (expected $SHA1 got $GOT_SHA1)"
         rm -f "$TMP" 2>/dev/null || true
         set_final_status "failed"
@@ -203,6 +213,7 @@ if ! perl -MJSON::PP=decode_json,encode_json -e '
     }
     my $key = $mod_dir . "/" . ($m->{filename} // "mod.jar");
     my $rec = { env => ($m->{env} // "unknown"), source => ($m->{source} // "") };
+    $rec->{title} = $m->{title} if defined $m->{title} && $m->{title} =~ /\S/;
     if (($m->{source} // "") eq "modrinth") {
         $rec->{modrinth_project} = $m->{project_id} if $m->{project_id};
         $rec->{modrinth_version} = $m->{version_id} if $m->{version_id};

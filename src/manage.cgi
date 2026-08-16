@@ -39,6 +39,7 @@ require './lib/mc_modpack.pl';
 require './lib/module_config.pl';
 require './lib/instance_profile.pl';
 require './lib/live_log.pl';
+require './lib/server_log.pl';
 
 our ($module_config_directory, $module_config_file);
 &module_config_sync_in();
@@ -2079,50 +2080,20 @@ if (($in{'action'} // '') eq 'monitor') {
     my $script_name = (split('/', $inst->{'script'}))[-1] // '';
     (my $script_dir = $inst->{'script'}) =~ s|/[^/]+$||;
     my $source = _effective_instance_source($inst);
+    my ($mc_prof) = _manage_read_mc_profile($inst);
+    my $is_mc = ($mc_prof ? 1 : 0)
+        || (&is_minecraft_game($script_name) ? 1 : 0)
+        || (-d "$script_dir/serverfiles/logs" ? 1 : 0);
 
-    # SteamCMD/Wine: games_meta `live_log_path` first (Windrose: R5.log), then
-    # wrapper/UE fallbacks; LGSM log/console paths last (often stale for steamcmd).
-    my @log_candidates;
-    if ($source eq 'steamcmd') {
-        my @raw;
-        my $rel_live = &get_game_live_log_path($script_name);
-        if ($rel_live ne '') {
-            (my $abs_live = "$script_dir/$rel_live") =~ s{//+}{/}g;
-            push @raw, $abs_live;
-        }
-        my $logs_dir = "$script_dir/serverfiles/R5/Saved/Logs";
-        my $newest_ue = '';
-        if (-d $logs_dir && opendir(my $dh, $logs_dir)) {
-            my @logs = grep { /\.log$/i } readdir($dh);
-            closedir($dh);
-            if (@logs) {
-                my @sorted = sort { (stat("$logs_dir/$b"))[9] <=> (stat("$logs_dir/$a"))[9] }
-                             map  { "$logs_dir/$_" } @logs;
-                $newest_ue = $sorted[0];
-            }
-        }
-        push @raw,
-            "$script_dir/server.log",
-            "$script_dir/windrose-debug.log",
-            "$script_dir/serverfiles/server.log",
-            "$script_dir/serverfiles/R5/Saved/Logs/R5.log",
-            "$script_dir/serverfiles/R5/Saved/Logs/WindroseServer.log",
-            "$script_dir/serverfiles/R5/Saved/Logs/Windrose.log";
-        push @raw, $newest_ue if $newest_ue;
-        push @raw,
-            "$script_dir/log/console/${script_name}-console.log",
-            "$script_dir/log/script/${script_name}.log",
-            "$script_dir/log/${script_name}.log";
-        my %seen;
-        @log_candidates = grep { !$seen{$_}++ } @raw;
-    } else {
-        @log_candidates = (
-            "$script_dir/log/console/${script_name}-console.log",
-            "$script_dir/log/script/${script_name}.log",
-            "$script_dir/log/${script_name}.log",
-        );
-    }
-    my ($log_file) = grep { -f $_ } @log_candidates;
+    my @log_candidates = grep { -f $_ } server_log_candidates(
+        server_dir  => $script_dir,
+        script_name => $script_name,
+        source      => $source,
+        minecraft   => $is_mc,
+    );
+    my $log_file = server_log_resolve_pick($in{'log_file'}, \@log_candidates);
+    $log_file = $log_candidates[0] if $log_file eq '' && @log_candidates;
+    my $log_base = $log_file ne '' ? basename($log_file) : '';
     my $auto_refresh = (($in{'auto_refresh'} // '') eq '1' && ($in{'manual'} // '') eq '1') ? 1 : 0;
 
     &header($text{'manage_monitor_title'}, '');
@@ -2135,18 +2106,37 @@ if (($in{'action'} // '') eq 'monitor') {
     print &ui_hidden('action', 'monitor');
     print &ui_hidden('xnavigation', '1');
     print &ui_hidden('manual', '1');
+    if (@log_candidates > 1) {
+        my (%seen_bn, @opts);
+        for my $p (@log_candidates) {
+            my $bn = basename($p);
+            next if $seen_bn{$bn}++;
+            my $label = $bn;
+            $label .= ' [gz]' if $bn =~ /\.gz$/i;
+            push @opts, [ $bn, $label ];
+        }
+        print &html_escape($text{'manage_monitor_log_pick_label'} || 'Log file') . ': ';
+        print &ui_select('log_file', $log_base, \@opts);
+        print " ";
+    } elsif ($log_base ne '') {
+        print &ui_hidden('log_file', &html_escape($log_base));
+    }
     print &ui_checkbox('auto_refresh', 1, $text{'manage_monitor_auto_label'}, $auto_refresh);
     print " ";
     print &ui_submit($text{'manage_monitor_refresh_btn'}, undef, undef, undef, 'btn-default');
+    print &ui_form_end();
+    print &ui_form_start('manage.cgi', 'get');
+    print &ui_hidden('instance_id', &html_escape($instance_id));
+    print &ui_hidden('xnavigation', '1');
+    print &ui_submit($text{'manage_monitor_back_btn'} || 'Back to instance',
+        undef, undef, undef, 'btn-default');
     print &ui_form_end();
     print &job_log_view_toolbar_close();
 
     if (!$log_file) {
         print "<p>" . &html_escape($text{'manage_monitor_no_log'}) . "</p>\n";
     } else {
-        # filemin index.cgi expects path = directory only; use edit_file / download for files.
         my $log_dir  = dirname($log_file);
-        my $log_base = basename($log_file);
         my $enc_dir  = _filemin_path_urlencode($log_dir);
         my $enc_file = _filemin_path_urlencode($log_base);
         my $href_edit = "/filemin/edit_file.cgi?path=$enc_dir&file=$enc_file";
@@ -2156,31 +2146,42 @@ if (($in{'action'} // '') eq 'monitor') {
             || 'Open folder lists the log directory; use Download for very large files.';
         print "<p><small>" . &html_escape($text{'manage_monitor_shown_file'} || 'Logdatei')
             . ": <code>" . &html_escape($log_file) . "</code><br>\n";
-        print "<a href=\"" . &html_escape($href_edit)
-            . "\" target=\"_blank\" rel=\"noopener noreferrer\">"
-            . &html_escape($text{'manage_monitor_log_edit'} || 'View in file manager')
-            . "</a> \x{b7} ";
+        if ($log_base !~ /\.gz$/i) {
+            print "<a href=\"" . &html_escape($href_edit)
+                . "\" target=\"_blank\" rel=\"noopener noreferrer\">"
+                . &html_escape($text{'manage_monitor_log_edit'} || 'View in file manager')
+                . "</a> - ";
+        }
         print "<a href=\"" . &html_escape($href_dl)
             . "\" target=\"_blank\" rel=\"noopener noreferrer\">"
             . &html_escape($text{'manage_monitor_log_download'} || 'Download full log')
-            . "</a> \x{b7} ";
+            . "</a> - ";
         print "<a href=\"" . &html_escape($href_dir)
             . "\" target=\"_blank\" rel=\"noopener noreferrer\">"
             . &html_escape($text{'manage_monitor_log_folder'} || 'Open log folder')
             . "</a><br>\n";
         print &html_escape($hint) . "</small></p>\n";
-        open(my $f, '<', $log_file) or do { print "<p>Logdatei nicht lesbar.</p>\n"; &footer('',''); exit; };
-        my $content = do { local $/; <$f> };
-        close($f);
-        $content //= '';
-        my $len  = length($content);
-        my $tail = $len > 8192 ? substr($content, $len - 8192) : $content;
-        my $refresh_url = "manage.cgi?instance_id=" . &html_escape($instance_id)
-            . "&action=monitor&xnavigation=1&auto_refresh=1&manual=1";
-        if ($auto_refresh) {
-            print "<meta http-equiv=\"refresh\" content=\"2;url=$refresh_url\">\n";
+        if ($log_base =~ /\.gz$/i) {
+            print "<p><small>" . &html_escape($text{'manage_monitor_log_gzip_note'}
+                || 'This file is gzip-compressed and is shown decompressed here.')
+                . "</small></p>\n";
         }
-        print &job_log_view_block($tail, id => 'monitor_log');
+        my $tail = server_log_read_tail($log_file, 8192);
+        if (!defined $tail) {
+            print "<p>" . &html_escape($text{'manage_monitor_no_log'}) . "</p>\n";
+        } else {
+            if (server_log_looks_binary($tail)) {
+                print "<p>" . &html_escape($text{'manage_monitor_log_binary_warn'}
+                    || 'File looks binary.') . "</p>\n";
+            }
+            my $refresh_url = "manage.cgi?instance_id=" . &html_escape($instance_id)
+                . "&action=monitor&xnavigation=1&auto_refresh=1&manual=1"
+                . ($log_base ne '' ? "&log_file=" . &urlize($log_base) : '');
+            if ($auto_refresh) {
+                print "<meta http-equiv=\"refresh\" content=\"2;url=$refresh_url\">\n";
+            }
+            print &job_log_view_block($tail, id => 'monitor_log');
+        }
     }
     print &job_log_view_page_close();
     &footer('', '');

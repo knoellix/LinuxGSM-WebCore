@@ -1,5 +1,5 @@
 Name:           linuxgsm-webcore
-Version:        0.2.0
+Version:        0.2.1
 Release:        1%{?dist}
 Summary:        LinuxGSM Game Server Manager for Webmin
 
@@ -41,6 +41,9 @@ fi
 /usr/share/webmin/linuxgsm-webcore/*
 
 %changelog
+* Sun Aug 16 2026 Christian Möllmann <moellix@knoellix.net> - 0.2.1-1
+- Fix mods start logging, mod SHA1 parse, live-log picker and back button
+
 * Sat Aug 15 2026 Christian Möllmann <moellix@knoellix.net> - 0.2.0-1
 - Dedicated mods page (list, enable/disable, version picker, modpack UI)
 

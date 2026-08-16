@@ -12,20 +12,28 @@ require './lib/core.pl';
 require './lib/instance.pl';
 require './lib/acl.pl';
 require './lib/jobs.pl';
+require './lib/logging.pl';
 require './lib/monitor.pl';
 require './lib/games_meta.pl';
 require './lib/module_config.pl';
 require './lib/mc_profile.pl';
 require './lib/mc_loader.pl';
 require './lib/mc_mods.pl';
+require './lib/mc_modpack.pl';
 require './lib/live_log.pl';
+require './lib/server_log.pl';
 
 our (%text, %config, %in, %gconfig);
 our ($module_root, $module_root_directory, $module_name, $config_directory);
 $module_root ||= $module_root_directory;
 $module_root ||= do { (my $d = __FILE__) =~ s{/[^/]+$}{}; $d };
 $main::gconfig{'charset'} = 'utf-8';
-&ReadParse(\%in);
+if (($ENV{REQUEST_METHOD} // '') eq 'POST'
+    && ($ENV{CONTENT_TYPE} // '') =~ /multipart\/form-data/i) {
+    &ReadParseMime(\%in);
+} else {
+    &ReadParse(\%in);
+}
 &module_config_sync_in();
 
 sub _parse_script_info {
@@ -52,6 +60,15 @@ sub _mods_status_badge_html {
     );
     my $label = $map{$status} || ($text{'mc_mods_page_status_unknown'} || 'Unknown');
     return &html_escape($label);
+}
+
+# Same pattern as manage.cgi: keep action forms/links side-by-side with spacing.
+sub _mods_inline_action_btn {
+    my ($html) = @_;
+    $html //= '';
+    # Webmin forms default to block; force inline so toolbar/row actions sit in one line.
+    $html =~ s/<form(\s)/<form style="display:inline-block;margin:0;vertical-align:middle"$1/i;
+    return "<span style='display:inline-block;margin:0 8px 6px 0;vertical-align:middle'>$html</span>";
 }
 
 sub _mods_job_launch_failed {
@@ -94,11 +111,13 @@ sub _mods_list_qs {
 }
 
 sub _mods_list_url {
-    my ($instance_id, $q, $status, $sort, $dir, $page) = @_;
+    my ($instance_id, $q, $status, $sort, $dir, $page, $mod_q) = @_;
     my $url = "mods.cgi?instance_id=" . _mods_query_urlencode($instance_id)
         . "&xnavigation=1";
     my $qs = _mods_list_qs($q, $status, $sort, $dir, $page);
     $url .= "&$qs" if $qs ne '';
+    $mod_q = _mods_mod_search_query($mod_q // '');
+    $url .= "&mod_q=" . _mods_query_urlencode($mod_q) if length($mod_q) >= 2;
     return $url;
 }
 
@@ -192,6 +211,53 @@ sub _mods_validate_modpack_server_path {
     my ($path, $unix_user, $server_dir) = @_;
     my ($ok, $resolved, $err) = &validate_modpack_import_path($path, $unix_user, $server_dir);
     return ($ok, $resolved, $err);
+}
+
+sub _mods_modpack_save_upload {
+    my ($job_dir, $upload_name, $upload_data, $unix_user) = @_;
+    return (0, 'missing') unless defined $upload_data && length($upload_data) > 0;
+    my $max = 800 * 1024 * 1024;
+    return (0, 'too_large') if length($upload_data) > $max;
+    $upload_name //= 'pack.mrpack';
+    $upload_name = basename($upload_name);
+    $upload_name =~ s/[^a-zA-Z0-9._-]//g;
+    $upload_name = 'pack.mrpack' unless $upload_name =~ /\.(mrpack|zip)\z/i;
+    my $upload_dir = "$job_dir/upload";
+    mkdir($upload_dir, 0750) or return (0, 'mkdir');
+    my $path = "$upload_dir/$upload_name";
+    open(my $fh, '>', $path) or return (0, 'write');
+    binmode($fh);
+    print $fh $upload_data;
+    close($fh);
+    if (defined $unix_user && $unix_user ne '') {
+        &chown_job_files_to_user($unix_user, $upload_dir, $path);
+    }
+    return (1, $path);
+}
+
+sub _mods_launch_modpack_upload {
+    my ($instance_id, $inst, $unix_user, $upload_name, $upload_data) = @_;
+    my (undef, undef, $server_dir) = _parse_script_info($inst);
+    my $profile = &read_mc_profile($server_dir);
+    &error($text{'mc_profile_missing'} || 'No Minecraft profile.') unless $profile;
+
+    my $job_id = &create_job($unix_user);
+    my $job_dir = &_job_dir($job_id);
+    my ($saved, $save_err) = _mods_modpack_save_upload(
+        $job_dir, $upload_name, $upload_data, $unix_user);
+    unless ($saved) {
+        &delete_job($job_id);
+        if (($save_err // '') eq 'too_large') {
+            &error($text{'mc_modpack_too_large'} || 'Modpack too large.');
+        }
+        if (($save_err // '') eq 'missing') {
+            &error($text{'mc_modpack_upload_missing'} || 'No file selected.');
+        }
+        &error($text{'mc_modpack_upload_failed'} || 'Modpack import failed.');
+    }
+
+    return _mods_finish_modpack_import_job(
+        $job_id, $instance_id, $inst, $unix_user, $save_err, $profile, $server_dir);
 }
 
 sub _mods_finish_modpack_import_job {
@@ -482,9 +548,8 @@ sub _mods_launch_modpack_resume {
 
 sub _mods_page_return_target {
     my ($instance_id, $q, $status, $sort, $dir, $page, $mod_q, $pack_q) = @_;
-    my $target = _mods_list_url($instance_id, $q, $status, $sort, $dir, $page);
-    $target .= '&mod_q=' . _mods_query_urlencode($mod_q) if length($mod_q) >= 2;
-    $target .= '&pack_q=' . _mods_query_urlencode($pack_q) if length($pack_q) >= 2;
+    my $target = _mods_list_url($instance_id, $q, $status, $sort, $dir, $page, $mod_q);
+    $target .= '&pack_q=' . _mods_query_urlencode($pack_q) if length($pack_q // '') >= 2;
     return $target;
 }
 
@@ -519,6 +584,14 @@ sub _mods_source_label_for_row {
     return $text{'mc_mods_source_curseforge'} || 'CurseForge' if $source eq 'curseforge';
     return $text{'mc_mods_source_hangar'}     || 'Hangar'     if $source eq 'hangar';
     return $text{'mc_mods_page_source_unknown'} || 'Unknown';
+}
+
+sub _mods_env_label_for_row {
+    my ($env) = @_;
+    $env = lc($env // 'unknown');
+    $env =~ s/[^a-z]//g;
+    return $text{"mc_mod_env_$env"} // $env if $env =~ /\A(?:server|client|both|unknown)\z/;
+    return $text{'mc_mod_env_unknown'} || 'Unknown';
 }
 
 sub _mods_redirect_with_flash {
@@ -680,7 +753,7 @@ my $pack_q = _mods_pack_search_query($in{'pack_q'} // '');
 &user_can_manage($instance_id)
     or &error($text{'err_acl_admin_only'} || 'Access denied');
 
-if ($action ne '' && $action !~ /^(?:monitor|start|stop|mod_enable|mod_disable|mod_delete|mod_versions|mod_search_versions|mc_mod_install|modpack_import_path|modpack_import_remote|modpack_import_resume)$/) {
+if ($action ne '' && $action !~ /^(?:monitor|start|stop|mod_enable|mod_disable|mod_delete|mod_versions|mod_search_versions|mc_mod_install|modpack_import|modpack_import_path|modpack_import_remote|modpack_import_resume)$/) {
     &error($text{'err_invalid_action'} || 'Invalid action');
 }
 if ($action ne '' && $action ne 'monitor' && &user_is_readonly($instance_id)) {
@@ -845,6 +918,26 @@ if ($action eq 'mc_mod_install') {
     _mods_redirect_job_live($job_id, $instance_id, return_target => $return_target);
 }
 
+if ($action eq 'modpack_import') {
+    $ENV{'REQUEST_METHOD'} eq 'POST'
+        or &error($text{'err_invalid_action'} || 'Invalid action');
+    &mc_mod_ui_ready($profile, $server_dir)
+        or &error($text{'mc_mods_page_gate_not_ready'}
+            || 'Mods page is available after Minecraft Java and loader setup is complete.');
+    my $upload_data = $in{'modpack_file'};
+    my $upload_name = $in{'modpack_file_filename'}
+        // $in{'modpack_upload_filename'}
+        // 'pack.mrpack';
+    unless (defined $upload_data && length($upload_data) > 0) {
+        &error($text{'mc_modpack_upload_missing'} || 'No file selected.');
+    }
+    my $job_id = _mods_launch_modpack_upload(
+        $instance_id, $inst, $unix_user, $upload_name, $upload_data);
+    my $return_target = _mods_page_return_target(
+        $instance_id, $q, $status, $sort, $dir, $page, $mod_q, $pack_q);
+    _mods_redirect_job_live($job_id, $instance_id, return_target => $return_target);
+}
+
 if ($action eq 'modpack_import_path') {
     $ENV{'REQUEST_METHOD'} eq 'POST'
         or &error($text{'err_invalid_action'} || 'Invalid action');
@@ -938,8 +1031,7 @@ if ($action eq 'mod_versions') {
     );
 
     my $safe_id = &html_escape($instance_id);
-    my $display_name = $selected_mod->{'title'} // '';
-    $display_name = $selected_mod->{'basename'} // '' unless $display_name =~ /\S/;
+    my $display_name = &_mc_mods_display_name($selected_mod);
     my $current_file = $selected_mod->{'filename_on_disk'} // ($selected_mod->{'basename'} // '');
     my $status_label = _mods_status_label_for_row(($selected_mod->{'enabled'} // 0) ? 1 : 0);
 
@@ -1159,47 +1251,15 @@ if ($action eq 'mod_search_versions') {
 
 if ($action eq 'monitor') {
     my $source = &instance_effective_source($inst);
-    my @log_candidates;
-    if ($source eq 'steamcmd') {
-        my @raw;
-        my $rel_live = &get_game_live_log_path($script_name);
-        if ($rel_live ne '') {
-            (my $abs_live = "$server_dir/$rel_live") =~ s{//+}{/}g;
-            push @raw, $abs_live;
-        }
-        my $logs_dir = "$server_dir/serverfiles/R5/Saved/Logs";
-        my $newest_ue = '';
-        if (-d $logs_dir && opendir(my $dh, $logs_dir)) {
-            my @logs = grep { /\.log$/i } readdir($dh);
-            closedir($dh);
-            if (@logs) {
-                my @sorted = sort { (stat("$logs_dir/$b"))[9] <=> (stat("$logs_dir/$a"))[9] }
-                             map  { "$logs_dir/$_" } @logs;
-                $newest_ue = $sorted[0];
-            }
-        }
-        push @raw,
-            "$server_dir/server.log",
-            "$server_dir/windrose-debug.log",
-            "$server_dir/serverfiles/server.log",
-            "$server_dir/serverfiles/R5/Saved/Logs/R5.log",
-            "$server_dir/serverfiles/R5/Saved/Logs/WindroseServer.log",
-            "$server_dir/serverfiles/R5/Saved/Logs/Windrose.log";
-        push @raw, $newest_ue if $newest_ue;
-        push @raw,
-            "$server_dir/log/console/${script_name}-console.log",
-            "$server_dir/log/script/${script_name}.log",
-            "$server_dir/log/${script_name}.log";
-        my %seen;
-        @log_candidates = grep { !$seen{$_}++ } @raw;
-    } else {
-        @log_candidates = (
-            "$server_dir/log/console/${script_name}-console.log",
-            "$server_dir/log/script/${script_name}.log",
-            "$server_dir/log/${script_name}.log",
-        );
-    }
-    my ($log_file) = grep { -f $_ } @log_candidates;
+    my @log_candidates = grep { -f $_ } server_log_candidates(
+        server_dir  => $server_dir,
+        script_name => $script_name,
+        source      => $source,
+        minecraft   => 1,
+    );
+    my $log_file = server_log_resolve_pick($in{'log_file'}, \@log_candidates);
+    $log_file = $log_candidates[0] if $log_file eq '' && @log_candidates;
+    my $log_base = $log_file ne '' ? basename($log_file) : '';
     my $auto_refresh = (($in{'auto_refresh'} // '') eq '1' && ($in{'manual'} // '') eq '1') ? 1 : 0;
 
     &header($text{'mc_mods_page_monitor_title'} || 'Server log (live)', '');
@@ -1213,6 +1273,21 @@ if ($action eq 'monitor') {
     print &ui_hidden('action', 'monitor');
     print &ui_hidden('xnavigation', '1');
     print &ui_hidden('manual', '1');
+    if (@log_candidates > 1) {
+        my (%seen_bn, @opts);
+        for my $p (@log_candidates) {
+            my $bn = basename($p);
+            next if $seen_bn{$bn}++;
+            my $label = $bn;
+            $label .= ' [gz]' if $bn =~ /\.gz$/i;
+            push @opts, [ $bn, $label ];
+        }
+        print &html_escape($text{'mc_mods_page_monitor_log_pick_label'} || 'Log file') . ': ';
+        print &ui_select('log_file', $log_base, \@opts);
+        print " ";
+    } elsif ($log_base ne '') {
+        print &ui_hidden('log_file', &html_escape($log_base));
+    }
     print &ui_checkbox('auto_refresh', 1,
         $text{'mc_mods_page_monitor_auto_label'} || 'Auto refresh (2s)', $auto_refresh);
     print " ";
@@ -1227,6 +1302,13 @@ if ($action eq 'monitor') {
         undef, undef, undef, 'btn-default');
     print &ui_form_end();
 
+    print &ui_form_start('manage.cgi', 'get');
+    print &ui_hidden('instance_id', &html_escape($instance_id));
+    print &ui_hidden('xnavigation', '1');
+    print &ui_submit($text{'manage_monitor_back_btn'} || 'Back to instance',
+        undef, undef, undef, 'btn-default');
+    print &ui_form_end();
+
     print &job_log_view_toolbar_close();
 
     if (!$log_file) {
@@ -1235,7 +1317,6 @@ if ($action eq 'monitor') {
             . "</p>\n";
     } else {
         my $log_dir  = dirname($log_file);
-        my $log_base = basename($log_file);
         my $enc_dir  = _filemin_path_urlencode($log_dir);
         my $enc_file = _filemin_path_urlencode($log_base);
         my $href_edit = "/filemin/edit_file.cgi?path=$enc_dir&file=$enc_file";
@@ -1245,10 +1326,12 @@ if ($action eq 'monitor') {
             || 'Open folder lists the log directory; use Download for very large files.';
         print "<p><small>" . &html_escape($text{'mc_mods_page_monitor_shown_file'} || 'Log file')
             . ": <code>" . &html_escape($log_file) . "</code><br>\n";
-        print "<a href=\"" . &html_escape($href_edit)
-            . "\" target=\"_blank\" rel=\"noopener noreferrer\">"
-            . &html_escape($text{'mc_mods_page_monitor_log_edit'} || 'View in file manager')
-            . "</a> - ";
+        if ($log_base !~ /\.gz$/i) {
+            print "<a href=\"" . &html_escape($href_edit)
+                . "\" target=\"_blank\" rel=\"noopener noreferrer\">"
+                . &html_escape($text{'mc_mods_page_monitor_log_edit'} || 'View in file manager')
+                . "</a> - ";
+        }
         print "<a href=\"" . &html_escape($href_dl)
             . "\" target=\"_blank\" rel=\"noopener noreferrer\">"
             . &html_escape($text{'mc_mods_page_monitor_log_download'} || 'Download full log')
@@ -1258,24 +1341,28 @@ if ($action eq 'monitor') {
             . &html_escape($text{'mc_mods_page_monitor_log_folder'} || 'Open log folder')
             . "</a><br>\n";
         print &html_escape($hint) . "</small></p>\n";
-
-        open(my $f, '<', $log_file) or do {
-            print "<p>" . &html_escape($text{'mc_mods_page_monitor_no_log'} || 'No log file found.') . "</p>\n";
-            print &job_log_view_page_close();
-            &footer('', '');
-            exit;
-        };
-        my $content = do { local $/; <$f> };
-        close($f);
-        $content //= '';
-        my $len  = length($content);
-        my $tail = $len > 8192 ? substr($content, $len - 8192) : $content;
-        my $refresh_url = "mods.cgi?instance_id=" . &html_escape($instance_id)
-            . "&action=monitor&xnavigation=1&auto_refresh=1&manual=1";
-        if ($auto_refresh) {
-            print "<meta http-equiv=\"refresh\" content=\"2;url=$refresh_url\">\n";
+        if ($log_base =~ /\.gz$/i) {
+            print "<p><small>" . &html_escape($text{'mc_mods_page_monitor_log_gzip_note'}
+                || 'This file is gzip-compressed and is shown decompressed here.')
+                . "</small></p>\n";
         }
-        print &job_log_view_block($tail, id => 'monitor_log');
+
+        my $tail = server_log_read_tail($log_file, 8192);
+        if (!defined $tail) {
+            print "<p>" . &html_escape($text{'mc_mods_page_monitor_no_log'} || 'No log file found.') . "</p>\n";
+        } else {
+            if (server_log_looks_binary($tail)) {
+                print "<p>" . &html_escape($text{'mc_mods_page_monitor_log_binary_warn'}
+                    || 'File looks binary.') . "</p>\n";
+            }
+            my $refresh_url = "mods.cgi?instance_id=" . &html_escape($instance_id)
+                . "&action=monitor&xnavigation=1&auto_refresh=1&manual=1"
+                . ($log_base ne '' ? "&log_file=" . &urlize($log_base) : '');
+            if ($auto_refresh) {
+                print "<meta http-equiv=\"refresh\" content=\"2;url=$refresh_url\">\n";
+            }
+            print &job_log_view_block($tail, id => 'monitor_log');
+        }
     }
 
     print &job_log_view_page_close();
@@ -1318,42 +1405,51 @@ print "<p><strong>" . &html_escape($text{'mc_mods_page_instance_label'} || 'Inst
 print "<strong>" . &html_escape($text{'mc_mods_page_status_label'} || 'Status')
     . ":</strong> " . _mods_status_badge_html($runtime_status) . "</p>\n";
 
+print "<div style='margin:4px 0 12px 0'>\n";
 if (&user_is_readonly($instance_id)) {
     print "<p>" . &html_escape($text{'mc_mods_page_readonly_hint'}
         || 'Read-only mode: Start/Stop actions are disabled.')
         . "</p>\n";
 } else {
-    print &ui_form_start('mods.cgi', 'post');
-    print &ui_hidden('instance_id', $safe_id);
-    print &ui_hidden('xnavigation', '1');
-    print &ui_hidden('action', 'start');
-    print &ui_submit($text{'mc_mods_page_start_btn'} || 'Start',
+    my $start_form = &ui_form_start('mods.cgi', 'post');
+    $start_form .= &ui_hidden('instance_id', $safe_id);
+    $start_form .= &ui_hidden('xnavigation', '1');
+    $start_form .= &ui_hidden('action', 'start');
+    $start_form .= &ui_submit($text{'mc_mods_page_start_btn'} || 'Start',
         undef, undef, undef, 'btn-success');
-    print &ui_form_end();
+    $start_form .= &ui_form_end();
+    print _mods_inline_action_btn($start_form);
 
-    print &ui_form_start('mods.cgi', 'post');
-    print &ui_hidden('instance_id', $safe_id);
-    print &ui_hidden('xnavigation', '1');
-    print &ui_hidden('action', 'stop');
-    print &ui_submit($text{'mc_mods_page_stop_btn'} || 'Stop',
+    my $stop_form = &ui_form_start('mods.cgi', 'post');
+    $stop_form .= &ui_hidden('instance_id', $safe_id);
+    $stop_form .= &ui_hidden('xnavigation', '1');
+    $stop_form .= &ui_hidden('action', 'stop');
+    $stop_form .= &ui_submit($text{'mc_mods_page_stop_btn'} || 'Stop',
         undef, undef, undef, 'btn-default');
-    print &ui_form_end();
+    $stop_form .= &ui_form_end();
+    print _mods_inline_action_btn($stop_form);
 }
 
-print &ui_form_start('mods.cgi', 'get');
-print &ui_hidden('instance_id', $safe_id);
-print &ui_hidden('action', 'monitor');
-print &ui_hidden('xnavigation', '1');
-print &ui_submit($text{'mc_mods_page_log_btn'} || 'Log',
-    undef, undef, undef, 'btn-default');
-print &ui_form_end();
-
-print &ui_form_start('manage.cgi', 'get');
-print &ui_hidden('instance_id', $safe_id);
-print &ui_hidden('xnavigation', '1');
-print &ui_submit($text{'mc_mods_page_back_manage'} || 'Back to manage',
-    undef, undef, undef, 'btn-default');
-print &ui_form_end();
+{
+    my $log_form = &ui_form_start('mods.cgi', 'get');
+    $log_form .= &ui_hidden('instance_id', $safe_id);
+    $log_form .= &ui_hidden('action', 'monitor');
+    $log_form .= &ui_hidden('xnavigation', '1');
+    $log_form .= &ui_submit($text{'mc_mods_page_log_btn'} || 'Log',
+        undef, undef, undef, 'btn-default');
+    $log_form .= &ui_form_end();
+    print _mods_inline_action_btn($log_form);
+}
+{
+    my $back_form = &ui_form_start('manage.cgi', 'get');
+    $back_form .= &ui_hidden('instance_id', $safe_id);
+    $back_form .= &ui_hidden('xnavigation', '1');
+    $back_form .= &ui_submit($text{'mc_mods_page_back_manage'} || 'Back to manage',
+        undef, undef, undef, 'btn-default');
+    $back_form .= &ui_form_end();
+    print _mods_inline_action_btn($back_form);
+}
+print "</div>\n";
 
 print "<h4>" . &html_escape($text{'mc_modpack_section'} || 'Import modpack') . "</h4>\n";
 print "<p>" . &html_escape($text{'mc_modpack_section_desc'}
@@ -1470,9 +1566,33 @@ if (length($pack_q) >= 2) {
     }
 }
 
+print "<h4>" . &html_escape($text{'mc_modpack_upload_section'} || 'Browser upload') . "</h4>\n";
+print "<p>" . &html_escape($text{'mc_modpack_upload_hint'}
+    || 'Small packs can be uploaded here. If the upload fails, use FTP/SFTP and the path form below.')
+    . "</p>\n";
+unless (&user_is_readonly($instance_id)) {
+    print &ui_form_start('mods.cgi', 'form-data');
+    print &ui_hidden('instance_id', $safe_id);
+    print &ui_hidden('action', 'modpack_import');
+    print &ui_hidden('xnavigation', '1');
+    print _mods_hidden_list_state($q, $status, $sort, $dir, $page);
+    print _mods_hidden_mc_search_state($mod_q, $pack_q);
+    print &ui_table_start('', undef, 2);
+    print &ui_table_row(
+        &html_escape($text{'mc_modpack_upload_label'} || 'Modpack file'),
+        &ui_upload('modpack_file', 50)
+            . "<br><small>" . &html_escape($text{'mc_modpack_upload_types'}
+                || '.mrpack or CurseForge .zip') . "</small>"
+    );
+    print &ui_table_end();
+    print &ui_submit($text{'mc_modpack_import_upload_btn'} || 'Upload and import',
+        undef, undef, undef, 'btn-primary');
+    print &ui_form_end();
+}
+
 print "<h4>" . &html_escape($text{'mc_modpack_path_section'} || 'Own file (FTP/SFTP)') . "</h4>\n";
 print "<p>" . &html_escape($text{'mc_modpack_server_limit_hint'}
-    || 'Server-side import supports large packs.')
+    || 'Server-side import supports large packs via path or search.')
     . "</p>\n";
 my $filemin_html = '';
 if ($server_dir && -d $server_dir) {
@@ -1569,7 +1689,7 @@ if (length($mod_q) >= 2) {
                 $install_form .= &ui_submit($text{'mc_mods_install_btn'} || 'Install',
                     undef, undef, undef, 'btn-primary');
                 $install_form .= &ui_form_end();
-                $actions = $install_form;
+                $actions = _mods_inline_action_btn($install_form);
 
                 my $version_url = "mods.cgi?instance_id=" . _mods_query_urlencode($instance_id)
                     . "&action=mod_search_versions&xnavigation=1"
@@ -1583,9 +1703,11 @@ if (length($mod_q) >= 2) {
                 my $qs = _mods_list_qs($q, $status, $sort, $dir, $page);
                 $version_url .= "&$qs" if $qs ne '';
                 $version_url .= "&mod_q=" . _mods_query_urlencode($mod_q) if length($mod_q) >= 2;
-                $actions .= "<br><a href=\"" . &html_escape($version_url) . "\">"
+                $actions .= _mods_inline_action_btn(
+                    "<a href=\"" . &html_escape($version_url) . "\">"
                     . &html_escape($text{'mc_mods_page_update_btn'} || 'Choose version')
-                    . "</a>";
+                    . "</a>"
+                );
             }
 
             push @rows, [
@@ -1663,10 +1785,10 @@ if ($total_mods == 0) {
     my @rows;
     for my $mod (@$paged_mods) {
         next unless ref($mod) eq 'HASH';
-        my $display_name = $mod->{'title'} // '';
-        $display_name = $mod->{'basename'} // '' unless $display_name =~ /\S/;
+        my $display_name = &_mc_mods_display_name($mod);
         my $filename = $mod->{'filename_on_disk'} // ($mod->{'basename'} // '');
         my $source = _mods_source_label_for_row($mod->{'source'} // '');
+        my $env_label = _mods_env_label_for_row($mod->{'env'} // 'unknown');
         my $status_label = _mods_status_label_for_row(($mod->{'enabled'} // 0) ? 1 : 0);
         my $basename = $mod->{'basename'} // '';
         my $actions = '';
@@ -1678,29 +1800,31 @@ if ($total_mods == 0) {
                 ? ($text{'mc_mods_page_disable_btn'} || 'Disable')
                 : ($text{'mc_mods_page_enable_btn'}  || 'Enable');
             my $toggle_class  = ($mod->{'enabled'} // 0) ? 'btn-default' : 'btn-success';
-            $actions .= &ui_form_start('mods.cgi', 'post');
-            $actions .= &ui_hidden('instance_id', $safe_id);
-            $actions .= &ui_hidden('xnavigation', '1');
-            $actions .= _mods_hidden_list_state($q, $status, $sort, $dir, $page);
-            $actions .= _mods_hidden_mod_search_state($mod_q);
-            $actions .= &ui_hidden('action', $toggle_action);
-            $actions .= &ui_hidden('mod_basename', $basename);
-            $actions .= &ui_submit($toggle_label, undef, undef, undef, $toggle_class);
-            $actions .= &ui_form_end();
+            my $toggle_form = &ui_form_start('mods.cgi', 'post');
+            $toggle_form .= &ui_hidden('instance_id', $safe_id);
+            $toggle_form .= &ui_hidden('xnavigation', '1');
+            $toggle_form .= _mods_hidden_list_state($q, $status, $sort, $dir, $page);
+            $toggle_form .= _mods_hidden_mod_search_state($mod_q);
+            $toggle_form .= &ui_hidden('action', $toggle_action);
+            $toggle_form .= &ui_hidden('mod_basename', $basename);
+            $toggle_form .= &ui_submit($toggle_label, undef, undef, undef, $toggle_class);
+            $toggle_form .= &ui_form_end();
+            $actions .= _mods_inline_action_btn($toggle_form);
 
             my $confirm = $text{'mc_mods_page_delete_confirm'}
                 || 'Really delete this mod file?';
-            $actions .= &ui_form_start('mods.cgi', 'post',
+            my $delete_form = &ui_form_start('mods.cgi', 'post',
                 "onsubmit=\"return confirm('" . &html_escape($confirm) . "')\"");
-            $actions .= &ui_hidden('instance_id', $safe_id);
-            $actions .= &ui_hidden('xnavigation', '1');
-            $actions .= _mods_hidden_list_state($q, $status, $sort, $dir, $page);
-            $actions .= _mods_hidden_mod_search_state($mod_q);
-            $actions .= &ui_hidden('action', 'mod_delete');
-            $actions .= &ui_hidden('mod_basename', $basename);
-            $actions .= &ui_submit($text{'mc_mods_page_delete_btn'} || 'Delete',
+            $delete_form .= &ui_hidden('instance_id', $safe_id);
+            $delete_form .= &ui_hidden('xnavigation', '1');
+            $delete_form .= _mods_hidden_list_state($q, $status, $sort, $dir, $page);
+            $delete_form .= _mods_hidden_mod_search_state($mod_q);
+            $delete_form .= &ui_hidden('action', 'mod_delete');
+            $delete_form .= &ui_hidden('mod_basename', $basename);
+            $delete_form .= &ui_submit($text{'mc_mods_page_delete_btn'} || 'Delete',
                 undef, undef, undef, 'btn-danger');
-            $actions .= &ui_form_end();
+            $delete_form .= &ui_form_end();
+            $actions .= _mods_inline_action_btn($delete_form);
 
             if ($mod->{'has_update_meta'}) {
                 my $versions_url = "mods.cgi?instance_id=" . _mods_query_urlencode($instance_id)
@@ -1709,13 +1833,17 @@ if ($total_mods == 0) {
                 my $qs = _mods_list_qs($q, $status, $sort, $dir, $page);
                 $versions_url .= "&$qs" if $qs ne '';
                 $versions_url .= "&mod_q=" . _mods_query_urlencode($mod_q) if length($mod_q) >= 2;
-                $actions .= "<a href=\"" . &html_escape($versions_url) . "\">"
+                $actions .= _mods_inline_action_btn(
+                    "<a href=\"" . &html_escape($versions_url) . "\">"
                     . &html_escape($text{'mc_mods_page_update_btn'} || 'Choose version')
-                    . "</a>";
+                    . "</a>"
+                );
             } else {
-                $actions .= "<small>" . &html_escape(
-                    $text{'mc_mods_page_update_unavailable'} || 'No version data available.'
-                ) . "</small>";
+                $actions .= _mods_inline_action_btn(
+                    "<small>" . &html_escape(
+                        $text{'mc_mods_page_update_unavailable'} || 'No version data available.'
+                    ) . "</small>"
+                );
             }
         }
 
@@ -1723,6 +1851,7 @@ if ($total_mods == 0) {
             &html_escape($display_name),
             &html_escape($filename),
             &html_escape($source),
+            &html_escape($env_label),
             &html_escape($status_label),
             $actions,
         ];
@@ -1732,6 +1861,7 @@ if ($total_mods == 0) {
             $text{'mc_mods_page_col_name'}     || 'Name',
             $text{'mc_mods_page_col_filename'} || 'Filename',
             $text{'mc_mods_page_col_source'}   || 'Source',
+            $text{'mc_mods_page_col_env'}      || 'Side',
             $text{'mc_mods_page_col_status'}   || 'Status',
             $text{'mc_mods_page_col_actions'}  || 'Actions',
         ],
@@ -1745,20 +1875,24 @@ if ($total_mods == 0) {
     )) . "</small></p>\n";
 
     if ($total_pages > 1) {
-        my @nav;
+        print "<div style='text-align:right;margin:4px 0 12px 0'>\n";
         if ($page > 1) {
-            my $prev_url = _mods_list_url($instance_id, $q, $status, $sort, $dir, $page - 1);
-            push @nav, "<a href=\"" . &html_escape($prev_url) . "\">"
-                . &html_escape($text{'mc_mods_page_prev'} || 'Previous') . "</a>";
+            my $prev_url = _mods_list_url(
+                $instance_id, $q, $status, $sort, $dir, $page - 1, $mod_q);
+            print _mods_inline_action_btn(
+                "<a class=\"btn btn-default\" href=\"" . &html_escape($prev_url) . "\">"
+                . &html_escape($text{'mc_mods_page_prev'} || 'Previous') . "</a>"
+            );
         }
         if ($page < $total_pages) {
-            my $next_url = _mods_list_url($instance_id, $q, $status, $sort, $dir, $page + 1);
-            push @nav, "<a href=\"" . &html_escape($next_url) . "\">"
-                . &html_escape($text{'mc_mods_page_next'} || 'Next') . "</a>";
+            my $next_url = _mods_list_url(
+                $instance_id, $q, $status, $sort, $dir, $page + 1, $mod_q);
+            print _mods_inline_action_btn(
+                "<a class=\"btn btn-default\" href=\"" . &html_escape($next_url) . "\">"
+                . &html_escape($text{'mc_mods_page_next'} || 'Next') . "</a>"
+            );
         }
-        if (@nav) {
-            print "<p>" . join(' | ', @nav) . "</p>\n";
-        }
+        print "</div>\n";
     }
 }
 

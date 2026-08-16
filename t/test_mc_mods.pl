@@ -22,6 +22,22 @@ ok(!mod_env_allowed('unknown', 'export_server'), 'unknown not in export_server')
 
 is(normalize_mod_env({ server => 'required', client => 'unsupported' }), 'server', 'modrinth env server');
 is(normalize_mod_env({ server => 'required', client => 'required' }), 'both', 'modrinth env both');
+is(normalize_mod_env_value('server'), 'server', 'string env server');
+is(normalize_mod_env_value('BOTH'), 'both', 'string env both');
+is(normalize_mod_env_value('nope'), 'unknown', 'bad string env -> unknown');
+
+is(mod_friendly_name_from_basename('EdivadLib-26.1.2-4.0.1.jar'),
+    'EdivadLib', 'friendly strips version pairs');
+is(mod_friendly_name_from_basename('EnchantmentDescriptions-neoforge-MC26.1.2-26.1.2.5.jar'),
+    'EnchantmentDescriptions', 'friendly strips loader+mc+version');
+is(mod_friendly_name_from_basename('enderio-9.0.5-alpha.jar'),
+    'enderio', 'friendly strips version and alpha');
+is(mod_friendly_name_from_basename('appleskin-neoforge-mc1.21-3.0.6.jar'),
+    'appleskin', 'friendly strips neoforge mc version');
+is(_mc_mods_display_name({ title => 'Jade', basename => 'jade-1.21.1.jar' }),
+    'Jade', 'display prefers real title');
+is(_mc_mods_display_name({ title => 'jade-1.21.1.jar', basename => 'jade-1.21.1.jar' }),
+    'jade', 'display ignores title that equals jar name');
 
 ok(mc_download_url_allowed('https://cdn.modrinth.com/data/x/y/file.jar'), 'modrinth CDN allowed');
 ok(!mc_download_url_allowed('https://evil.example.com/mod.jar'), 'unknown host blocked');
@@ -85,18 +101,31 @@ subtest 'list_installed_mods scans jar and disabled' => sub {
     print $a 'x'; close $a;
     open my $b, '>', "$sf/Beta.jar.disabled" or die $!;
     print $b 'y'; close $b;
+    open my $c, '>', "$sf/EdivadLib-26.1.2-4.0.1.jar" or die $!;
+    print $c 'z'; close $c;
     write_mc_mods_index($tmp, {
-        'mods/Alpha.jar' => { title => 'Alpha Mod', source => 'modrinth', modrinth_project => 'abc' },
+        'mods/Alpha.jar' => {
+            title => 'Alpha Mod', source => 'modrinth',
+            modrinth_project => 'abc', env => 'server',
+        },
+        'mods/EdivadLib-26.1.2-4.0.1.jar' => {
+            env => 'both', source => 'modrinth',
+        },
     });
     my $profile = { mod_dir => 'mods', loader => 'neoforge', mc_version => '1.21.1' };
     my $list = list_installed_mods($tmp, $profile);
-    is(scalar @$list, 2, 'two mods');
+    is(scalar @$list, 3, 'three mods');
     my %by = map { $_->{basename} => $_ } @$list;
     ok($by{'Alpha.jar'}{enabled}, 'alpha enabled');
     ok(!$by{'Beta.jar'}{enabled}, 'beta disabled');
     is($by{'Alpha.jar'}{title}, 'Alpha Mod', 'title from index');
+    is($by{'Alpha.jar'}{env}, 'server', 'env from index');
     ok($by{'Alpha.jar'}{has_update_meta}, 'update meta when project known');
     ok(!$by{'Beta.jar'}{has_update_meta}, 'no update meta without index');
+    is($by{'Beta.jar'}{env}, 'unknown', 'missing env is unknown');
+    is($by{'EdivadLib-26.1.2-4.0.1.jar'}{title}, 'EdivadLib',
+        'missing title becomes friendly name');
+    is($by{'EdivadLib-26.1.2-4.0.1.jar'}{env}, 'both', 'env both from index');
 };
 
 subtest 'mod_set_enabled and delete' => sub {
@@ -469,5 +498,22 @@ subtest 'prepare_mod_install_meta allows replace when force_replace set' => sub 
     is($meta->{filename}, 'jade-1.21.1.jar', 'replace keeps resolved filename');
     is($meta->{version_id}, 'ver-new', 'replace keeps pinned version');
 };
+
+# mods.cgi calls modpack_* helpers — must load mc_modpack.pl (500 if omitted)
+# mods.cgi start/stop jobs call log_action — must load logging.pl (500 if omitted)
+{
+    open my $fh, '<', "$Bin/../src/mods.cgi" or die $!;
+    local $/;
+    my $src = <$fh>;
+    close $fh;
+    like($src, qr/require\s+['\"]\.\/lib\/mc_modpack\.pl['\"]/,
+        'mods.cgi requires mc_modpack.pl');
+    like($src, qr/require\s+['\"]\.\/lib\/logging\.pl['\"]/,
+        'mods.cgi requires logging.pl');
+    like($src, qr/ReadParseMime/, 'mods.cgi supports multipart upload');
+    like($src, qr/ui_form_start\('mods\.cgi',\s*'form-data'\)/,
+        'mods.cgi has browser upload form');
+    like($src, qr/text-align:right/, 'mods.cgi right-aligns pagination');
+}
 
 done_testing();

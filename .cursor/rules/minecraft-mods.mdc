@@ -32,7 +32,7 @@ alwaysApply: false
 | `mc_compat.json` (+ optional local) | Policy: loaders, LGSM map, `lgsm_preexecutable` |
 | `mc_mods.pl` | APIs, download whitelist, installed list, enable/disable/delete, version lists |
 | `mc_modpack.pl` | Parse/validate/search/resolve; validation compare + WARN lines |
-| `mods.cgi` | Mods page UI |
+| `mods.cgi` | Mods page UI — **must** `require` both `mc_mods.pl` and `mc_modpack.pl` |
 
 ## Versions: policy vs live
 

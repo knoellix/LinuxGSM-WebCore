@@ -1,4 +1,5 @@
 # SDD progress — mc-mods-page
+
 Branch: feature/mc-mods-page
 Started: 2026-08-15
 
@@ -14,3 +15,4 @@ Task 8: complete (commits 3b3e2ea..878572b, review clean)
 Task 9: complete (commits 878572b..7544677, review clean after CTA gate fix)
 Task 10: complete (commits 7544677..cf6e2a3, verify.sh green)
 Task 11: complete (final review fix: job_live accepts sanitized stateful mods return URLs; removed inline opacity style)
+Final fix: 8b7e1bf job_live stateful mods return URLs (Important from branch review)

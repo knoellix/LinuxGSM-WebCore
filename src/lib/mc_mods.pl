@@ -411,6 +411,52 @@ sub mod_basename_sanitize {
     return $name;
 }
 
+# Human-facing name from jar basename when index has no project title.
+# e.g. appleskin-neoforge-mc1.21-3.0.6.jar -> appleskin
+sub mod_friendly_name_from_basename {
+    my ($basename) = @_;
+    $basename //= '';
+    my $name = $basename;
+    $name =~ s{.*/}{};
+    $name =~ s/\.disabled\z//i;
+    $name =~ s/\.jar\z//i;
+    return $basename unless $name =~ /\S/;
+
+    my $changed = 1;
+    while ($changed) {
+        $changed = 0;
+        if ($name =~ s/[-_](?:neoforge|forge|fabric|quilt)\z//i) {
+            $changed = 1;
+            next;
+        }
+        if ($name =~ s/[-_](?:alpha|beta|release|snapshot|dev|pre|rc\d*)\z//i) {
+            $changed = 1;
+            next;
+        }
+        # mc1.21 / MC26.1.2 / 1.21.1 / v4.0.1 / 26.1.2.5
+        if ($name =~ s/[-_](?:v?\d+(?:\.\d+){0,4}|mc\d+(?:\.\d+)*)\z//i) {
+            $changed = 1;
+            next;
+        }
+    }
+    $name =~ s/[-_]+\z//;
+    return $name if $name =~ /\S/;
+    my $fallback = $basename;
+    $fallback =~ s{.*/}{};
+    $fallback =~ s/\.disabled\z//i;
+    $fallback =~ s/\.jar\z//i;
+    return $fallback;
+}
+
+sub normalize_mod_env_value {
+    my ($env) = @_;
+    return normalize_mod_env($env) if ref($env) eq 'HASH';
+    $env = lc($env // 'unknown');
+    $env =~ s/[^a-z]//g;
+    return $env if $env =~ /\A(?:server|client|both|unknown)\z/;
+    return 'unknown';
+}
+
 sub mod_file_paths {
     my ($server_dir, $mod_dir, $basename) = @_;
     $basename = mod_basename_sanitize($basename // '');
@@ -475,8 +521,18 @@ sub _mc_mods_index_entry_fields {
     my ($rec, $basename) = @_;
     $rec = {} unless ref($rec) eq 'HASH';
     my $source = $rec->{'source'} // '';
+    my $friendly = mod_friendly_name_from_basename($basename);
+    my $raw_title = $rec->{'title'} // '';
+    $raw_title =~ s/^\s+|\s+$//g;
+    # Index often lacked title and fell back to the jar name — treat that as missing.
+    if ($raw_title eq ''
+        || lc($raw_title) eq lc($basename // '')
+        || $raw_title =~ /\.jar(?:\.disabled)?\z/i) {
+        $raw_title = $friendly;
+    }
     my %out = (
-        title           => $rec->{'title'} // $basename,
+        title           => $raw_title,
+        env             => normalize_mod_env_value($rec->{'env'}),
         source          => $source,
         project_id      => '',
         version_id      => '',
@@ -545,8 +601,14 @@ sub _mc_mods_display_name {
     my ($mod) = @_;
     return '' unless ref($mod) eq 'HASH';
     my $title = $mod->{'title'} // '';
-    return $title if $title =~ /\S/;
-    return $mod->{'basename'} // '';
+    $title =~ s/^\s+|\s+$//g;
+    my $basename = $mod->{'basename'} // '';
+    if ($title ne ''
+        && lc($title) ne lc($basename)
+        && $title !~ /\.jar(?:\.disabled)?\z/i) {
+        return $title;
+    }
+    return mod_friendly_name_from_basename($basename);
 }
 
 sub filter_installed_mods {

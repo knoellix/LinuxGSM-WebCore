@@ -894,6 +894,11 @@ sub modpack_index_add_installed_mod {
     my $key = "$mod_dir/$basename";
     my $rec = { env => (ref($entry) eq 'HASH' ? ($entry->{'env'} // 'unknown') : 'unknown') };
     if (ref($entry) eq 'HASH') {
+        if (defined $entry->{'title'} && $entry->{'title'} =~ /\S/) {
+            $rec->{'title'} = $entry->{'title'};
+        } elsif (defined $entry->{'name'} && $entry->{'name'} =~ /\S/) {
+            $rec->{'title'} = $entry->{'name'};
+        }
         if ($entry->{'modrinth_project'}) {
             $rec->{'source'} = 'modrinth';
             $rec->{'modrinth_project'} = $entry->{'modrinth_project'};

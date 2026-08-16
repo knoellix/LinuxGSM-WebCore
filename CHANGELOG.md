@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-08-16
+
+### Fixed
+
+- Mods page Start/Stop 500: `mods.cgi` now loads `logging.pl` (`log_action`)
+- Single-mod install SHA1 check: Perl `print (EXPR), "\n"` gotcha no longer glues `prefer_disabled` onto the hash
+- Live log: pick Minecraft `latest.log` / `debug.log` / rotated `*.log.gz` (gzip decompressed in-panel)
+- Live log: “Back to instance” button; replace broken middle-dot separators with ASCII `-`
+
+### Changed
+
+- Friendlier installed-mod display names and server/client/unknown side column on the mods list
+
 ## [0.2.0] - 2026-08-15
 
 ### Added
