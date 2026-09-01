@@ -80,6 +80,7 @@ critical_tests=(
   "t/test_instance_memory.pl"
   "t/test_mc_mods.pl"
   "t/test_mc_mod_deps.pl"
+  "t/test_mc_upgrade.pl"
   "t/test_mc_modpack.pl"
   "t/test_monitor_state.pl"
   "t/test_monitor_cron.pl"

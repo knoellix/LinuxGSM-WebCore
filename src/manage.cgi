@@ -34,6 +34,7 @@ require './lib/schedule.pl';
 require './lib/query.pl';
 require './lib/mc_profile.pl';
 require './lib/mc_loader.pl';
+require './lib/mc_upgrade.pl';
 require './lib/mc_mods.pl';
 require './lib/mc_modpack.pl';
 require './lib/module_config.pl';
@@ -479,6 +480,70 @@ sub _manage_apply_firewall_ports {
             . ' ' . &html_escape(join(', ', @failed)));
     }
     return 1;
+}
+
+sub _manage_mc_upgrade_error {
+    my ($err) = @_;
+    if ($err eq 'server_must_be_stopped') {
+        &error($text{'mc_upgrade_server_must_be_stopped'}
+            || 'Stop the server before upgrading the loader.');
+    } elsif ($err eq 'job_running') {
+        &error($text{'manage_job_running_title'} || 'A background job is already running.');
+    } elsif ($err eq 'not_newer') {
+        &error($text{'mc_upgrade_not_newer'}
+            || 'Selected loader version is not newer than the current pin.');
+    } elsif ($err eq 'invalid_target') {
+        &error($text{'mc_upgrade_invalid_target'}
+            || 'Invalid loader version for this Minecraft profile.');
+    } elsif ($err eq 'loader_not_modded') {
+        &error($text{'mc_loader_not_modded'});
+    } else {
+        &error($text{'mc_upgrade_failed'} || 'Could not prepare loader upgrade.');
+    }
+}
+
+sub _manage_render_mc_loader_upgrade_block {
+    my ($instance_id, $mc_prof, $server_dir, $runtime_status) = @_;
+    return unless ref($mc_prof) eq 'HASH';
+    return unless &mc_loader_is_modded($mc_prof->{'loader'} // '');
+    return unless &mc_loader_phase1_ready($mc_prof->{'loader'} // '');
+    return if &user_is_readonly($instance_id);
+    return unless &user_can_operate($instance_id);
+
+    my @avail = &mc_fetch_loader_versions($mc_prof->{'loader'}, $mc_prof->{'mc_version'} // '');
+    my @candidates = &mc_upgrade_loader_upgrade_candidates($mc_prof, \@avail);
+    return unless @candidates;
+
+    my $current = $mc_prof->{'loader_version'} // '';
+    print "<h4>" . &html_escape($text{'mc_upgrade_loader_title'} || 'Loader upgrade') . "</h4>\n";
+    print "<p>" . &html_escape($text{'mc_upgrade_loader_hint'}
+        || 'Stop the server first. Mods and world data are kept; incompatible mods may break after a loader bump.')
+        . "</p>\n";
+    if ($runtime_status eq 'online' || $runtime_status eq 'running') {
+        print "<div class=\"alert alert-warning\">"
+            . &html_escape($text{'mc_upgrade_server_must_be_stopped'}
+                || 'Stop the server before upgrading the loader.')
+            . "</div>\n";
+    }
+    print &ui_form_start('manage.cgi', 'post');
+    print &ui_hidden('instance_id', &html_escape($instance_id));
+    print &ui_hidden('action', 'mc_upgrade_loader');
+    print &ui_table_start();
+    print &ui_table_row(
+        $text{'mc_profile_loader_version'} || 'Loader version',
+        $current =~ /\S/
+            ? &html_escape($current)
+            : &html_escape($text{'mc_loader_version_auto'} || 'Automatic (latest stable)'),
+    );
+    my @opts = map { [ $_, $_ ] } @candidates;
+    print &ui_table_row(
+        $text{'mc_upgrade_loader_target'} || 'Target version',
+        &ui_select('target_loader_version', $candidates[0], \@opts),
+    );
+    print &ui_table_end();
+    print &ui_submit($text{'mc_upgrade_loader_btn'} || 'Upgrade loader',
+        undef, undef, undef, 'btn-default');
+    print &ui_form_end();
 }
 
 sub _manage_launch_background_job {
@@ -1608,6 +1673,48 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|monitor)$/) {
         );
         &_manage_redirect_poll_job($job_id, $instance_id, next_status => 'installed');
     }
+    elsif ($action eq 'mc_upgrade_loader') {
+        &_manage_redirect_if_job_running($instance_id, 'mc_upgrade_loader');
+        my (undef, $script_name, $server_dir) = _parse_script_info($inst);
+        my $profile = &read_mc_profile($server_dir);
+        &error($text{'mc_profile_missing'} || 'Kein Minecraft-Profil (.mcprofile.json).') unless $profile;
+        my $target_raw = $in{'target_loader_version'} // '';
+        $target_raw =~ s/[\t\n\r\0]//g;
+        $target_raw = substr($target_raw, 0, 64);
+        my $loader = $profile->{'loader'} // '';
+        my $target_pin = &mc_sanitize_loader_version_pin($loader, $target_raw);
+        &error($text{'mc_upgrade_invalid_target'} || 'Invalid loader version.')
+            unless defined $target_pin;
+        my $runtime = _manage_runtime_status($inst, $effective_source, light => 1);
+        my $pf = &mc_upgrade_preflight(
+            $inst, $profile, $server_dir,
+            { mode => 'loader', target_loader_version => $target_pin },
+            { instance_id => $instance_id, runtime_status => $runtime },
+        );
+        _manage_mc_upgrade_error($pf->{'err'}) unless $pf->{'ok'};
+        my ($ok, $plan, $err) = &mc_upgrade_loader_plan($profile, $target_pin);
+        _manage_mc_upgrade_error($err) unless $ok;
+        my $lgsm_script = $plan->{'lgsm_script'} // $script_name;
+        $lgsm_script =~ s/[^a-zA-Z0-9_-]//g;
+        my $job_id = &create_job($unix_user);
+        my $job_dir = &_job_dir($job_id);
+        &write_job_meta($job_id, $instance_id, 'mc_upgrade_loader', $unix_user)
+            or do { &job_mark_launch_failed($job_id); &error($text{'mc_upgrade_failed'}); };
+        &write_upgrade_job_plan($job_dir, $plan)
+            or do { &delete_job($job_id); &error($text{'mc_upgrade_failed'}); };
+        &log_action('job_started', $job_id, { instance_id => $instance_id, action => 'mc_upgrade_loader' });
+        my $rc = &system_logged(&user_worker_launch_cmd(
+            unix_user   => $unix_user,
+            module_root => $module_root,
+            worker      => "$module_root/scripts/mc_upgrade_user.sh",
+            args        => [ $job_dir, $unix_user, $server_dir, $lgsm_script ],
+        ));
+        if ($rc != 0 || !&job_dispatch_verified($job_id)) {
+            &job_mark_launch_failed($job_id);
+            &error($text{'mc_upgrade_failed'} || 'Could not start loader upgrade job.');
+        }
+        &_manage_redirect_poll_job($job_id, $instance_id);
+    }
     elsif ($action eq 'install_game') {
         my (undef, undef, $server_dir) = _parse_script_info($inst);
         my $profile = $server_dir ? &read_mc_profile($server_dir) : undef;
@@ -2454,8 +2561,9 @@ my $runtime_status = _manage_runtime_status($inst, $source_for_status, light => 
 print &ui_table_start($text{'manage_title'}, "width=100%", 2);
 print &ui_table_row($text{'manage_game'},   &html_escape($inst->{'game'}));
 my (undef, undef, $server_dir_info) = _parse_script_info($inst);
+my $mc_info;
 if ($server_dir_info) {
-    my $mc_info = &read_mc_profile($server_dir_info);
+    $mc_info = &read_mc_profile($server_dir_info);
     if ($mc_info) {
         print &ui_table_row($text{'mc_profile_loader'},
             &html_escape(&mc_loader_label($mc_info->{'loader'}, $current_lang // 'de')));
@@ -2583,6 +2691,11 @@ print &ui_table_end();
             print "<p><small>" . &html_escape($text{'setup_incomplete_hint'}) . "</small></p>\n";
         }
     }
+}
+
+if ($server_dir_info && $mc_info) {
+    _manage_render_mc_loader_upgrade_block(
+        $instance_id, $mc_info, $server_dir_info, $runtime_status);
 }
 
 # Firewall section — show open/closed status per port. Use AND semantics:

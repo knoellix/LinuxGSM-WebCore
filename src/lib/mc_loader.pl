@@ -84,6 +84,11 @@ sub _mc_version_cmp {
     return 0;
 }
 
+# Public version compare for upgrade UI/planning (newest = larger).
+sub mc_loader_version_cmp {
+    return _mc_version_cmp($_[0], $_[1]);
+}
+
 # True when a NeoForge build version belongs to the MC prefix line.
 # Accepts 3-part legacy (21.1.234) and 4-part 26.x (26.1.2.95) builds.
 sub _mc_neoforge_version_matches_prefix {
