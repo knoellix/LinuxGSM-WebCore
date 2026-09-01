@@ -5,6 +5,25 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-09-01
+
+### Added
+
+- **Mod dependencies:** Modrinth/CurseForge required deps parsed; preview on `mods.cgi`; worker installs up to five missing deps before the primary mod
+- **Loader upgrade** on `manage.cgi`: pick a newer NeoForge/Fabric/Forge build (server stopped); job re-runs loader installer without wiping mods/world
+- **Minecraft version upgrade:** bump MC version on `manage.cgi` with optional Java install step, then loader rebuild
+- **Mod compat warning** before MC upgrade: read-only scan of indexed mods against target MC version
+- **Reliable MC start:** `lgsm_control.sh` waits for session + optional `Done` in `latest.log` (large modpacks)
+- Mods page: monitor restarts, jobs table, live-log polling aligned with manage
+
+### Fixed
+
+- Mods page success banners use alert styling (no `ui_success` guard regression)
+
+### Changed
+
+- Live-log / monitor auto-refresh interval 2s → 3s on manage and mods pages
+
 ## [0.2.1] - 2026-08-16
 
 ### Added

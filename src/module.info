@@ -1,6 +1,6 @@
 name=linuxgsm-webcore
 desc=LinuxGSM Game Server Manager
 desc_de=LinuxGSM Game-Server-Verwaltung
-version=0.2.1
+version=0.2.2
 depends=acl useradmin
 category=servers

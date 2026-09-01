@@ -1,3 +1,11 @@
+linuxgsm-webcore (0.2.2-1) unstable; urgency=low
+
+  * Mod dependency detection, preview, and chained install on mods.cgi.
+  * Loader and Minecraft version upgrade jobs on manage.cgi (Phase 1–3).
+  * Reliable MC start for large modpacks; mods page monitor/jobs parity.
+
+ -- Christian Möllmann <moellix@knoellix.net>  Mon, 01 Sep 2026 13:00:00 +0200
+
 linuxgsm-webcore (0.2.1-1) unstable; urgency=low
 
   * Fix mods start/stop logging require, mod install SHA1 parse, live-log
