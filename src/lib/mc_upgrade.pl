@@ -173,6 +173,124 @@ sub mc_upgrade_mc_plan {
     }, undef);
 }
 
+our %MC_UPGRADE_TEST_MOD_COMPAT;
+
+sub mc_upgrade_set_mod_compat_for_test {
+    my ($source, $project_id, $has_compat) = @_;
+    my $key = lc("$source:$project_id");
+    $MC_UPGRADE_TEST_MOD_COMPAT{$key} = $has_compat ? 1 : 0;
+}
+
+sub mc_upgrade_clear_mod_compat_for_test {
+    %MC_UPGRADE_TEST_MOD_COMPAT = ();
+}
+
+sub _mc_upgrade_mod_compat_key {
+    my ($source, $project_id) = @_;
+    $source =~ s/[^a-z]//g;
+    return lc("$source:$project_id");
+}
+
+# 1 = compatible version exists, 0 = none, -1 = could not check (unknown source / CF key).
+sub _mc_upgrade_mod_has_compatible_version {
+    my ($source, $project_id, $target_profile) = @_;
+    $source =~ s/[^a-z]//g;
+    return -1 unless $source =~ /^(?:modrinth|curseforge)$/;
+    my $key = _mc_upgrade_mod_compat_key($source, $project_id);
+    if (exists $MC_UPGRADE_TEST_MOD_COMPAT{$key}) {
+        return $MC_UPGRADE_TEST_MOD_COMPAT{$key} ? 1 : 0;
+    }
+    if ($source eq 'modrinth') {
+        my $list = modrinth_list_compatible_versions($project_id, $target_profile);
+        return (ref($list) eq 'ARRAY' && @$list) ? 1 : 0;
+    }
+    return -1 unless _curseforge_api_headers();
+    my $list = curseforge_list_compatible_files($project_id, $target_profile);
+    return (ref($list) eq 'ARRAY' && @$list) ? 1 : 0;
+}
+
+# Unique Modrinth/CurseForge projects from the installed-mod index (enabled + disabled).
+sub mc_upgrade_collect_index_mods {
+    my ($server_dir, $profile) = @_;
+    return [] unless defined $server_dir && $server_dir ne '';
+    return [] unless ref($profile) eq 'HASH';
+    my $mods = list_installed_mods($server_dir, $profile);
+    return [] unless ref($mods) eq 'ARRAY';
+    my %seen;
+    my @out;
+    for my $mod (@$mods) {
+        next unless ref($mod) eq 'HASH';
+        my $source = $mod->{'source'} // '';
+        $source =~ s/[^a-z]//g;
+        next unless $source eq 'modrinth' || $source eq 'curseforge';
+        next unless $mod->{'has_update_meta'};
+        my $pid = $mod->{'project_id'} // '';
+        $pid =~ s/[\t\n\r\0]//g;
+        next unless $pid =~ /\S/;
+        my $dedupe = _mc_upgrade_mod_compat_key($source, $pid);
+        next if $seen{$dedupe}++;
+        $seen{$dedupe} = 1;
+        push @out, {
+            source     => $source,
+            project_id => $pid,
+            title      => _mc_mods_display_name($mod),
+            basename   => $mod->{'basename'} // '',
+        };
+    }
+    return \@out;
+}
+
+# Read-only compat scan for an MC upgrade target (no mod auto-update).
+sub mc_upgrade_mod_compat_report {
+    my ($server_dir, $profile, $target_mc_version) = @_;
+    my $empty = {
+        target_mc_version    => '',
+        total                => 0,
+        compatible           => [],
+        incompatible         => [],
+        unknown              => [],
+        unchecked_curseforge => [],
+    };
+    return $empty unless ref($profile) eq 'HASH';
+
+    my $clean_mc = $target_mc_version // '';
+    $clean_mc =~ s/[^0-9.]//g;
+    return $empty unless $clean_mc =~ /^[0-9.]+$/;
+
+    my %target_prof = %$profile;
+    $target_prof{'mc_version'} = $clean_mc;
+
+    my $projects = mc_upgrade_collect_index_mods($server_dir, $profile);
+    my @compatible;
+    my @incompatible;
+    my @unknown;
+    my @unchecked_cf;
+
+    for my $mod (@$projects) {
+        next unless ref($mod) eq 'HASH';
+        my $has = _mc_upgrade_mod_has_compatible_version(
+            $mod->{'source'}, $mod->{'project_id'}, \%target_prof);
+        if ($has == 1) {
+            push @compatible, $mod;
+        } elsif ($has == 0) {
+            push @incompatible, $mod;
+        } elsif (($mod->{'source'} // '') eq 'curseforge') {
+            push @unchecked_cf, $mod;
+        } else {
+            push @unknown, $mod;
+        }
+    }
+
+    return {
+        target_mc_version    => $clean_mc,
+        total                => scalar @$projects,
+        compatible           => \@compatible,
+        incompatible         => \@incompatible,
+        unknown              => \@unknown,
+        unchecked_curseforge => \@unchecked_cf,
+    };
+}
+
 sub mc_upgrade_preflight {
     my ($inst, $profile, $server_dir, $target, $ctx) = @_;
     $ctx = {} unless ref($ctx) eq 'HASH';

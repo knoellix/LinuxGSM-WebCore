@@ -10,6 +10,7 @@ our $module_root = "$Bin/../src";
 require "$Bin/../src/lib/mc_loader.pl";
 require "$Bin/../src/lib/mc_profile.pl";
 require "$Bin/../src/lib/jobs.pl";
+require "$Bin/../src/lib/mc_mods.pl";
 require "$Bin/../src/lib/mc_upgrade.pl";
 
 my $profile = {
@@ -136,6 +137,48 @@ subtest 'MC preflight' => sub {
     );
     ok($pf->{'ok'}, 'mc preflight offline ok');
     mc_upgrade_clear_mc_versions_for_test();
+};
+
+subtest 'mod compat report for MC upgrade' => sub {
+    no warnings 'redefine';
+    local *list_installed_mods = sub {
+        return [
+            {
+                source           => 'modrinth',
+                project_id       => 'balm',
+                title            => 'Balm',
+                basename         => 'balm.jar',
+                has_update_meta  => 1,
+                enabled          => 1,
+            },
+            {
+                source           => 'modrinth',
+                project_id       => 'farming-for-blockheads',
+                title            => 'Farming',
+                basename         => 'farming.jar',
+                has_update_meta  => 1,
+                enabled          => 1,
+            },
+            {
+                source           => 'modrinth',
+                project_id       => 'manual-mod',
+                basename         => 'manual.jar',
+                has_update_meta  => 0,
+                enabled          => 1,
+            },
+        ];
+    };
+    mc_upgrade_set_mod_compat_for_test('modrinth', 'balm', 1);
+    mc_upgrade_set_mod_compat_for_test('modrinth', 'farming-for-blockheads', 0);
+
+    my $report = mc_upgrade_mod_compat_report('/tmp/srv', $profile_mc, '1.21.1');
+    is($report->{'target_mc_version'}, '1.21.1', 'target mc in report');
+    is($report->{'total'}, 2, 'two indexed mods');
+    is(scalar @{ $report->{'compatible'} // [] }, 1, 'one compatible');
+    is(scalar @{ $report->{'incompatible'} // [] }, 1, 'one incompatible');
+    is($report->{'incompatible'}[0]{'project_id'}, 'farming-for-blockheads', 'farming incompatible');
+
+    mc_upgrade_clear_mod_compat_for_test();
 };
 
 mc_upgrade_clear_loader_versions_for_test();
