@@ -114,6 +114,8 @@ _update_mod_index() {
             $rec->{hangar_slug} = $m->{hangar_slug} if $m->{hangar_slug};
             $rec->{version_id} = $m->{version_id} if $m->{version_id};
         }
+        $rec->{version_label} = $m->{version_label}
+            if defined $m->{version_label} && $m->{version_label} =~ /\S/;
         $idx->{$key} = $rec;
         open my $of, ">", $idx_path or exit 1;
         print $of encode_json($idx);

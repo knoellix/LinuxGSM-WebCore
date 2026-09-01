@@ -228,6 +228,25 @@ subtest 'filter sort paginate installed mods' => sub {
     is(scalar @$s_empty, 0, 'empty slice');
 };
 
+is(mod_friendly_name_from_basename('appleskin-neoforge-mc1.21-3.0.6.jar'),
+    'appleskin', 'friendly strips mc and semver tail');
+
+subtest 'mod version label from basename' => sub {
+    is(mod_version_label_from_basename('balm-neoforge-26.2-26.2.0.7.jar'),
+        '26.2.0.7', 'neoforge mc + mod version');
+    is(mod_version_label_from_basename('appleskin-neoforge-mc1.21-3.0.6.jar'),
+        '3.0.6', 'mc prefix + mod semver');
+    is(mod_version_label_from_basename('EdivadLib-26.1.2-4.0.1.jar'),
+        '4.0.1', 'mc line + mod version');
+    is(mc_mod_installed_version_label({
+        version_label => '21.11.9+neoforge',
+        basename      => 'ignored.jar',
+    }), '21.11.9+neoforge', 'prefers index version_label');
+    is(mc_mod_installed_version_label({
+        basename => 'balm-neoforge-26.2-26.2.0.7.jar',
+    }), '26.2.0.7', 'falls back to basename parse');
+};
+
 subtest 'curseforge file record cache' => sub {
     curseforge_clear_file_cache();
     my $calls = 0;
@@ -310,6 +329,73 @@ subtest 'modrinth resolve uses list helper first entry' => sub {
     my $resolved = modrinth_resolve_version_file('abc-123', { loader => 'fabric', mc_version => '1.21.1' });
     is($resolved->{version_id}, 'first', 'resolve picks first compatible version');
     is($resolved->{filename}, 'first.jar', 'resolve returns first compatible filename');
+};
+
+subtest 'modrinth version matches profile mc line' => sub {
+    my $profile = { loader => 'neoforge', mc_version => '26.2' };
+    ok(_modrinth_version_matches_profile({
+        game_versions => ['26.2'],
+        loaders       => ['neoforge'],
+    }, $profile), 'exact 26.2 matches');
+    ok(_modrinth_version_matches_profile({
+        game_versions => ['26.2-snapshot-1'],
+        loaders       => ['neoforge'],
+    }, $profile), '26.2 prefix matches snapshot tag');
+    ok(!_modrinth_version_matches_profile({
+        game_versions => ['26.1.2'],
+        loaders       => ['neoforge'],
+    }, $profile), '26.1.2 does not match 26.2 target');
+};
+
+subtest 'curseforge file matches profile mc prefix' => sub {
+    ok(_curseforge_file_matches_profile(
+        { gameVersions => ['26.2'], modLoaders => [{ id => 6, name => 'NeoForge' }] },
+        '26.2', 6,
+    ), 'CF exact 26.2');
+    ok(_curseforge_file_matches_profile(
+        { sortableGameVersions => [{ gameVersion => '26.2-rc-1' }], modLoaders => ['NeoForge'] },
+        '26.2', 6,
+    ), 'CF prefix via sortableGameVersions');
+    ok(!_curseforge_file_matches_profile(
+        { gameVersions => ['26.1.2'], modLoaders => [{ id => 6 }] },
+        '26.2', 6,
+    ), 'CF wrong mc line');
+};
+
+subtest 'curseforge list falls back when gameVersion filter empty' => sub {
+    no warnings 'redefine';
+    my $calls = 0;
+    local *_curseforge_api_headers = sub { return { 'x-api-key' => 'test' }; };
+    local *_mc_mods_http_get_json = sub {
+        my ($url) = @_;
+        $calls++;
+        if ($url =~ /gameVersion=26\.2/) {
+            return { data => [] };
+        }
+        if ($url =~ /pageSize=50/ && $url !~ /gameVersion=/) {
+            return {
+                data => [{
+                    id                 => 2001,
+                    fileName           => 'mod-neoforge-26.2.jar',
+                    isServerPack       => 0,
+                    gameVersions       => ['26.2-rc-1'],
+                    modLoaders         => [{ id => 6, name => 'NeoForge' }],
+                    hashes             => [],
+                }],
+            };
+        }
+        return { data => [] };
+    };
+    local *curseforge_mod_file_download_url = sub {
+        return 'https://edge.forgecdn.net/files/1/2001/mod.jar';
+    };
+
+    my $list = curseforge_list_compatible_files(703224, {
+        loader => 'neoforge', mc_version => '26.2',
+    });
+    ok($calls >= 2, 'retries without gameVersion when filtered list empty');
+    is(scalar @$list, 1, 'fallback finds prefix-matched file');
+    is($list->[0]{file_id}, 2001, 'fallback file id');
 };
 
 subtest 'curseforge list compatible files filters by server pack and download' => sub {

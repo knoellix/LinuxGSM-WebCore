@@ -529,7 +529,7 @@ sub _manage_render_mc_loader_upgrade_block {
     my ($instance_id, $mc_prof, $server_dir, $runtime_status) = @_;
     return unless ref($mc_prof) eq 'HASH';
     return unless &mc_loader_is_modded($mc_prof->{'loader'} // '');
-    return unless &mc_loader_phase1_ready($mc_prof->{'loader'} // '');
+    return unless &mc_mod_ui_ready($mc_prof, $server_dir);
     return if &user_is_readonly($instance_id);
     return unless &user_can_operate($instance_id);
 
@@ -599,69 +599,11 @@ sub _manage_launch_mc_upgrade_job {
     &_manage_redirect_poll_job($job_id, $instance_id);
 }
 
-sub _manage_render_mc_mod_compat_warning {
-    my ($report) = @_;
-    return '' unless ref($report) eq 'HASH';
-    my $target = $report->{'target_mc_version'} // '';
-    return '' unless $target =~ /\S/;
-    return '' unless ($report->{'total'} // 0) > 0;
-
-    my $out = '';
-    my $bad = $report->{'incompatible'} // [];
-    my $cf_skip = $report->{'unchecked_curseforge'} // [];
-    if (@$bad) {
-        my $msg = &text('mc_upgrade_mod_compat_warning',
-            scalar @$bad,
-            $target,
-        );
-        $out .= "<div class=\"alert alert-warning\">" . &html_escape($msg) . "</div>\n";
-        my @rows;
-        my $n = 0;
-        for my $mod (@$bad) {
-            last unless ref($mod) eq 'HASH';
-            last if ++$n > 25;
-            push @rows, [
-                &html_escape($mod->{'title'} // $mod->{'basename'} // '?'),
-                &html_escape($mod->{'project_id'} // ''),
-                &html_escape($text{"mc_mods_source_$mod->{'source'}"} // ($mod->{'source'} // '')),
-            ];
-        }
-        $out .= &ui_columns_table(
-            [
-                $text{'mc_upgrade_mod_compat_col_mod'} || 'Mod',
-                $text{'mc_upgrade_mod_compat_col_project'} || 'Project',
-                $text{'mc_mods_col_source'} || 'Source',
-            ],
-            '100%',
-            \@rows,
-        );
-        if (@$bad > 25) {
-            $out .= "<p><small>" . &html_escape(&text(
-                'mc_upgrade_mod_compat_truncated',
-                scalar(@$bad) - 25,
-            )) . "</small></p>\n";
-        }
-    } elsif (!@$cf_skip) {
-        $out .= "<p><em>" . &html_escape(&text(
-            'mc_upgrade_mod_compat_ok',
-            $report->{'total'} // 0,
-            $target,
-        )) . "</em></p>\n";
-    }
-    if (@$cf_skip) {
-        $out .= "<p><em>" . &html_escape(&text(
-            'mc_upgrade_mod_compat_cf_skipped',
-            scalar @$cf_skip,
-        )) . "</em></p>\n";
-    }
-    return $out;
-}
-
 sub _manage_render_mc_version_upgrade_block {
     my ($instance_id, $mc_prof, $server_dir, $runtime_status) = @_;
     return unless ref($mc_prof) eq 'HASH';
     return unless &mc_loader_is_modded($mc_prof->{'loader'} // '');
-    return unless &mc_loader_phase1_ready($mc_prof->{'loader'} // '');
+    return unless &mc_mod_ui_ready($mc_prof, $server_dir);
     return if &user_is_readonly($instance_id);
     return unless &user_can_operate($instance_id);
 
@@ -698,11 +640,6 @@ sub _manage_render_mc_version_upgrade_block {
         $compat_target = $preview_target;
     }
     my $needs_java = &mc_upgrade_mc_needs_java($mc_prof, $compat_target);
-    if ($server_dir) {
-        my $compat = &mc_upgrade_mod_compat_report($server_dir, $mc_prof, $compat_target);
-        my $compat_html = _manage_render_mc_mod_compat_warning($compat);
-        print $compat_html if $compat_html ne '';
-    }
     print &ui_table_row(
         $text{'mc_upgrade_mc_target'} || 'Target version',
         &ui_select('target_mc_version', $compat_target, \@opts),
@@ -715,6 +652,12 @@ sub _manage_render_mc_version_upgrade_block {
         );
     }
     print &ui_table_end();
+    my $compat_url = 'mods.cgi?instance_id=' . &urlize($instance_id)
+        . '&compat_mc=' . &urlize($compat_target) . '&xnavigation=1';
+    print "<p><small><a href=\"" . &html_escape($compat_url) . "\">"
+        . &html_escape($text{'mc_upgrade_mc_compat_mods_link'}
+            || 'Check mod compatibility for the target MC version on the mods page.')
+        . "</a></small></p>\n";
     print &ui_submit($text{'mc_upgrade_mc_btn'} || 'Upgrade Minecraft version',
         undef, undef, undef, 'btn-default');
     print &ui_form_end();
@@ -2795,13 +2738,6 @@ print &ui_table_end();
     }
 }
 
-if ($server_dir_info && $mc_info) {
-    _manage_render_mc_loader_upgrade_block(
-        $instance_id, $mc_info, $server_dir_info, $runtime_status);
-    _manage_render_mc_version_upgrade_block(
-        $instance_id, $mc_info, $server_dir_info, $runtime_status);
-}
-
 # Firewall section — show open/closed status per port. Use AND semantics:
 # the toggle button reflects "are *all* ports open?" so a single click can re-open
 # a partially closed set.
@@ -3411,6 +3347,13 @@ JS
     print "<script>lgsmShowConfigView('" . &html_escape($cfg_view_key) . "');</script>\n";
 
     print "</details>\n";
+}
+
+if ($server_dir_info && $mc_info) {
+    _manage_render_mc_loader_upgrade_block(
+        $instance_id, $mc_info, $server_dir_info, $runtime_status);
+    _manage_render_mc_version_upgrade_block(
+        $instance_id, $mc_info, $server_dir_info, $runtime_status);
 }
 
 # Per-instance job list (operators and admins only)

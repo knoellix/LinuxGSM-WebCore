@@ -202,7 +202,7 @@ sub _mc_upgrade_mod_compat_key {
 
 # 1 = compatible version exists, 0 = none, -1 = could not check (unknown source / CF key).
 sub _mc_upgrade_mod_has_compatible_version {
-    my ($source, $project_id, $target_profile) = @_;
+    my ($source, $project_id, $target_profile, $version_id) = @_;
     $source =~ s/[^a-z]//g;
     return -1 unless $source =~ /^(?:modrinth|curseforge)$/;
     my $key = _mc_upgrade_mod_compat_key($source, $project_id);
@@ -210,11 +210,19 @@ sub _mc_upgrade_mod_has_compatible_version {
         return $MC_UPGRADE_TEST_MOD_COMPAT{$key} ? 1 : 0;
     }
     if ($source eq 'modrinth') {
-        my $list = modrinth_list_compatible_versions($project_id, $target_profile);
+        my $pid = $project_id // '';
+        $pid =~ s/[^a-zA-Z0-9_-]//g;
+        if ($version_id && $version_id =~ /^[a-zA-Z0-9_-]+$/) {
+            my $resolved = modrinth_resolve_project_id_from_version($version_id);
+            $pid = $resolved if defined $resolved && $resolved =~ /\S/;
+        }
+        return 0 unless $pid =~ /\S/;
+        my $list = modrinth_list_compatible_versions($pid, $target_profile);
         return (ref($list) eq 'ARRAY' && @$list) ? 1 : 0;
     }
     return -1 unless _curseforge_api_headers();
-    my $list = curseforge_list_compatible_files($project_id, $target_profile);
+    my $list = curseforge_list_compatible_files(
+        $project_id, $target_profile, { skip_download_url => 1 });
     return (ref($list) eq 'ARRAY' && @$list) ? 1 : 0;
 }
 
@@ -242,6 +250,7 @@ sub mc_upgrade_collect_index_mods {
         push @out, {
             source     => $source,
             project_id => $pid,
+            version_id => $mod->{'version_id'} // '',
             title      => _mc_mods_display_name($mod),
             basename   => $mod->{'basename'} // '',
         };
@@ -307,7 +316,8 @@ sub mc_upgrade_mod_compat_report {
     for my $mod (@$projects) {
         next unless ref($mod) eq 'HASH';
         my $has = _mc_upgrade_mod_has_compatible_version(
-            $mod->{'source'}, $mod->{'project_id'}, \%target_prof);
+            $mod->{'source'}, $mod->{'project_id'}, \%target_prof,
+            $mod->{'version_id'} // '');
         if ($has == 1) {
             push @compatible, $mod;
         } elsif ($has == 0) {
@@ -381,6 +391,67 @@ sub mc_upgrade_preflight {
         return { ok => 1 };
     }
     return { ok => 0, err => 'invalid_mode' };
+}
+
+# HTML summary/table for mc_upgrade_mod_compat_report (Webmin CGI context).
+sub mc_upgrade_render_mod_compat_report_html {
+    my ($report) = @_;
+    our %text;
+    return '' unless ref($report) eq 'HASH';
+    my $target = $report->{'target_mc_version'} // '';
+    return '' unless $target =~ /\S/;
+    return '' unless ($report->{'total'} // 0) > 0;
+
+    my $out = '';
+    my $bad = $report->{'incompatible'} // [];
+    my $cf_skip = $report->{'unchecked_curseforge'} // [];
+    if (@$bad) {
+        my $msg = &text('mc_upgrade_mod_compat_warning',
+            scalar @$bad,
+            $target,
+        );
+        $out .= "<details open><summary>" . &html_escape($msg) . "</summary>\n";
+        my @rows;
+        my $n = 0;
+        for my $mod (@$bad) {
+            last unless ref($mod) eq 'HASH';
+            last if ++$n > 25;
+            push @rows, [
+                &html_escape($mod->{'title'} // $mod->{'basename'} // '?'),
+                &html_escape($mod->{'project_id'} // ''),
+                &html_escape($text{"mc_mods_source_$mod->{'source'}"} // ($mod->{'source'} // '')),
+            ];
+        }
+        $out .= &ui_columns_table(
+            [
+                $text{'mc_upgrade_mod_compat_col_mod'} || 'Mod',
+                $text{'mc_upgrade_mod_compat_col_project'} || 'Project',
+                $text{'mc_mods_col_source'} || 'Source',
+            ],
+            '100%',
+            \@rows,
+        );
+        if (@$bad > 25) {
+            $out .= "<p><small>" . &html_escape(&text(
+                'mc_upgrade_mod_compat_truncated',
+                scalar(@$bad) - 25,
+            )) . "</small></p>\n";
+        }
+        $out .= "</details>\n";
+    } elsif (!@$cf_skip) {
+        $out .= "<p><em>" . &html_escape(&text(
+            'mc_upgrade_mod_compat_ok',
+            $report->{'total'} // 0,
+            $target,
+        )) . "</em></p>\n";
+    }
+    if (@$cf_skip) {
+        $out .= "<p><em>" . &html_escape(&text(
+            'mc_upgrade_mod_compat_cf_skipped',
+            scalar @$cf_skip,
+        )) . "</em></p>\n";
+    }
+    return $out;
 }
 
 sub write_upgrade_job_plan {

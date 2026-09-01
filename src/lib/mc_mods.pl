@@ -523,6 +523,58 @@ sub mod_friendly_name_from_basename {
     return $fallback;
 }
 
+# Best-effort mod version string from jar basename (e.g. balm-neoforge-26.2-26.2.0.7.jar → 26.2.0.7).
+sub mod_version_label_from_basename {
+    my ($basename) = @_;
+    my $clean = mod_basename_sanitize($basename // '');
+    return '' unless $clean;
+    my $stem = $clean;
+    $stem =~ s/\.jar\z//i;
+    my @parts = split /[-_]+/, $stem;
+    my @vers;
+    for my $p (@parts) {
+        if ($p =~ /^mc(\d+(?:\.\d+)*)$/i) {
+            push @vers, $1;
+        } elsif ($p =~ /^v?(\d+(?:\.\d+){1,4})$/i) {
+            push @vers, $1;
+        } elsif ($p =~ /^\d+(?:\.\d+)+$/) {
+            push @vers, $p;
+        }
+    }
+    return $vers[-1] // '' if @vers;
+    return '';
+}
+
+# Human-readable installed version for mods list (index label → CF cache → jar name).
+sub mc_mod_installed_version_label {
+    my ($mod) = @_;
+    return '' unless ref($mod) eq 'HASH';
+    my $label = $mod->{'version_label'} // '';
+    $label =~ s/^\s+|\s+$//g;
+    return $label if $label =~ /\S/;
+
+    my $source = $mod->{'source'} // '';
+    if ($source eq 'curseforge') {
+        my $pid = $mod->{'project_id'} // '';
+        my $fid = $mod->{'file_id'} // '';
+        $pid =~ s/\D//g;
+        $fid =~ s/\D//g;
+        if ($pid && $fid) {
+            my $key = curseforge_api_key();
+            if ($key) {
+                my $rec = curseforge_fetch_file_record($pid, $fid, $key, 120);
+                if (ref($rec) eq 'HASH') {
+                    my $dn = $rec->{'displayName'} // '';
+                    $dn =~ s/^\s+|\s+$//g;
+                    return $dn if $dn =~ /\S/;
+                }
+            }
+        }
+    }
+
+    return mod_version_label_from_basename($mod->{'basename'} // '');
+}
+
 sub normalize_mod_env_value {
     my ($env) = @_;
     return normalize_mod_env($env) if ref($env) eq 'HASH';
@@ -614,6 +666,7 @@ sub _mc_mods_index_entry_fields {
         file_id         => $rec->{'file_id'} // '',
         hangar_owner    => $rec->{'hangar_owner'} // '',
         hangar_slug     => $rec->{'hangar_slug'} // '',
+        version_label   => $rec->{'version_label'} // '',
         has_update_meta => _mc_mods_index_entry_has_update_meta($source, $rec),
     );
     if ($source eq 'modrinth') {
@@ -1105,6 +1158,55 @@ sub modrinth_search_mods {
     return @out;
 }
 
+# True when a Modrinth version entry supports the profile MC + loader line.
+sub _modrinth_version_matches_profile {
+    my ($ver, $profile) = @_;
+    return 0 unless ref($ver) eq 'HASH' && ref($profile) eq 'HASH';
+    my $mc = $profile->{'mc_version'} // '';
+    $mc =~ s/[^0-9.]//g;
+    return 0 unless $mc =~ /^[0-9.]+$/;
+    my $loader = mc_loader_modrinth_slug($profile->{'loader'} // '');
+    return 0 unless $loader;
+    my $ok_mc;
+    for my $gv (@{ $ver->{'game_versions'} // [] }) {
+        next unless defined $gv && $gv =~ /\S/;
+        if ($gv eq $mc || index($gv, "$mc.") == 0 || index($gv, $mc) == 0) {
+            $ok_mc = 1;
+            last;
+        }
+    }
+    return 0 unless $ok_mc;
+    my @lds = @{ $ver->{'loaders'} // [] };
+    return 1 unless @lds;
+    return (grep { lc($_) eq $loader } @lds) ? 1 : 0;
+}
+
+sub _modrinth_fetch_project_versions {
+    my ($project_id, $loader, $mc) = @_;
+    require JSON::PP;
+    my $headers = { 'User-Agent' => modrinth_user_agent() };
+    my $loaders = _mc_mods_urlencode(JSON::PP::encode_json([$loader]));
+    my $url = "https://api.modrinth.com/v2/project/$project_id/version?loaders=$loaders";
+    $url .= '&game_versions=' . _mc_mods_urlencode(JSON::PP::encode_json([$mc])) if $mc;
+    my $list = _mc_mods_http_get_json($url, $headers);
+    return [] unless ref($list) eq 'ARRAY';
+    return $list;
+}
+
+sub modrinth_resolve_project_id_from_version {
+    my ($version_id) = @_;
+    $version_id =~ s/[^a-zA-Z0-9_-]//g;
+    return undef unless $version_id;
+    my $ver = _mc_mods_http_get_json(
+        "https://api.modrinth.com/v2/version/$version_id",
+        { 'User-Agent' => modrinth_user_agent() },
+    );
+    return undef unless ref($ver) eq 'HASH';
+    my $pid = $ver->{'project_id'} // '';
+    $pid =~ s/[^a-zA-Z0-9_-]//g;
+    return $pid =~ /\S/ ? $pid : undef;
+}
+
 sub modrinth_list_compatible_versions {
     my ($project_id, $profile) = @_;
     return [] unless defined $project_id && $project_id =~ /\S/;
@@ -1115,14 +1217,14 @@ sub modrinth_list_compatible_versions {
     $mc =~ s/[^0-9.]//g;
     my $loader = mc_loader_modrinth_slug($profile->{'loader'} // '');
     return [] unless $mc && $loader;
-    require JSON::PP;
-    my $loaders = _mc_mods_urlencode(JSON::PP::encode_json([$loader]));
-    my $vers    = _mc_mods_urlencode(JSON::PP::encode_json([$mc]));
-    my $url = "https://api.modrinth.com/v2/project/$project_id/version"
-        . "?loaders=$loaders&game_versions=$vers";
-    my $list = _mc_mods_http_get_json($url, {
-        'User-Agent' => modrinth_user_agent(),
-    });
+    my $list = _modrinth_fetch_project_versions($project_id, $loader, $mc);
+    if (!@$list) {
+        $list = _modrinth_fetch_project_versions($project_id, $loader, '');
+        if (ref($list) eq 'ARRAY' && @$list) {
+            my @filtered = grep { _modrinth_version_matches_profile($_, $profile) } @$list;
+            $list = \@filtered;
+        }
+    }
     return [] unless ref($list) eq 'ARRAY' && @$list;
     my @out;
     for my $ver (@$list) {
@@ -1163,16 +1265,59 @@ sub modrinth_resolve_version_file {
     my $ver = $list->[0];
     return undef unless ref($ver) eq 'HASH';
     return {
-        version_id   => $ver->{'version_id'} // '',
-        filename     => $ver->{'filename'} // 'mod.jar',
+        version_id    => $ver->{'version_id'} // '',
+        version_label => $ver->{'name'} // '',
+        filename      => $ver->{'filename'} // 'mod.jar',
         download_url => $ver->{'download_url'},
         hashes       => $ver->{'hashes'} // {},
         env          => $ver->{'env'} // 'unknown',
     };
 }
 
-sub curseforge_list_compatible_files {
-    my ($project_id, $profile, $opts) = @_;
+# CurseForge file matches profile MC line + loader (prefix MC match like modpack search).
+sub _curseforge_file_matches_profile {
+    my ($f, $mc, $loader_type) = @_;
+    return 0 unless ref($f) eq 'HASH';
+    my @vers;
+    push @vers, @{ $f->{'gameVersions'} // [] };
+    for my $sgv (@{ $f->{'sortableGameVersions'} // [] }) {
+        push @vers, $sgv->{'gameVersion'}
+            if ref($sgv) eq 'HASH' && ($sgv->{'gameVersion'} // '') =~ /\S/;
+    }
+    if ($mc && @vers) {
+        my $ok_ver;
+        for my $v (@vers) {
+            next unless defined $v && $v =~ /\S/;
+            if ($v eq $mc || index($v, $mc) == 0) {
+                $ok_ver = 1;
+                last;
+            }
+        }
+        return 0 unless $ok_ver;
+    }
+    if (defined $loader_type && ref($f->{'modLoaders'}) eq 'ARRAY' && @{ $f->{'modLoaders'} }) {
+        my %want = (
+            1 => 'forge', 4 => 'fabric', 5 => 'quilt', 6 => 'neoforge',
+        );
+        my $want_name = lc($want{$loader_type} // '');
+        my $ok_loader;
+        for my $ml (@{ $f->{'modLoaders'} }) {
+            if (!ref($ml)) {
+                $ok_loader = 1 if $want_name && lc($ml) eq $want_name;
+            }
+            elsif (ref($ml) eq 'HASH') {
+                $ok_loader = 1 if ($ml->{'id'} // 0) == $loader_type;
+                my $n = lc($ml->{'name'} // '');
+                $ok_loader = 1 if $want_name && ($n eq $want_name || index($n, $want_name) >= 0);
+            }
+        }
+        return 0 unless $ok_loader;
+    }
+    return 1;
+}
+
+sub _curseforge_collect_compatible_files {
+    my ($project_id, $profile, $opts, $query_mc) = @_;
     $opts = {} unless ref($opts) eq 'HASH';
     my $skip_dl = $opts->{'skip_download_url'} ? 1 : 0;
     my $headers = _curseforge_api_headers() or return [];
@@ -1183,14 +1328,16 @@ sub curseforge_list_compatible_files {
     $mc =~ s/[^0-9.]//g;
     my $loader_type = curseforge_mod_loader_type($profile->{'loader'} // '');
     return [] unless $mc && defined $loader_type;
-    my $url = "https://api.curseforge.com/v1/mods/$project_id/files"
-        . "?gameVersion=$mc&modLoaderType=$loader_type&pageSize=30";
+    my $url = "https://api.curseforge.com/v1/mods/$project_id/files?pageSize=50";
+    $url .= "&modLoaderType=$loader_type";
+    $url .= "&gameVersion=$mc" if defined $query_mc && $query_mc;
     my $resp = _mc_mods_http_get_json($url, $headers);
     return [] unless ref($resp) eq 'HASH' && ref($resp->{'data'}) eq 'ARRAY';
     my @out;
     for my $f (@{ $resp->{'data'} }) {
         next unless ref($f) eq 'HASH';
         next if ($f->{'isServerPack'} // 0);
+        next unless _curseforge_file_matches_profile($f, $mc, $loader_type);
         my $fid = $f->{'id'};
         next unless defined $fid;
         my $dl = '';
@@ -1211,8 +1358,16 @@ sub curseforge_list_compatible_files {
             hashes       => \%hashes,
             env          => 'both',
         };
+        last if @out >= 30;
     }
     return \@out;
+}
+
+sub curseforge_list_compatible_files {
+    my ($project_id, $profile, $opts) = @_;
+    my @out = @{ _curseforge_collect_compatible_files($project_id, $profile, $opts, 1) // [] };
+    return \@out if @out;
+    return _curseforge_collect_compatible_files($project_id, $profile, $opts, 0);
 }
 
 sub curseforge_resolve_mod_file {
@@ -1606,6 +1761,7 @@ sub _prepare_mod_install_meta_core {
                             hashes       => $f->{'hashes'} // {},
                             env          => ref($ver->{'env'}) eq 'HASH'
                                 ? normalize_mod_env($ver->{'env'}) : 'unknown',
+                            version_label => $ver->{'name'} // '',
                         };
                         last;
                     }
@@ -1618,6 +1774,7 @@ sub _prepare_mod_install_meta_core {
             source       => 'modrinth',
             project_id   => $pid,
             version_id   => $file->{'version_id'},
+            version_label => $file->{'version_label'} // '',
             title        => $ids->{'title'} // $pid,
             filename     => $file->{'filename'},
             download_url => $file->{'download_url'},
@@ -1628,6 +1785,18 @@ sub _prepare_mod_install_meta_core {
         );
         unless (@raw_deps) {
             @raw_deps = @{ _modrinth_version_deps_by_id($meta{'version_id'}) };
+        }
+        if (!(($meta{'version_label'} // '') =~ /\S/) && ($meta{'version_id'} // '') =~ /^[a-zA-Z0-9]+$/) {
+            $meta{'version_label'} = mod_version_label_from_basename($meta{'filename'} // '');
+        }
+        if (!(($meta{'version_label'} // '') =~ /\S/) && ($meta{'version_id'} // '') =~ /^[a-zA-Z0-9]+$/) {
+            my $ver = _mc_mods_http_get_json(
+                "https://api.modrinth.com/v2/version/$meta{'version_id'}",
+                { 'User-Agent' => modrinth_user_agent() },
+            );
+            if (ref($ver) eq 'HASH' && ($ver->{'name'} // '') =~ /\S/) {
+                $meta{'version_label'} = $ver->{'name'};
+            }
         }
     } elsif ($source eq 'curseforge') {
         my $pid = $ids->{'project_id'} // '';
@@ -1655,10 +1824,16 @@ sub _prepare_mod_install_meta_core {
         }
         return (0, undef, 'resolve_failed', []) unless $file;
         return (0, undef, 'curseforge_key_missing', []) unless _curseforge_api_headers();
+        my $version_label = '';
+        if (ref($cf_meta) eq 'HASH') {
+            $version_label = $cf_meta->{'displayName'} // '';
+            $version_label =~ s/^\s+|\s+$//g;
+        }
         %meta = (
             source       => 'curseforge',
             project_id   => $pid,
             file_id      => $file->{'file_id'},
+            version_label => $version_label,
             title        => $ids->{'title'} // $pid,
             filename     => $file->{'filename'},
             download_url => $file->{'download_url'},
@@ -1684,6 +1859,7 @@ sub _prepare_mod_install_meta_core {
             hangar_owner => $owner,
             hangar_slug  => $slug,
             version_id   => $file->{'version_id'},
+            version_label => $file->{'version_id'} // '',
             title        => $ids->{'title'} // $slug,
             filename     => $file->{'filename'},
             download_url => $file->{'download_url'},

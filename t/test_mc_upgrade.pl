@@ -39,6 +39,8 @@ subtest 'validate loader target' => sub {
 subtest 'upgrade candidates' => sub {
     my @candidates = mc_upgrade_loader_upgrade_candidates($profile, \@neo26);
     is_deeply(\@candidates, ['26.1.2.95'], 'only newer than current pin');
+    ok(!mc_loader_phase1_ready('neoforge'), 'neoforge is phase 2 (not phase1_ready)');
+    ok(mc_loader_is_modded('neoforge'), 'neoforge is modded loader');
 };
 
 subtest 'loader plan' => sub {
