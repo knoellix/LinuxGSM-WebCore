@@ -78,4 +78,65 @@ subtest 'write_upgrade_job_plan' => sub {
 };
 
 mc_upgrade_clear_loader_versions_for_test();
+
+my $profile_mc = {
+    loader         => 'neoforge',
+    mc_version     => '1.20.4',
+    loader_version => '20.4.10',
+    java_major     => 21,
+    java_home      => '.java/temurin-21',
+    lgsm_script    => 'mcserver',
+    mod_dir        => 'mods',
+};
+
+subtest 'MC version upgrade candidates and validation' => sub {
+    mc_upgrade_set_mc_versions_for_test(
+        qw(1.16.5 1.20.4 1.20.6 1.21.1 26.1.2)
+    );
+    my @candidates = mc_upgrade_mc_upgrade_candidates($profile_mc);
+    ok(grep { $_ eq '1.21.1' } @candidates, '1.21.1 is upgrade candidate from 1.20.4');
+    ok(!grep { $_ eq '1.20.4' } @candidates, 'current mc not listed');
+    ok(!grep { $_ eq '1.16.5' } @candidates, 'downgrade not listed');
+
+    is(mc_upgrade_validate_mc_target($profile_mc, '1.21.1'), undef, '1.21.1 valid target');
+    is(mc_upgrade_validate_mc_target($profile_mc, '1.20.4'), 'same_version', 'same version rejected');
+    is(mc_upgrade_validate_mc_target($profile_mc, '1.16.5'), 'not_newer', 'downgrade rejected');
+    mc_upgrade_clear_mc_versions_for_test();
+};
+
+subtest 'MC plan detects Java major change' => sub {
+    my $profile_old = {
+        loader      => 'neoforge',
+        mc_version  => '1.16.5',
+        java_major  => 8,
+        java_home   => '.java/temurin-8',
+        lgsm_script => 'mcserver',
+        mod_dir     => 'mods',
+    };
+    mc_upgrade_set_mc_versions_for_test(qw(1.16.5 1.20.4 1.21.1));
+    my ($ok, $plan, $err) = mc_upgrade_mc_plan($profile_old, '1.20.4');
+    ok($ok, 'mc plan with java bump') or diag($err // 'unknown');
+    is($plan->{'target_java_major'}, 21, 'target java 21');
+    ok($plan->{'needs_java'}, 'needs java when major changes 8->21');
+    mc_upgrade_clear_mc_versions_for_test();
+
+    mc_upgrade_set_mc_versions_for_test(qw(1.20.4 1.21.1));
+    my ($ok2, $plan2) = mc_upgrade_mc_plan($profile_mc, '1.21.1');
+    ok($ok2, 'mc plan for 1.21.1');
+    ok(!$plan2->{'needs_java'}, 'no java step when major stays 21');
+    mc_upgrade_clear_mc_versions_for_test();
+};
+
+subtest 'MC preflight' => sub {
+    mc_upgrade_set_mc_versions_for_test(qw(1.20.4 1.21.1));
+    my $pf = mc_upgrade_preflight(
+        {}, $profile_mc, '/tmp/srv',
+        { mode => 'mc', target_mc_version => '1.21.1' },
+        { runtime_status => 'offline', instance_id => 'u1' },
+    );
+    ok($pf->{'ok'}, 'mc preflight offline ok');
+    mc_upgrade_clear_mc_versions_for_test();
+};
+
+mc_upgrade_clear_loader_versions_for_test();
 done_testing();

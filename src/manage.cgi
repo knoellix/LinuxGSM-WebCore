@@ -491,10 +491,13 @@ sub _manage_mc_upgrade_error {
         &error($text{'manage_job_running_title'} || 'A background job is already running.');
     } elsif ($err eq 'not_newer') {
         &error($text{'mc_upgrade_not_newer'}
-            || 'Selected loader version is not newer than the current pin.');
+            || 'Selected version is not newer than the current one.');
+    } elsif ($err eq 'same_version') {
+        &error($text{'mc_upgrade_same_version'}
+            || 'Selected Minecraft version matches the current profile.');
     } elsif ($err eq 'invalid_target') {
         &error($text{'mc_upgrade_invalid_target'}
-            || 'Invalid loader version for this Minecraft profile.');
+            || 'Invalid target for this Minecraft profile.');
     } elsif ($err eq 'loader_not_modded') {
         &error($text{'mc_loader_not_modded'});
     } else {
@@ -542,6 +545,86 @@ sub _manage_render_mc_loader_upgrade_block {
     );
     print &ui_table_end();
     print &ui_submit($text{'mc_upgrade_loader_btn'} || 'Upgrade loader',
+        undef, undef, undef, 'btn-default');
+    print &ui_form_end();
+}
+
+sub _manage_launch_mc_upgrade_job {
+    my ($instance_id, $inst, $unix_user, $action, $plan) = @_;
+    my (undef, $script_name, $server_dir) = _parse_script_info($inst);
+    my $lgsm_script = $plan->{'lgsm_script'} // $script_name;
+    $lgsm_script =~ s/[^a-zA-Z0-9_-]//g;
+    my $job_id = &create_job($unix_user);
+    my $job_dir = &_job_dir($job_id);
+    &write_job_meta($job_id, $instance_id, $action, $unix_user)
+        or do { &job_mark_launch_failed($job_id); &error($text{'mc_upgrade_failed'}); };
+    &write_upgrade_job_plan($job_dir, $plan)
+        or do { &delete_job($job_id); &error($text{'mc_upgrade_failed'}); };
+    &log_action('job_started', $job_id, { instance_id => $instance_id, action => $action });
+    my $rc = &system_logged(&user_worker_launch_cmd(
+        unix_user   => $unix_user,
+        module_root => $module_root,
+        worker      => "$module_root/scripts/mc_upgrade_user.sh",
+        args        => [ $job_dir, $unix_user, $server_dir, $lgsm_script ],
+    ));
+    if ($rc != 0 || !&job_dispatch_verified($job_id)) {
+        &job_mark_launch_failed($job_id);
+        &error($text{'mc_upgrade_failed'} || 'Could not start upgrade job.');
+    }
+    &_manage_redirect_poll_job($job_id, $instance_id);
+}
+
+sub _manage_render_mc_version_upgrade_block {
+    my ($instance_id, $mc_prof, $runtime_status) = @_;
+    return unless ref($mc_prof) eq 'HASH';
+    return unless &mc_loader_is_modded($mc_prof->{'loader'} // '');
+    return unless &mc_loader_phase1_ready($mc_prof->{'loader'} // '');
+    return if &user_is_readonly($instance_id);
+    return unless &user_can_operate($instance_id);
+
+    my @avail = &mc_list_mc_versions();
+    my @candidates = &mc_upgrade_mc_upgrade_candidates($mc_prof, \@avail);
+    return unless @candidates;
+
+    my $current_mc = $mc_prof->{'mc_version'} // '';
+    print "<h4>" . &html_escape($text{'mc_upgrade_mc_title'} || 'Minecraft version upgrade') . "</h4>\n";
+    print "<p>" . &html_escape($text{'mc_upgrade_mc_hint'}
+        || 'Stop the server first. Mods and world stay on disk; many mods will not work on a new MC version without manual updates.')
+        . "</p>\n";
+    if ($runtime_status eq 'online' || $runtime_status eq 'running') {
+        print "<div class=\"alert alert-warning\">"
+            . &html_escape($text{'mc_upgrade_server_must_be_stopped'}
+                || 'Stop the server before upgrading.')
+            . "</div>\n";
+    }
+    print &ui_form_start('manage.cgi', 'post');
+    print &ui_hidden('instance_id', &html_escape($instance_id));
+    print &ui_hidden('action', 'mc_upgrade_mc');
+    print &ui_table_start();
+    print &ui_table_row(
+        $text{'mc_profile_version'} || 'Minecraft version',
+        &html_escape($current_mc),
+    );
+    my @opts = map { [ $_, $_ ] } @candidates;
+    my $default = $candidates[0];
+    my $needs_java = &mc_upgrade_mc_needs_java($mc_prof, $default);
+    print &ui_table_row(
+        $text{'mc_upgrade_mc_target'} || 'Target version',
+        &ui_select('target_mc_version', $default, \@opts),
+    );
+    if ($needs_java) {
+        my $target_java = &resolve_java_major($default);
+        print &ui_table_row(
+            $text{'mc_upgrade_mc_java_note'} || 'Java',
+            &html_escape(sprintf(
+                $text{'mc_upgrade_mc_java_change'}
+                    // 'Installs Java %s before rebuilding the loader.',
+                $target_java,
+            )),
+        );
+    }
+    print &ui_table_end();
+    print &ui_submit($text{'mc_upgrade_mc_btn'} || 'Upgrade Minecraft version',
         undef, undef, undef, 'btn-default');
     print &ui_form_end();
 }
@@ -1694,26 +1777,29 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|monitor)$/) {
         _manage_mc_upgrade_error($pf->{'err'}) unless $pf->{'ok'};
         my ($ok, $plan, $err) = &mc_upgrade_loader_plan($profile, $target_pin);
         _manage_mc_upgrade_error($err) unless $ok;
-        my $lgsm_script = $plan->{'lgsm_script'} // $script_name;
-        $lgsm_script =~ s/[^a-zA-Z0-9_-]//g;
-        my $job_id = &create_job($unix_user);
-        my $job_dir = &_job_dir($job_id);
-        &write_job_meta($job_id, $instance_id, 'mc_upgrade_loader', $unix_user)
-            or do { &job_mark_launch_failed($job_id); &error($text{'mc_upgrade_failed'}); };
-        &write_upgrade_job_plan($job_dir, $plan)
-            or do { &delete_job($job_id); &error($text{'mc_upgrade_failed'}); };
-        &log_action('job_started', $job_id, { instance_id => $instance_id, action => 'mc_upgrade_loader' });
-        my $rc = &system_logged(&user_worker_launch_cmd(
-            unix_user   => $unix_user,
-            module_root => $module_root,
-            worker      => "$module_root/scripts/mc_upgrade_user.sh",
-            args        => [ $job_dir, $unix_user, $server_dir, $lgsm_script ],
-        ));
-        if ($rc != 0 || !&job_dispatch_verified($job_id)) {
-            &job_mark_launch_failed($job_id);
-            &error($text{'mc_upgrade_failed'} || 'Could not start loader upgrade job.');
-        }
-        &_manage_redirect_poll_job($job_id, $instance_id);
+        _manage_launch_mc_upgrade_job($instance_id, $inst, $unix_user, 'mc_upgrade_loader', $plan);
+    }
+    elsif ($action eq 'mc_upgrade_mc') {
+        &_manage_redirect_if_job_running($instance_id, 'mc_upgrade_mc');
+        my (undef, $script_name, $server_dir) = _parse_script_info($inst);
+        my $profile = &read_mc_profile($server_dir);
+        &error($text{'mc_profile_missing'} || 'Kein Minecraft-Profil (.mcprofile.json).') unless $profile;
+        my $target_raw = $in{'target_mc_version'} // '';
+        $target_raw =~ s/[\t\n\r\0]//g;
+        $target_raw =~ s/[^0-9.]//g;
+        $target_raw = substr($target_raw, 0, 32);
+        &error($text{'mc_upgrade_invalid_target'} || 'Invalid Minecraft version.')
+            unless $target_raw =~ /^[0-9.]+$/;
+        my $runtime = _manage_runtime_status($inst, $effective_source, light => 1);
+        my $pf = &mc_upgrade_preflight(
+            $inst, $profile, $server_dir,
+            { mode => 'mc', target_mc_version => $target_raw },
+            { instance_id => $instance_id, runtime_status => $runtime },
+        );
+        _manage_mc_upgrade_error($pf->{'err'}) unless $pf->{'ok'};
+        my ($ok, $plan, $err) = &mc_upgrade_mc_plan($profile, $target_raw);
+        _manage_mc_upgrade_error($err) unless $ok;
+        _manage_launch_mc_upgrade_job($instance_id, $inst, $unix_user, 'mc_upgrade_mc', $plan);
     }
     elsif ($action eq 'install_game') {
         my (undef, undef, $server_dir) = _parse_script_info($inst);
@@ -2696,6 +2782,8 @@ print &ui_table_end();
 if ($server_dir_info && $mc_info) {
     _manage_render_mc_loader_upgrade_block(
         $instance_id, $mc_info, $server_dir_info, $runtime_status);
+    _manage_render_mc_version_upgrade_block(
+        $instance_id, $mc_info, $runtime_status);
 }
 
 # Firewall section — show open/closed status per port. Use AND semantics:
