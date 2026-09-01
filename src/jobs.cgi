@@ -104,7 +104,7 @@ if ($action eq 'view_output') {
 &header($text{'jobs_title'} || 'Job-Übersicht', '');
 print "<h3>" . &html_escape($text{'jobs_title'} || 'Job-Übersicht') . "</h3>\n";
 
-my @all_jobs = get_all_jobs();
+my @all_jobs = jobs_dedupe_periodic_restarts(get_all_jobs());
 
 # ACL-Filter für Operatoren
 unless (&is_admin()) {

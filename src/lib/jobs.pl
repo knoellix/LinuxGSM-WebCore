@@ -567,15 +567,15 @@ sub get_all_jobs {
     }
     closedir($dh);
 
-    # Newest first; monitor_restart always visible near the top.
-    return sort {
+    # Newest first; monitor_restart / scheduled_restart floated near the top.
+    my @sorted = sort {
         my $am = (($a->{action} // '') =~ /^(?:monitor_restart|scheduled_restart)$/) ? 1 : 0;
         my $bm = (($b->{action} // '') =~ /^(?:monitor_restart|scheduled_restart)$/) ? 1 : 0;
         return $bm <=> $am if $am != $bm;
         return ($b->{started_at} || 0) <=> ($a->{started_at} || 0);
     } @jobs;
-    $_all_jobs_cache = \@jobs;
-    return @jobs;
+    $_all_jobs_cache = \@sorted;
+    return @sorted;
 }
 
 # Jobs for one instance, optionally filtered by status and/or action.
@@ -590,6 +590,27 @@ sub get_instance_jobs {
         @jobs = grep { ($_->{action} // '') eq $opts{'action'} } @jobs;
     }
     return @jobs;
+}
+
+# UI overview tables: keep only the newest finished monitor_restart (and
+# scheduled_restart) per instance. Running jobs are always kept. Input must be
+# newest-first (as from get_all_jobs / get_instance_jobs).
+sub jobs_dedupe_periodic_restarts {
+    my (@jobs) = @_;
+    my %seen_finished;    # "instance_id\0action" => 1
+    my @out;
+    for my $j (@jobs) {
+        my $act = $j->{action} // '';
+        if ($act eq 'monitor_restart' || $act eq 'scheduled_restart') {
+            my $st = $j->{status} // '';
+            if ($st ne 'running') {
+                my $key = ($j->{instance_id} // '') . "\0" . $act;
+                next if $seen_finished{$key}++;
+            }
+        }
+        push @out, $j;
+    }
+    return @out;
 }
 
 # Newest running job for instance (optional action filter). Returns job_id or undef.

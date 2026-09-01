@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 use strict;
 use warnings;
-use Test::More tests => 64;
+use Test::More tests => 70;
 use File::Temp qw(tempdir);
 use FindBin qw($Bin);
 
@@ -422,4 +422,22 @@ subtest 'user_worker_launch_cmd' => sub {
     write_job_meta($jid, 'pw1', 'monitor_restart', 'gs_pw');
     finish_job($jid, 'ok');
     ok(_ensure_job_pointer($jid, 'gs_pw'), '_ensure_job_pointer: existing pointer returns success');
+}
+
+# --- jobs_dedupe_periodic_restarts: only newest finished monitor_restart ---
+{
+    my @jobs = (
+        { job_id => 'a', instance_id => 'i1', action => 'monitor_restart', status => 'ok', started_at => 300 },
+        { job_id => 'b', instance_id => 'i1', action => 'monitor_restart', status => 'ok', started_at => 200 },
+        { job_id => 'c', instance_id => 'i1', action => 'start', status => 'ok', started_at => 250 },
+        { job_id => 'd', instance_id => 'i1', action => 'monitor_restart', status => 'running', started_at => 400 },
+        { job_id => 'e', instance_id => 'i2', action => 'monitor_restart', status => 'ok', started_at => 100 },
+    );
+    my @f = jobs_dedupe_periodic_restarts(@jobs);
+    is(scalar(@f), 4, 'dedupe: one finished monitor_restart per instance + others');
+    ok((grep { $_->{job_id} eq 'a' } @f), 'dedupe: keeps newest finished monitor_restart');
+    ok(!(grep { $_->{job_id} eq 'b' } @f), 'dedupe: drops older finished monitor_restart');
+    ok((grep { $_->{job_id} eq 'd' } @f), 'dedupe: keeps running monitor_restart');
+    ok((grep { $_->{job_id} eq 'c' } @f), 'dedupe: keeps non-monitor jobs');
+    ok((grep { $_->{job_id} eq 'e' } @f), 'dedupe: keeps other instance monitor_restart');
 }

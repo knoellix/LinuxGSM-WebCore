@@ -282,7 +282,7 @@ sub _manage_render_instance_jobs_table {
     $max_rows //= 5;
     return unless defined $instance_id && $instance_id =~ /\S/;
     &sync_monitor_job_pointers();
-    my @inst_jobs = &get_instance_jobs($instance_id);
+    my @inst_jobs = &jobs_dedupe_periodic_restarts(&get_instance_jobs($instance_id));
     return unless @inst_jobs;
     @inst_jobs = @inst_jobs[0 .. ($max_rows - 1)] if @inst_jobs > $max_rows;
 
@@ -1143,7 +1143,7 @@ my $is_fresh  = ($inst->{'instance_status'} // 'installed') ne 'installed';
 &user_can_manage($instance_id)
     or &error($text{'err_acl_admin_only'} || 'Access denied');
 
-if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|monitor)$/) {
+if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|monitor)$/) {
     my $action = &sanitize_input($in{'action'});
     &log_debug("action=$action instance=$instance_id");
     if (&user_is_readonly($instance_id)) {
@@ -2075,6 +2075,28 @@ if (($in{'action'} // '') eq 'poll_job') {
     exit;
 }
 
+# GET: poll_monitor — JSON tail for in-page live log (no full-page reload).
+if (($in{'action'} // '') eq 'poll_monitor') {
+    my $script_name = (split('/', $inst->{'script'}))[-1] // '';
+    (my $script_dir = $inst->{'script'}) =~ s|/[^/]+$||;
+    my $source = _effective_instance_source($inst);
+    my ($mc_prof) = _manage_read_mc_profile($inst);
+    my $is_mc = ($mc_prof ? 1 : 0)
+        || (&is_minecraft_game($script_name) ? 1 : 0)
+        || (-d "$script_dir/serverfiles/logs" ? 1 : 0);
+    my $payload = server_log_monitor_poll_payload(
+        server_dir  => $script_dir,
+        script_name => $script_name,
+        source      => $source,
+        minecraft   => $is_mc,
+        log_file    => $in{'log_file'},
+    );
+    $main::headerprinted = 1;
+    print "Content-type: application/json; charset=utf-8\n\n";
+    print job_log_json_utf8($payload);
+    exit;
+}
+
 # GET: monitor
 if (($in{'action'} // '') eq 'monitor') {
     my $script_name = (split('/', $inst->{'script'}))[-1] // '';
@@ -2094,18 +2116,22 @@ if (($in{'action'} // '') eq 'monitor') {
     my $log_file = server_log_resolve_pick($in{'log_file'}, \@log_candidates);
     $log_file = $log_candidates[0] if $log_file eq '' && @log_candidates;
     my $log_base = $log_file ne '' ? basename($log_file) : '';
-    my $auto_refresh = (($in{'auto_refresh'} // '') eq '1' && ($in{'manual'} // '') eq '1') ? 1 : 0;
+    # Auto-refresh defaults on; toggle is JS-only (no meta refresh / reload loop).
+    my $auto_refresh = 1;
+    if (defined $in{'auto_refresh'} && ($in{'auto_refresh'} // '') ne '1') {
+        $auto_refresh = 0;
+    }
 
     &header($text{'manage_monitor_title'}, '');
     print &job_log_view_page_css();
-    print &job_log_view_page_open();
+    print &job_log_view_page_open('fill');
+    print &job_log_live_page_js();
     print "<h3>" . &html_escape($text{'manage_monitor_title'}) . "</h3>\n";
     print &job_log_view_toolbar_open();
-    print &ui_form_start('manage.cgi', 'get');
+    print &ui_form_start('manage.cgi', 'get', undef, 'id="monitor_refresh_form"');
     print &ui_hidden('instance_id', &html_escape($instance_id));
     print &ui_hidden('action', 'monitor');
     print &ui_hidden('xnavigation', '1');
-    print &ui_hidden('manual', '1');
     if (@log_candidates > 1) {
         my (%seen_bn, @opts);
         for my $p (@log_candidates) {
@@ -2121,8 +2147,10 @@ if (($in{'action'} // '') eq 'monitor') {
     } elsif ($log_base ne '') {
         print &ui_hidden('log_file', &html_escape($log_base));
     }
-    print &ui_checkbox('auto_refresh', 1, $text{'manage_monitor_auto_label'}, $auto_refresh);
-    print " ";
+    print '<label style="margin-right:8px"><input type="checkbox" name="auto_refresh"'
+        . ' id="monitor_auto_refresh" value="1"'
+        . ($auto_refresh ? ' checked' : '') . '> '
+        . &html_escape($text{'manage_monitor_auto_label'}) . '</label> ';
     print &ui_submit($text{'manage_monitor_refresh_btn'}, undef, undef, undef, 'btn-default');
     print &ui_form_end();
     print &ui_form_start('manage.cgi', 'get');
@@ -2174,13 +2202,21 @@ if (($in{'action'} // '') eq 'monitor') {
                 print "<p>" . &html_escape($text{'manage_monitor_log_binary_warn'}
                     || 'File looks binary.') . "</p>\n";
             }
-            my $refresh_url = "manage.cgi?instance_id=" . &html_escape($instance_id)
-                . "&action=monitor&xnavigation=1&auto_refresh=1&manual=1"
-                . ($log_base ne '' ? "&log_file=" . &urlize($log_base) : '');
-            if ($auto_refresh) {
-                print "<meta http-equiv=\"refresh\" content=\"2;url=$refresh_url\">\n";
-            }
-            print &job_log_view_block($tail, id => 'monitor_log');
+            print &job_log_view_block($tail, id => 'monitor_log', live => 1);
+            my $poll_q = "manage.cgi?instance_id=" . &urlize($instance_id)
+                . "&action=poll_monitor";
+            my $poll_path = _manage_poll_job_module_path($poll_q);
+            print &server_monitor_poll_client_js(
+                poll_url_base  => $poll_path,
+                out_id         => 'monitor_log',
+                form_id        => 'monitor_refresh_form',
+                checkbox_id    => 'monitor_auto_refresh',
+                log_file       => $log_base,
+                wait_msg       => $text{'manage_monitor_no_log'} || '',
+                poll_fail_msg  => $text{'manage_monitor_no_log'} || '',
+                poll_interval  => 3000,
+                auto_start     => $auto_refresh,
+            );
         }
     }
     print &job_log_view_page_close();

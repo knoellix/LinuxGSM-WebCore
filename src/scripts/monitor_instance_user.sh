@@ -26,6 +26,8 @@ mkdir -p "$LOG_DIR"   2>/dev/null || true
 
 # shellcheck source=lib/mc_java_env.sh
 . "$MODULE_ROOT/scripts/lib/mc_java_env.sh"
+# shellcheck source=lib/lgsm_control.sh
+. "$MODULE_ROOT/scripts/lib/lgsm_control.sh"
 
 # --- helpers ---------------------------------------------------------------
 
@@ -94,8 +96,14 @@ _lgsm_is_online() {
 }
 
 _lgsm_details_online() {
-    ( cd "$SERVER_DIR" && "./$SCRIPT_NAME" details ) 2>/dev/null \
-        | grep -Eqi 'Status:[[:space:]]*STARTED'
+    # Never hang forever on LGSM details/gamedig (modded MC).
+    local out
+    if command -v timeout >/dev/null 2>&1; then
+        out=$(timeout -k 5 8 bash -c "cd \"\$1\" && \"./\$2\" details" bash "$SERVER_DIR" "$SCRIPT_NAME" 2>/dev/null) || return 1
+    else
+        out=$(cd "$SERVER_DIR" && "./$SCRIPT_NAME" details 2>/dev/null) || return 1
+    fi
+    echo "$out" | grep -Eqi 'Status:[[:space:]]*STARTED'
 }
 
 # LGSM monitor may restart internally even when tmux looked alive:
@@ -207,9 +215,8 @@ if [[ "$KIND" == "lgsm" ]]; then
             _log "LGSM: still offline after monitor — start attempt $_LGSM_RESTART_COUNT/$MAX_RESTARTS"
             _write_state "restarting" "$_LGSM_RESTART_COUNT" "$_LGSM_WINDOW_START"
             mc_java_env_apply "$SERVER_DIR"
-            ( cd "$SERVER_DIR" && "./$SCRIPT_NAME" start ) >>"$LOG_FILE" 2>&1 || true
-            ( cd "$SERVER_DIR" && "./$SCRIPT_NAME" start ) >>"$MONITOR_RUN_LOG" 2>&1 || true
-            _lgsm_wait_online "$WAIT_TRIES" "$WAIT_DELAY" 1 || true
+            lgsm_start_reliable "$SERVER_DIR" "$SCRIPT_NAME" 2>&1 | tee -a "$LOG_FILE" >>"$MONITOR_RUN_LOG" || true
+            _lgsm_wait_online "$WAIT_TRIES" "$WAIT_DELAY" 0 || true
         else
             exit 0
         fi

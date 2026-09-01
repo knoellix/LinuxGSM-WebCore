@@ -63,4 +63,30 @@ my $raw_gz = do {
 };
 ok(server_log_looks_binary($raw_gz), 'raw gzip bytes look binary');
 
+{
+    my $payload = server_log_monitor_poll_payload(
+        server_dir  => $root,
+        script_name => 'mcserver',
+        source      => 'lgsm',
+        minecraft   => 1,
+        log_file    => 'latest.log',
+    );
+    ok($payload->{ok}, 'monitor poll payload ok');
+    is($payload->{log_file}, 'latest.log', 'poll payload log basename');
+    like($payload->{output}, qr/LINE_LATEST/, 'poll payload has tail');
+    ok(!$payload->{binary}, 'poll payload not binary');
+}
+
+{
+    my $empty_root = tempdir(CLEANUP => 1);
+    my $payload = server_log_monitor_poll_payload(
+        server_dir  => $empty_root,
+        script_name => 'mcserver',
+        source      => 'lgsm',
+        minecraft   => 1,
+    );
+    ok(!$payload->{ok}, 'poll payload fails without logs');
+    is($payload->{error}, 'no_log', 'poll error is no_log');
+}
+
 done_testing();

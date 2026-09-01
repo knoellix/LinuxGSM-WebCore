@@ -173,4 +173,46 @@ sub server_log_looks_binary {
     return 0;
 }
 
+# Resolve + tail for monitor AJAX poll. Returns hashref for JSON:
+#   { ok => 1, output => $text, log_file => $basename, binary => 0|1 }
+#   { ok => 0, error => 'no_log'|'read_failed' }
+sub server_log_monitor_poll_payload {
+    my (%opts) = @_;
+    my $server_dir  = $opts{'server_dir'}  // '';
+    my $script_name = $opts{'script_name'} // '';
+    my $source      = $opts{'source'}      // '';
+    my $minecraft   = $opts{'minecraft'}   ? 1 : 0;
+    my $pick        = $opts{'log_file'}    // '';
+    my $max_bytes   = $opts{'max_bytes'}   // 8192;
+
+    my @candidates = grep { -f $_ } server_log_candidates(
+        server_dir  => $server_dir,
+        script_name => $script_name,
+        source      => $source,
+        minecraft   => $minecraft,
+    );
+    my $log_file = server_log_resolve_pick($pick, \@candidates);
+    $log_file = $candidates[0] if $log_file eq '' && @candidates;
+    unless ($log_file) {
+        return { ok => 0, error => 'no_log', output => '', log_file => '', binary => 0 };
+    }
+    my $tail = server_log_read_tail($log_file, $max_bytes);
+    unless (defined $tail) {
+        return {
+            ok       => 0,
+            error    => 'read_failed',
+            output   => '',
+            log_file => basename($log_file),
+            binary   => 0,
+        };
+    }
+    return {
+        ok       => 1,
+        error    => '',
+        output   => $tail,
+        log_file => basename($log_file),
+        binary   => server_log_looks_binary($tail) ? 1 : 0,
+    };
+}
+
 1;

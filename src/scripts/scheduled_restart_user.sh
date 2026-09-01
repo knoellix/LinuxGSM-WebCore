@@ -19,6 +19,8 @@ mkdir -p "$STATE_DIR" "$LOG_DIR" 2>/dev/null || true
 
 # shellcheck source=lib/mc_java_env.sh
 . "$MODULE_ROOT/scripts/lib/mc_java_env.sh"
+# shellcheck source=lib/lgsm_control.sh
+. "$MODULE_ROOT/scripts/lib/lgsm_control.sh"
 
 _log() {
     local msg="[$(date '+%Y-%m-%d %T')] [$INSTANCE_ID] $*"
@@ -83,8 +85,13 @@ _lgsm_is_online() {
         . "$LGSM_ONLINE_SH"
         lgsm_tmux_is_online "$SERVER_DIR" "$SCRIPT_NAME" && return 0
     fi
-    ( cd "$SERVER_DIR" && "./$SCRIPT_NAME" details ) 2>/dev/null \
-        | grep -Eqi 'Status:[[:space:]]*STARTED'
+    if command -v timeout >/dev/null 2>&1; then
+        timeout -k 5 8 bash -c "cd \"\$1\" && \"./\$2\" details" bash "$SERVER_DIR" "$SCRIPT_NAME" 2>/dev/null \
+            | grep -Eqi 'Status:[[:space:]]*STARTED'
+    else
+        ( cd "$SERVER_DIR" && "./$SCRIPT_NAME" details ) 2>/dev/null \
+            | grep -Eqi 'Status:[[:space:]]*STARTED'
+    fi
 }
 
 _native_is_online() {
@@ -141,11 +148,11 @@ _rc=0
     echo "instance=$INSTANCE_ID kind=$KIND"
     if [[ "$KIND" == "lgsm" ]]; then
         echo "--- stop ---"
-        ( cd "$SERVER_DIR" && "./$SCRIPT_NAME" stop ) || _rc=1
+        lgsm_stop_reliable "$SERVER_DIR" "$SCRIPT_NAME" || _rc=1
         sleep 3
         echo "--- start ---"
         mc_java_env_apply "$SERVER_DIR"
-        ( cd "$SERVER_DIR" && "./$SCRIPT_NAME" start ) || _rc=1
+        lgsm_start_reliable "$SERVER_DIR" "$SCRIPT_NAME" || _rc=1
     else
         STOP_DIR="$JOB_HOME/.phase_stop"
         START_DIR="$JOB_HOME/.phase_start"

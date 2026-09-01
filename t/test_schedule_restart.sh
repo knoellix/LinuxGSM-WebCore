@@ -20,6 +20,9 @@ set -euo pipefail
 cd "$(dirname "$0")"
 FLAG="$PWD/.mock_running"
 case "${1:-}" in
+  status)
+    if [[ -f "$FLAG" ]]; then echo "STARTED"; else echo "STOPPED"; fi
+    ;;
   details)
     if [[ -f "$FLAG" ]]; then echo "Status: STARTED"; else echo "Status: STOPPED"; fi
     ;;

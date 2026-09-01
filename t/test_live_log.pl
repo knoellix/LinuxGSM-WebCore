@@ -92,4 +92,23 @@ ok(@apt >= 2, 'apt package list defined');
     unlike($js, qr/LÃ¤uft/, 'script json avoids raw mojibake bytes');
 }
 
+{
+    my $mon_js = server_monitor_poll_client_js(
+        poll_url_base => '/linuxgsm-webcore/manage.cgi?action=poll_monitor',
+        out_id        => 'monitor_log',
+        form_id       => 'monitor_refresh_form',
+        checkbox_id   => 'monitor_auto_refresh',
+        log_file      => 'latest.log',
+        poll_interval => 3000,
+        auto_start    => 1,
+    );
+    like($mon_js, qr/setInterval/, 'monitor poll uses setInterval');
+    like($mon_js, qr/poll_monitor/, 'monitor poll url includes action');
+    like($mon_js, qr/preventDefault/, 'monitor form submit does not reload page');
+    like($mon_js, qr/clearInterval/, 'monitor poll can stop on uncheck');
+    unlike($mon_js, qr/http-equiv|metaFallback|enableMetaFallback/i,
+        'monitor poll has no meta refresh fallback');
+    like($mon_js, qr/\b3000\b/, 'monitor poll interval is 3s');
+}
+
 done_testing();

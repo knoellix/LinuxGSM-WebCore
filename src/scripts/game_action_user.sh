@@ -36,6 +36,8 @@ job_log_init_as_user "$JOB_DIR"
 
 # shellcheck source=lib/mc_java_env.sh
 . "$_SCRIPT_LIB/mc_java_env.sh"
+# shellcheck source=lib/lgsm_control.sh
+. "$_SCRIPT_LIB/lgsm_control.sh"
 
 # Process priority — install/update is a long, IO-heavy operation. PRIO_LOW
 # keeps the LGSM child tree (steamcmd, tar, wineboot) out of the way of running
@@ -74,7 +76,19 @@ trap on_exit EXIT
 if [ "$ACTION" = "start" ] || [ "$ACTION" = "stop" ] || [ "$ACTION" = "restart" ]; then
     echo "=== Performing '$ACTION': $GAME_SCRIPT ==="
     mc_java_env_apply "$SERVER_DIR"
-    if ! ( cd "$SERVER_DIR" && ./"$GAME_SCRIPT" "$ACTION" ); then
+    _ctrl_rc=0
+    case "$ACTION" in
+        start)
+            lgsm_start_reliable "$SERVER_DIR" "$GAME_SCRIPT" || _ctrl_rc=$?
+            ;;
+        stop)
+            lgsm_stop_reliable "$SERVER_DIR" "$GAME_SCRIPT" || _ctrl_rc=$?
+            ;;
+        restart)
+            lgsm_restart_reliable "$SERVER_DIR" "$GAME_SCRIPT" || _ctrl_rc=$?
+            ;;
+    esac
+    if [ "$_ctrl_rc" -ne 0 ]; then
         set_final_status "failed"
         exit 1
     fi
@@ -86,12 +100,12 @@ fi
 if [ "$ACTION" = "bootstrap_game_config" ]; then
     echo "=== Bootstrap game config: start then stop ==="
     mc_java_env_apply "$SERVER_DIR"
-    if ! ( cd "$SERVER_DIR" && ./"$GAME_SCRIPT" start ); then
+    if ! lgsm_start_reliable "$SERVER_DIR" "$GAME_SCRIPT"; then
         set_final_status "failed"
         exit 1
     fi
     sleep 2
-    if ! ( cd "$SERVER_DIR" && ./"$GAME_SCRIPT" stop ); then
+    if ! lgsm_stop_reliable "$SERVER_DIR" "$GAME_SCRIPT"; then
         set_final_status "failed"
         exit 1
     fi

@@ -642,4 +642,135 @@ sub job_log_view_scroll_js {
 JS
 }
 
+# Server monitor live tail: JSON poll only (no meta refresh). Checkbox toggles interval in JS.
+sub server_monitor_poll_client_js {
+    my (%opts) = @_;
+    my %js = (
+        pollUrlBase   => $opts{poll_url_base}   // '',
+        outId         => $opts{out_id}          // 'monitor_log',
+        formId        => $opts{form_id}         // 'monitor_refresh_form',
+        checkboxId    => $opts{checkbox_id}     // 'monitor_auto_refresh',
+        logSelectId   => $opts{log_select_id}   // 'monitor_log_file',
+        logFile       => $opts{log_file}        // '',
+        waitMsg       => $opts{wait_msg}        // '',
+        pollFailMsg   => $opts{poll_fail_msg}   // '',
+        pollInterval  => 0 + ($opts{poll_interval} // 3000),
+        autoStart     => $opts{auto_start} ? 1 : 0,
+    );
+    my $json = job_log_json_for_script(\%js);
+    return <<"JS";
+<script>
+(function () {
+  var O = $json;
+  var outEl = document.getElementById(O.outId);
+  var form = document.getElementById(O.formId);
+  var cb = document.getElementById(O.checkboxId);
+  var sel = O.logSelectId ? document.getElementById(O.logSelectId) : null;
+  if (!sel && form) {
+    sel = form.querySelector('select[name="log_file"]');
+  }
+  var pollTimer = null;
+  var inFlight = false;
+
+  function isNearBottom(el, threshold) {
+    if (!el) return true;
+    threshold = threshold || 80;
+    return (el.scrollHeight - el.scrollTop - el.clientHeight) <= threshold;
+  }
+
+  function setOutText(text) {
+    if (!outEl) return;
+    var stick = isNearBottom(outEl);
+    var body = outEl.querySelector(".lgsm-job-log-body");
+    if (body) {
+      body.textContent = text || O.waitMsg;
+    } else {
+      outEl.textContent = text || O.waitMsg;
+    }
+    if (stick) {
+      outEl.scrollTop = outEl.scrollHeight;
+    }
+  }
+
+  function currentLogFile() {
+    if (sel && sel.value) return sel.value;
+    return O.logFile || "";
+  }
+
+  function pollUrl() {
+    var url = O.pollUrlBase || "";
+    var lf = currentLogFile();
+    if (lf) {
+      url += (url.indexOf("?") >= 0 ? "&" : "?") + "log_file=" + encodeURIComponent(lf);
+    }
+    return url;
+  }
+
+  function stopPoll() {
+    if (pollTimer) {
+      window.clearInterval(pollTimer);
+      pollTimer = null;
+    }
+  }
+
+  function startPoll() {
+    stopPoll();
+    if (!cb || !cb.checked) return;
+    pollTimer = window.setInterval(pollOnce, O.pollInterval);
+  }
+
+  function pollOnce() {
+    if (!outEl || inFlight) return;
+    var url = pollUrl();
+    if (!url) return;
+    inFlight = true;
+    fetch(url, { credentials: "same-origin", cache: "no-store" })
+      .then(function (r) {
+        if (!r.ok) throw new Error("http " + r.status);
+        return r.json();
+      })
+      .then(function (d) {
+        if (d && typeof d.output === "string") {
+          setOutText(d.output || O.waitMsg);
+        } else if (d && d.ok === 0 && O.pollFailMsg) {
+          setOutText(O.pollFailMsg);
+        }
+      })
+      .catch(function () {
+        /* keep last output; avoid reload loops */
+      })
+      .then(function () {
+        inFlight = false;
+      });
+  }
+
+  if (form) {
+    form.addEventListener("submit", function (ev) {
+      ev.preventDefault();
+      pollOnce();
+    });
+  }
+  if (cb) {
+    cb.addEventListener("change", function () {
+      if (cb.checked) {
+        pollOnce();
+        startPoll();
+      } else {
+        stopPoll();
+      }
+    });
+  }
+  if (sel) {
+    sel.addEventListener("change", function () {
+      pollOnce();
+    });
+  }
+  if (O.autoStart && cb && cb.checked) {
+    startPoll();
+  }
+})();
+</script>
+JS
+}
+
 1;
