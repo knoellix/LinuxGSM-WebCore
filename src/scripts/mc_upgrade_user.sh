@@ -49,13 +49,29 @@ if [ ! -f "$PROFILE_FILE" ]; then
     exit 1
 fi
 
-read_plan_field() {
-    perl -MJSON::PP=decode_json -e '
+declare -A UPGRADE_PLAN=()
+UPGRADE_PLAN_LOADED=0
+
+_load_upgrade_plan_once() {
+    [[ "$UPGRADE_PLAN_LOADED" -eq 1 ]] && return 0
+    while IFS=$'\t' read -r _pk _pv; do
+        UPGRADE_PLAN["$_pk"]="$_pv"
+    done < <(perl -MJSON::PP=decode_json -e '
         open my $f, "<", shift or exit 1;
         local $/; my $p = decode_json(<$f>);
-        my $k = shift;
-        print $p->{$k} // "";
-    ' "$PLAN_FILE" "$1"
+        for my $k (sort keys %$p) {
+            my $v = $p->{$k};
+            $v = "" unless defined $v;
+            $v =~ s/\t|\n|\r//g;
+            print "$k\t$v\n";
+        }
+    ' "$PLAN_FILE")
+    UPGRADE_PLAN_LOADED=1
+}
+
+read_plan_field() {
+    _load_upgrade_plan_once
+    printf '%s\n' "${UPGRADE_PLAN[$1]:-}"
 }
 
 MODE="$(read_plan_field mode)"

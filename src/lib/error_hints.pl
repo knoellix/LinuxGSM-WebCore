@@ -18,6 +18,7 @@ my @_PATTERNS = (
     [ qr/Wine runtime required|wine: command not found|wine64: command not found/i,   'hint_wine_required' ],
     [ qr/msvcp140\.dll.*unimplemented|ntlm_auth was not found/i,                       'hint_wine_required' ],
     [ qr/CurseForge CDN limit|curseforge_cdn_rate_limited|hint_modpack_cf_cdn_rate_limited/i, 'hint_modpack_cf_cdn_rate_limited' ],
+    [ qr/WARNING: no Done in latest\.log/i, 'hint_mc_start_still_loading' ],
 );
 
 sub get_hint {

@@ -79,7 +79,16 @@ if [ "$ACTION" = "start" ] || [ "$ACTION" = "stop" ] || [ "$ACTION" = "restart" 
     _ctrl_rc=0
     case "$ACTION" in
         start)
-            lgsm_start_reliable "$SERVER_DIR" "$GAME_SCRIPT" || _ctrl_rc=$?
+            _start_tmp=$(mktemp)
+            set +e
+            lgsm_start_reliable "$SERVER_DIR" "$GAME_SCRIPT" 2>&1 | tee "$_start_tmp"
+            _ctrl_rc=${PIPESTATUS[0]}
+            set -e
+            if [[ "$_ctrl_rc" -eq 0 ]] \
+                && grep -q 'WARNING: no Done in latest.log' "$_start_tmp" 2>/dev/null; then
+                echo "hint_mc_start_still_loading" > "$JOB_DIR/error_hint"
+            fi
+            rm -f "$_start_tmp"
             ;;
         stop)
             lgsm_stop_reliable "$SERVER_DIR" "$GAME_SCRIPT" || _ctrl_rc=$?

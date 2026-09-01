@@ -1172,7 +1172,9 @@ sub modrinth_resolve_version_file {
 }
 
 sub curseforge_list_compatible_files {
-    my ($project_id, $profile) = @_;
+    my ($project_id, $profile, $opts) = @_;
+    $opts = {} unless ref($opts) eq 'HASH';
+    my $skip_dl = $opts->{'skip_download_url'} ? 1 : 0;
     my $headers = _curseforge_api_headers() or return [];
     $project_id =~ s/\D//g;
     return [] unless $project_id;
@@ -1191,8 +1193,11 @@ sub curseforge_list_compatible_files {
         next if ($f->{'isServerPack'} // 0);
         my $fid = $f->{'id'};
         next unless defined $fid;
-        my $dl = curseforge_mod_file_download_url($project_id, $fid);
-        next unless $dl;
+        my $dl = '';
+        unless ($skip_dl) {
+            $dl = curseforge_mod_file_download_url($project_id, $fid);
+            next unless $dl;
+        }
         my $fname = $f->{'fileName'} // 'mod.jar';
         $fname =~ s/[^a-zA-Z0-9._-]//g;
         $fname = 'mod.jar' unless $fname =~ /\S/;
@@ -1202,7 +1207,7 @@ sub curseforge_list_compatible_files {
             file_id      => $fid,
             display_name => $f->{'displayName'} // $f->{'fileName'} // '',
             filename     => $fname,
-            download_url => $dl,
+            download_url => ($dl || ''),
             hashes       => \%hashes,
             env          => 'both',
         };
@@ -1211,8 +1216,9 @@ sub curseforge_list_compatible_files {
 }
 
 sub curseforge_resolve_mod_file {
-    my ($project_id, $profile) = @_;
-    my $list = curseforge_list_compatible_files($project_id, $profile);
+    my ($project_id, $profile, $opts) = @_;
+    $opts = {} unless ref($opts) eq 'HASH';
+    my $list = curseforge_list_compatible_files($project_id, $profile, $opts);
     return undef unless ref($list) eq 'ARRAY' && @$list;
     my $f = $list->[0];
     return undef unless ref($f) eq 'HASH';
@@ -1322,7 +1328,7 @@ sub curseforge_search_mods {
         next unless ref($mod) eq 'HASH';
         my $pid = $mod->{'id'};
         next unless defined $pid;
-        my $file = curseforge_resolve_mod_file($pid, $profile);
+        my $file = curseforge_resolve_mod_file($pid, $profile, { skip_download_url => 1 });
         next unless $file;
         push @out, {
             source      => 'curseforge',
@@ -1759,6 +1765,89 @@ sub write_mod_install_plan_job_meta {
     &chown_job_files_to_user($unix_user, @written)
         if defined $unix_user && $unix_user ne '' && @written;
     return 1;
+}
+
+# --- Mod install preview cache (E2: avoid duplicate build_mod_install_plan) ---
+
+sub _mod_install_preview_cache_dir {
+    our $module_config_directory;
+    return undef unless defined $module_config_directory && $module_config_directory ne '';
+    my $dir = "$module_config_directory/mod_install_preview";
+    return $dir if -d $dir;
+    return $dir if mkdir($dir, 0700);
+    return undef;
+}
+
+sub _mod_install_preview_fingerprint {
+    my ($instance_id, $source, $ids, $install_deps, $opts) = @_;
+    $opts = {} unless ref($opts) eq 'HASH';
+    $ids = {} unless ref($ids) eq 'HASH';
+    require Digest::MD5;
+    my @parts = (
+        $instance_id // '',
+        $source // '',
+        $install_deps ? '1' : '0',
+        ($opts->{'force_replace'} // 0) ? '1' : '0',
+    );
+    for my $k (sort keys %$ids) {
+        push @parts, "$k=" . ($ids->{$k} // '');
+    }
+    return Digest::MD5::md5_hex(join("\0", @parts));
+}
+
+sub store_mod_install_preview {
+    my ($instance_id, $source, $ids, $plan, $install_deps, $opts) = @_;
+    return '' unless ref($plan) eq 'HASH';
+    my $dir = _mod_install_preview_cache_dir() or return '';
+    $instance_id =~ s/[^a-zA-Z0-9_-]//g;
+    return '' unless $instance_id ne '';
+    require JSON::PP;
+    my $token = '';
+    $token .= sprintf '%02x', int(rand(256)) for 1..8;
+    my $payload = {
+        instance_id  => $instance_id,
+        source       => $source // '',
+        ids          => (ref($ids) eq 'HASH' ? { %$ids } : {}),
+        install_deps => $install_deps ? 1 : 0,
+        opts         => (ref($opts) eq 'HASH' ? { %$opts } : {}),
+        fingerprint  => _mod_install_preview_fingerprint(
+            $instance_id, $source, $ids, $install_deps, $opts),
+        plan         => $plan,
+        created      => time(),
+    };
+    my $path = "$dir/$token.json";
+    my $json = JSON::PP::encode_json($payload);
+    open(my $fh, '>', $path) or return '';
+    print $fh $json;
+    close($fh);
+    chmod 0600, $path;
+    return $token;
+}
+
+sub consume_mod_install_preview {
+    my ($token, $instance_id, $source, $ids, $install_deps, $opts) = @_;
+    $token =~ s/[^0-9a-f]//g;
+    return undef unless length($token) == 16;
+    my $dir = _mod_install_preview_cache_dir() or return undef;
+    my $path = "$dir/$token.json";
+    return undef unless -f $path;
+    require JSON::PP;
+    open(my $fh, '<', $path) or return undef;
+    local $/;
+    my $raw = <$fh>;
+    close($fh);
+    unlink($path);
+    my $payload = eval { JSON::PP::decode_json($raw) };
+    return undef unless ref($payload) eq 'HASH';
+    return undef if (time() - ($payload->{'created'} // 0)) > 120;
+    $instance_id =~ s/[^a-zA-Z0-9_-]//g;
+    return undef unless ($payload->{'instance_id'} // '') eq $instance_id;
+    return undef unless ($payload->{'source'} // '') eq ($source // '');
+    my $want_fp = _mod_install_preview_fingerprint(
+        $instance_id, $source, $ids, $install_deps, $opts);
+    return undef unless ($payload->{'fingerprint'} // '') eq $want_fp;
+    my $plan = $payload->{'plan'};
+    return ref($plan) eq 'HASH' ? $plan : undef;
 }
 
 1;

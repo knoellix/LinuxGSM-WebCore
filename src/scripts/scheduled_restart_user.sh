@@ -78,20 +78,14 @@ if [[ "$_last_run" =~ ^[0-9]+$ && "$_last_run" -gt 0 ]]; then
     fi
 fi
 
+LGSM_ONLINE_SH="$MODULE_ROOT/scripts/lib/lgsm_online.sh"
+if [[ -f "$LGSM_ONLINE_SH" ]]; then
+    # shellcheck source=lib/lgsm_online.sh
+    . "$LGSM_ONLINE_SH"
+fi
+
 _lgsm_is_online() {
-    local LGSM_ONLINE_SH="$MODULE_ROOT/scripts/lib/lgsm_online.sh"
-    if [[ -f "$LGSM_ONLINE_SH" ]]; then
-        # shellcheck source=lib/lgsm_online.sh
-        . "$LGSM_ONLINE_SH"
-        lgsm_tmux_is_online "$SERVER_DIR" "$SCRIPT_NAME" && return 0
-    fi
-    if command -v timeout >/dev/null 2>&1; then
-        timeout -k 5 8 bash -c "cd \"\$1\" && \"./\$2\" details" bash "$SERVER_DIR" "$SCRIPT_NAME" 2>/dev/null \
-            | grep -Eqi 'Status:[[:space:]]*STARTED'
-    else
-        ( cd "$SERVER_DIR" && "./$SCRIPT_NAME" details ) 2>/dev/null \
-            | grep -Eqi 'Status:[[:space:]]*STARTED'
-    fi
+    lgsm_is_online "$SERVER_DIR" "$SCRIPT_NAME" details_fallback
 }
 
 _native_is_online() {

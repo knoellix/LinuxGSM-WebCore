@@ -179,16 +179,22 @@ my $return_path = "/$module_name/"
 $return_path .= "&action_result=$job_id" if ($return_query eq '' && $job_done && $status eq 'ok');
 
 require JSON::PP;
-my $fail_hint_key = '';
-if ($job_done && $status eq 'failed') {
-    $fail_hint_key = &get_job_error_hint($job_id) // '';
+my $job_hint_key = '';
+if ($job_done) {
+    $job_hint_key = &get_job_error_hint($job_id) // '';
 }
 
-my $fail_hint_html = '';
-if ($fail_hint_key ne '') {
-    my $hint_text = $text{$fail_hint_key} // $fail_hint_key;
-    $fail_hint_html = "<p><strong>" . &html_escape($text{'job_hint_title'})
-        . ":</strong> " . &html_escape($hint_text) . "</p>\n";
+my $job_hint_html = '';
+if ($job_hint_key ne '') {
+    my $hint_text = $text{$job_hint_key} // $job_hint_key;
+    if ($status eq 'ok' && $job_hint_key eq 'hint_mc_start_still_loading') {
+        $job_hint_html = "<div class=\"alert alert-warning\"><strong>"
+            . &html_escape($text{'job_hint_title'})
+            . ":</strong> " . &html_escape($hint_text) . "</div>\n";
+    } else {
+        $job_hint_html = "<p><strong>" . &html_escape($text{'job_hint_title'})
+            . ":</strong> " . &html_escape($hint_text) . "</p>\n";
+    }
 }
 
 my $manage_path_js = job_log_json_for_script({ url => $return_path });
@@ -219,7 +225,7 @@ if ($job_done) {
     print &html_escape($text{'job_running'});
 }
 print " — $action_label_e</p>\n";
-print $fail_hint_html if $fail_hint_html ne '';
+print $job_hint_html if $job_hint_html ne '';
 
 unless ($job_done) {
     print "<p id=\"job_poll_hint\"><small><i>"

@@ -557,6 +557,7 @@ jobs_action_monitor_restart=Neustart (Monitoring)
 hint_zombie=Prozess unerwartet beendet — Worker-Prozess ist nicht mehr aktiv.
 hint_worker_never_started=Worker-Prozess wurde nicht gestartet — Befehl fehlgeschlagen. Bitte Webmin-Log (miniserv.error) prüfen.
 hint_modpack_cf_cdn_rate_limited=CurseForge-CDN-Rate-Limit — bei grossen Modpacks (~95 Mods) normal. 10–15 Minuten warten, dann denselben Job mit „Download fortsetzen“ (keinen neuen Import starten).
+hint_mc_start_still_loading=Server-Session läuft, aber „Done“ fehlt noch in latest.log — bei grossen Modpacks kann das Laden noch mehrere Minuten dauern.
 monitor_status_running=Monitor: Aktiv
 monitor_status_failed=Monitor: Fehlgeschlagen (5 Neustarts/h erreicht)
 monitor_status_paused=Monitor: Pausiert (manuell gestoppt)

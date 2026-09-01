@@ -864,7 +864,14 @@ sub _mods_launch_mod_install {
     $prepare_opts{'install_deps'} = $install_deps if _mods_source_has_dep_preview($source);
 
     my ($ok, $meta, $err, $plan);
-    if (_mods_source_has_dep_preview($source)) {
+    if ($opts{'cached_plan'} && ref($opts{'cached_plan'}) eq 'HASH') {
+        $plan = $opts{'cached_plan'};
+        $ok = 1;
+        $meta = $plan->{'primary'};
+        unless (ref($meta) eq 'HASH') {
+            _mods_mod_install_error('invalid');
+        }
+    } elsif (_mods_source_has_dep_preview($source)) {
         ($ok, $plan, $err) = &build_mod_install_plan(
             $source, $ids_ref, $profile, $server_dir, \%prepare_opts);
         unless ($ok) {
@@ -1131,6 +1138,7 @@ if ($action eq 'mod_install_preview') {
 
     my %prepare_opts;
     $prepare_opts{'force_replace'} = 1 if ($launch_opts{'replace_basename'} // '') ne '';
+    $prepare_opts{'install_deps'} = 1;
     my ($ok, $plan, $err) = &build_mod_install_plan(
         $source, \%ids, $profile, $server_dir, \%prepare_opts);
     unless ($ok) {
@@ -1149,6 +1157,12 @@ if ($action eq 'mod_install_preview') {
     print "<strong>" . &html_escape($text{'mc_mods_page_versions_col_file'} || 'File')
         . ":</strong> " . &html_escape($primary->{'filename'} // '') . "</p>\n";
     print _mods_render_dependency_table($dep_status);
+
+    my $preview_token = '';
+    if (_mods_source_has_dep_preview($source)) {
+        $preview_token = &store_mod_install_preview(
+            $instance_id, $source, \%ids, $plan, 1, \%prepare_opts);
+    }
 
     unless (&user_is_readonly($instance_id)) {
         print &ui_form_start('mods.cgi', 'post');
@@ -1169,6 +1183,9 @@ if ($action eq 'mod_install_preview') {
             print &ui_hidden('mod_hangar_owner', &html_escape($ids{'hangar_owner'} // ''));
             print &ui_hidden('mod_hangar_slug', &html_escape($ids{'hangar_slug'} // ''));
             print &ui_hidden('mod_title', &html_escape($ids{'title'} // ''));
+        }
+        if ($preview_token ne '') {
+            print &ui_hidden('mod_preview_token', &html_escape($preview_token));
         }
         print '<p>' . _mods_install_deps_checkbox(1) . "</p>\n";
         print &ui_submit($text{'mc_mod_deps_confirm_btn'} || 'Start installation',
@@ -1254,6 +1271,19 @@ if ($action eq 'mc_mod_install') {
     $ids{'hangar_slug'} =~ s/[^a-zA-Z0-9_-]//g if $ids{'hangar_slug'};
 
     $launch_opts{'install_deps'} = ($in{'install_deps'} // '1') eq '1' ? 1 : 0;
+
+    my $preview_token = $in{'mod_preview_token'} // '';
+    $preview_token =~ s/[^0-9a-f]//g;
+    $preview_token = substr($preview_token, 0, 16);
+    if ($preview_token ne '' && _mods_source_has_dep_preview($source)) {
+        my %prepare_opts_preview;
+        $prepare_opts_preview{'force_replace'} = 1 if ($launch_opts{'replace_basename'} // '') ne '';
+        $prepare_opts_preview{'install_deps'} = $launch_opts{'install_deps'};
+        my $cached = &consume_mod_install_preview(
+            $preview_token, $instance_id, $source, \%ids,
+            $launch_opts{'install_deps'}, \%prepare_opts_preview);
+        $launch_opts{'cached_plan'} = $cached if ref($cached) eq 'HASH';
+    }
 
     my $job_id = _mods_launch_mod_install(
         $instance_id, $inst, $unix_user, $source, \%ids, %launch_opts

@@ -271,17 +271,12 @@ sub _manage_redirect_if_job_running {
     &_manage_redirect_after_job_launch($job_id, $instance_id, %opts);
 }
 
-sub _manage_job_action_labels {
-    my $h = &job_action_labels_hash(\%text);
-    return %{$h};
-}
-
 sub _manage_render_active_job_notice {
     my ($instance_id) = @_;
     return unless defined $instance_id && $instance_id =~ /\S/;
     my @running = &get_instance_jobs($instance_id, status => 'running');
     return unless @running;
-    my %labels = _manage_job_action_labels();
+    my %labels = %{ &job_action_labels_hash(\%text) };
     for my $job (@running) {
         my $jid = $job->{job_id};
         my $act = $job->{action} // '';
@@ -311,7 +306,7 @@ sub _manage_render_instance_jobs_table {
     @inst_jobs = @inst_jobs[0 .. ($max_rows - 1)] if @inst_jobs > $max_rows;
 
     print "<h3>" . &html_escape($text{'jobs_title'} || 'Jobs') . "</h3>\n";
-    my %job_action_labels = _manage_job_action_labels();
+    my %job_action_labels = %{ &job_action_labels_hash(\%text) };
     my %status_icons = (
         running => '&#x23F3;',
         ok      => '&#x2705;',
@@ -2661,6 +2656,11 @@ if ($is_fresh) {
 my $safe_id = &html_escape($instance_id);
 &header("$text{'manage_title'}: $safe_id", '');
 
+my $script_dir_for_cfg = $inst->{'script'};
+$script_dir_for_cfg =~ s|/[^/]+$||;
+&sync_monitor_job_pointers();
+my $mon_state = &read_monitor_state($script_dir_for_cfg, $config_directory, $instance_id);
+
 my $action_result_job = $in{'action_result'} // '';
 $action_result_job =~ s/[^0-9a-f]//g;
 $action_result_job = substr($action_result_job, 0, 16);
@@ -2698,10 +2698,7 @@ if ($job_aborted_id ne ''
     my $flash_id = $instance_id // '';
     $flash_id =~ s/[^a-zA-Z0-9_-]//g;
     if ($flash_id ne '' && &module_config_flash_consume("monitor_restart_$flash_id")) {
-        my $sd_flash = $inst->{'script'} // '';
-        $sd_flash =~ s|/[^/]+$||;
-        &sync_monitor_job_pointers();
-        my $mon_flash = &read_monitor_state($sd_flash, $config_directory, $instance_id);
+        my $mon_flash = $mon_state;
         my $lr_ts = &monitor_format_restart_time($mon_flash->{'last_restart_at'});
         $lr_ts = '—' unless $lr_ts ne '';
         my $banner = &text('manage_monitor_restart_banner', $lr_ts);
@@ -2757,8 +2754,6 @@ unless ($silent_polling) {
 }
 
 # Parse LGSM config to check _has_user_config
-my $script_dir_for_cfg = $inst->{'script'};
-$script_dir_for_cfg =~ s|/[^/]+$||;
 my $script_name_for_cfg = (split('/', $inst->{'script'}))[-1];
 my %cfg = &_parse_lgsm_config($script_dir_for_cfg, $script_name_for_cfg);
 my $source_for_status = $effective_source;
@@ -2811,11 +2806,6 @@ if (@$info_ports == 1) {
 }
 print &ui_table_row($text{'manage_status'},
     "<span id=\"manage_runtime_status\">" . _runtime_status_badge_html($runtime_status) . "</span>");
-my $mon_state;
-{
-    &sync_monitor_job_pointers();
-    $mon_state = &read_monitor_state($script_dir_for_cfg, $config_directory, $instance_id);
-}
 my $mon_status_key = 'monitor_status_' . ($mon_state->{'status'} // 'running');
 my $mon_label = $text{$mon_status_key} || $mon_state->{'status'};
 print &ui_table_row($text{'monitor_col'}, &html_escape($mon_label));
@@ -2931,7 +2921,7 @@ print "<p><b>$text{'manage_fw_status'}:</b> $fw_status_icon &nbsp;";
 print &ui_form_start("manage.cgi", "post");
 print &ui_hidden("instance_id", $safe_id);
 print &ui_hidden("action", $fw_btn_action);
-print &ui_submit($fw_btn_label);
+print &ui_submit($fw_btn_label, undef, undef, undef, 'btn-default');
 print &ui_form_end();
 print "</p>\n";
 if ($effective_source eq 'steamcmd' && $script_name_for_cfg eq 'windrose') {
@@ -3094,7 +3084,7 @@ if (&is_admin()) {
         print &ui_table_row($text{'ftp_col_user'}, "<code>$default_name</code>");
         print &ui_table_row($text{'ftp_pass'}, &ui_password('ftp_pass', '', 24));
         print &ui_table_end();
-        print &ui_submit($text{'ftp_create_btn'});
+        print &ui_submit($text{'ftp_create_btn'}, undef, undef, undef, 'btn-primary');
         print &ui_form_end();
     }
 }
@@ -3169,7 +3159,7 @@ if ($has_misplaced) {
     print &ui_form_start("manage.cgi", "post");
     print &ui_hidden("instance_id", $safe_id);
     print &ui_hidden("action", "migrate_config");
-    print &ui_submit($text{'manage_migrate_btn'});
+    print &ui_submit($text{'manage_migrate_btn'}, undef, undef, undef, 'btn-default');
     print &ui_form_end();
 }
 
@@ -3232,7 +3222,7 @@ if (!$cfg{_has_instance_config}) {
         print &ui_table_row(&html_escape($label), &ui_textbox($key, $val, 30));
     }
     print &ui_table_end();
-    print &ui_submit($text{'manage_fix_config_btn'});
+    print &ui_submit($text{'manage_fix_config_btn'}, undef, undef, undef, 'btn-primary');
     print &ui_form_end();
 }
 
@@ -3356,7 +3346,7 @@ JS
     print "<div id='cfg_raw_div_common' style='display:none'>\n";
     print &ui_textarea("config_raw", $common_raw, 20, 72);
     print "</div>\n";
-    print &ui_submit($text{'config_editor_save'});
+    print &ui_submit($text{'config_editor_save'}, undef, undef, undef, 'btn-primary');
     print &ui_form_end();
     print "</div>\n";
 
@@ -3414,7 +3404,7 @@ JS
     print "<div id='cfg_raw_div_instance' style='display:none'>\n";
     print &ui_textarea("config_raw", $inst_raw, 20, 72);
     print "</div>\n";
-    print &ui_submit($text{'config_editor_save'});
+    print &ui_submit($text{'config_editor_save'}, undef, undef, undef, 'btn-primary');
     print &ui_form_end();
     print "</div>\n";
 
@@ -3429,7 +3419,7 @@ JS
             print &ui_form_start("manage.cgi", "post");
             print &ui_hidden("instance_id", $safe_id);
             print &ui_hidden("action", "init_game_config");
-            print &ui_submit($text{'config_editor_game_create_btn'});
+            print &ui_submit($text{'config_editor_game_create_btn'}, undef, undef, undef, 'btn-primary');
             print &ui_form_end();
         }
     } else {
@@ -3508,7 +3498,7 @@ JS
         print "<div id='cfg_raw_div_game' style='display:none'>\n";
         print &ui_textarea("game_config_raw", $game_raw, 22, 90);
         print "</div>\n";
-        print &ui_submit($text{'config_editor_save'});
+        print &ui_submit($text{'config_editor_save'}, undef, undef, undef, 'btn-primary');
         print &ui_form_end();
     }
     print "</div>\n";

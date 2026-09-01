@@ -250,6 +250,16 @@ sub mc_upgrade_collect_index_mods {
 }
 
 # Read-only compat scan for an MC upgrade target (no mod auto-update).
+sub _mc_upgrade_compat_cache_path {
+    my ($server_dir, $target_mc) = @_;
+    return undef unless defined $server_dir && $server_dir ne '';
+    $target_mc =~ s/[^0-9.]//g;
+    return undef unless $target_mc =~ /^[0-9.]+$/;
+    my $safe = $target_mc;
+    $safe =~ s/[^0-9.]/_/g;
+    return "$server_dir/.webcore/mc_compat_$safe.json";
+}
+
 sub mc_upgrade_mod_compat_report {
     my ($server_dir, $profile, $target_mc_version) = @_;
     my $empty = {
@@ -265,6 +275,25 @@ sub mc_upgrade_mod_compat_report {
     my $clean_mc = $target_mc_version // '';
     $clean_mc =~ s/[^0-9.]//g;
     return $empty unless $clean_mc =~ /^[0-9.]+$/;
+
+    my $cache_path = _mc_upgrade_compat_cache_path($server_dir, $clean_mc);
+    if ($cache_path && -f $cache_path) {
+        my $age = time() - (stat($cache_path))[9];
+        if ($age >= 0 && $age < 300) {
+            require JSON::PP;
+            open(my $cfh, '<', $cache_path) or undef $cache_path;
+            if ($cfh) {
+                local $/;
+                my $cached = eval { JSON::PP::decode_json(<$cfh>) };
+                close($cfh);
+                if (ref($cached) eq 'HASH'
+                    && ($cached->{'target_mc_version'} // '') eq $clean_mc
+                    && ref($cached->{'compatible'}) eq 'ARRAY') {
+                    return $cached;
+                }
+            }
+        }
+    }
 
     my %target_prof = %$profile;
     $target_prof{'mc_version'} = $clean_mc;
@@ -290,7 +319,7 @@ sub mc_upgrade_mod_compat_report {
         }
     }
 
-    return {
+    my $report = {
         target_mc_version    => $clean_mc,
         total                => scalar @$projects,
         compatible           => \@compatible,
@@ -298,6 +327,21 @@ sub mc_upgrade_mod_compat_report {
         unknown              => \@unknown,
         unchecked_curseforge => \@unchecked_cf,
     };
+
+    if ($cache_path) {
+        my $cache_dir = $cache_path;
+        $cache_dir =~ s|/[^/]+$||;
+        if (-d $cache_dir || mkdir($cache_dir, 0755)) {
+            require JSON::PP;
+            my $json = JSON::PP::encode_json($report);
+            if (open(my $wfh, '>', $cache_path)) {
+                print $wfh $json;
+                close($wfh);
+            }
+        }
+    }
+
+    return $report;
 }
 
 sub mc_upgrade_preflight {
