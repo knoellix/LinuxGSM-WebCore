@@ -201,8 +201,26 @@ install_one_mod() {
     fi
 
     echo "--- Download ---"
-    if ! $PRIO_LOW curl -fsSL --max-time 600 -o "$tmp" "$dl_url"; then
-        echo "ERROR: download failed for $fname"
+    CF_FETCH_PL="$MODULE_ROOT/scripts/mc_modpack_cf_fetch.pl"
+    _DL_OK=0
+    if [ -f "$CF_FETCH_PL" ] && [[ "$dl_url" == *forgecdn.net* ]]; then
+        if [ ! -f "$JOB_DIR/.worker_secrets" ]; then
+            echo "WARN: missing .worker_secrets — CurseForge CDN download may fail"
+        fi
+        if MODULE_ROOT="${MODULE_ROOT:-}" WEBCORE_JOB_DIR="$JOB_DIR" \
+            perl "$CF_FETCH_PL" download-url "$dl_url" "$tmp"; then
+            _DL_OK=1
+        fi
+    elif $PRIO_LOW curl -fsSL --connect-timeout 30 --max-time 600 \
+        --proto-redir '=https' -o "$tmp" "$dl_url"; then
+        _DL_OK=1
+    fi
+    if [ "$_DL_OK" -ne 1 ]; then
+        if [[ "$dl_url" == *forgecdn.net* ]]; then
+            echo "ERROR: CurseForge download failed for $fname (check integrations API key)"
+        else
+            echo "ERROR: download failed for $fname"
+        fi
         rm -f "$tmp" 2>/dev/null || true
         set_final_status "failed"
         exit 1

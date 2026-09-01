@@ -343,8 +343,10 @@ if RESTART_JOB_DIR="$(mktemp -d "$STATE_DIR/restart.XXXXXX" 2>/dev/null)"; then
         fi
     else
         _log "Monitor restart failed — see $LOG_FILE and $RESTART_JOB_DIR/output"
+        _write_state "failed" "$RESTART_COUNT" "$WINDOW_START"
     fi
 else
     _log "Monitor restart failed — could not create temp job dir under $STATE_DIR"
+    _write_state "failed" "$RESTART_COUNT" "$WINDOW_START"
 fi
 exit 0

@@ -54,6 +54,8 @@ User instruction > project rules (`.cursor/rules/`) > agent defaults. **Security
 | MC profile, Java sync, loader chain | `mc_profile.pl`, `mc_loader.pl`, `mc_compat.json` |
 | Mods API + list/enable/disable | `mc_mods.pl`; UI: `mods.cgi` (manage links only) |
 | Modpack parse/validate/import | `mc_modpack.pl` |
+| Loader/MC upgrade preflight + plans | `mc_upgrade.pl`; worker: `mc_upgrade_user.sh`; UI: `manage.cgi` |
+| Server log / monitor poll helpers | `server_log.pl`, `scripts/lib/lgsm_control.sh` |
 | Monitor / live log | `monitor.pl`, `live_log.pl`, `job_live.cgi` |
 
 ## Minecraft (must-know)
@@ -68,7 +70,7 @@ User instruction > project rules (`.cursor/rules/`) > agent defaults. **Security
 
 ## Workers (short)
 
-- **Game-user:** monitor, SteamCMD control, `$SERVER_DIR` writes, MC install/update/modpack (user-native).
+- **Game-user:** monitor, SteamCMD control, `$SERVER_DIR` writes, MC install/update/modpack/mod-deps, loader/MC upgrade (user-native).
 - **Root dispatch:** start user workers, apt/provision, system cron — no root writes to game data at runtime.
 - Standalone Perl helpers: `module_config_bootstrap_standalone($MODULE_ROOT)` (+ `WEBCORE_JOB_DIR` for secrets).
 - Jobs → `job_live.cgi`; success only `$JOB_DIR/status=ok`.

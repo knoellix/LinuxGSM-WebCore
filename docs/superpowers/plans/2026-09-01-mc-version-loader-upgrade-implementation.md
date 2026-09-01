@@ -1,6 +1,7 @@
 # MC Version & Modloader Upgrade — Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Status:** Implementiert (0.2.2) — Phases 1–3 shipped  
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Auf `manage.cgi` gezielt **Loader-Version** und später **MC-Version** upgraden — als Job mit Live-Log, ohne destruktives `reinstall` (Mods/Welt bleiben).
 
@@ -46,17 +47,17 @@
   - Checks: profile exists; loader modded; `target_loader_version` pin valid via `mc_loader_version_valid_for_mc`; instance status not running (use existing online check); no job running for instance.
 - `mc_upgrade_loader_plan($profile, $target_loader_version) → { needs_java => 0|1, loader => ..., mc_version => ..., target_pin => ... }`
 
-- [ ] **Step 1: Failing tests** — reject when target pin not in filtered NeoForge list; accept valid bump.
+- [x] **Step 1: Failing tests** — reject when target pin not in filtered NeoForge list; accept valid bump.
 
 ```perl
 is(mc_upgrade_preflight_offline_required(), 1, 'offline required');
 ```
 
-- [ ] **Step 2: Implement preflight** (no network in tests — mock loader list via injectable array ref or test-only helper `mc_upgrade_set_loader_versions_for_test`).
+- [x] **Step 2: Implement preflight** (no network in tests — mock loader list via injectable array ref or test-only helper `mc_upgrade_set_loader_versions_for_test`).
 
-- [ ] **Step 3: `perl t/test_mc_upgrade.pl` — PASS**
+- [x] **Step 3: `perl t/test_mc_upgrade.pl` — PASS**
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ---
 
@@ -73,13 +74,13 @@ is(mc_upgrade_preflight_offline_required(), 1, 'offline required');
 4. Verify: read profile back + check NeoForge jar / `run.sh` / logs for version string
 5. Write `status=ok` or `failed` with `ERROR:` line
 
-- [ ] **Step 1: Plan JSON write helper in `mc_upgrade.pl`**: `write_upgrade_job_plan($job_dir, $plan)`
+- [x] **Step 1: Plan JSON write helper in `mc_upgrade.pl`**: `write_upgrade_job_plan($job_dir, $plan)`
 
-- [ ] **Step 2: Implement worker**
+- [x] **Step 2: Implement worker**
 
-- [ ] **Step 3: `bash -n` + dry-run test with fake job dir**
+- [x] **Step 3: `bash -n` + dry-run test with fake job dir**
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ---
 
@@ -107,13 +108,13 @@ elsif ($action eq 'mc_upgrade_loader') {
 }
 ```
 
-- [ ] **Step 1: UI + lang keys**
+- [x] **Step 1: UI + lang keys**
 
-- [ ] **Step 2: Action handler + job dispatch**
+- [x] **Step 2: Action handler + job dispatch**
 
-- [ ] **Step 3: Manual test on Pepega (NeoForge 26.1.2.x → newer build)**
+- [x] **Step 3: Manual test on Pepega (NeoForge 26.1.2.x → newer build)**
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ---
 
@@ -140,9 +141,9 @@ bash scripts/verify.sh
 - Then update `mc_version` in profile + `mc_loader_install_user.sh` (new loader build for new MC)
 - **Do not** wipe `serverfiles/mods/`
 
-- [ ] UI: second dropdown + action `mc_upgrade_mc`
-- [ ] Tests for Java-major change detection
-- [ ] Commit
+- [x] UI: second dropdown + action `mc_upgrade_mc`
+- [x] Tests for Java-major change detection
+- [x] Commit
 
 ---
 

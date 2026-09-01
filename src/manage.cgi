@@ -80,6 +80,29 @@ sub _write_file_as_user {
     close($pipe) or &error("Cannot write $path as $unix_user (pipe error): $!");
 }
 
+sub _manage_config_path_written {
+    my ($path) = @_;
+    return 0 unless defined $path && $path ne '';
+    return -f $path ? 1 : 0;
+}
+
+sub _manage_config_flash_mark {
+    my ($instance_id, $kind) = @_;
+    $instance_id =~ s/[^a-zA-Z0-9_-]//g;
+    $kind =~ s/[^a-z]//g;
+    return 0 unless $instance_id ne '' && $kind ne '';
+    return &module_config_flash_mark("cfg_${kind}_$instance_id");
+}
+
+sub _manage_config_save_ok {
+    my ($instance_id, $kind, $path) = @_;
+    &_manage_config_path_written($path)
+        or &error($text{'manage_config_save_failed'} || 'Config save could not be verified.');
+    &_manage_config_flash_mark($instance_id, $kind)
+        or &error($text{'manage_config_save_failed'} || 'Config save could not be verified.');
+    return 1;
+}
+
 # Launch steamcmd control as game-user background worker (E8).
 sub _manage_steamcmd_worker_cmd {
     my ($action, $job_dir, $unix_user, $server_dir, %opts) = @_;
@@ -483,25 +506,34 @@ sub _manage_apply_firewall_ports {
 }
 
 sub _manage_mc_upgrade_error {
-    my ($err) = @_;
+    my ($err, $mode) = @_;
+    $mode //= '';
     if ($err eq 'server_must_be_stopped') {
-        &error($text{'mc_upgrade_server_must_be_stopped'}
-            || 'Stop the server before upgrading the loader.');
+        my $key = $mode eq 'mc' ? 'mc_upgrade_mc_server_must_be_stopped'
+            : $mode eq 'loader' ? 'mc_upgrade_loader_server_must_be_stopped'
+            : 'mc_upgrade_server_must_be_stopped';
+        &error($text{$key} || $text{'mc_upgrade_server_must_be_stopped'}
+            || 'Stop the server before upgrading.');
     } elsif ($err eq 'job_running') {
         &error($text{'manage_job_running_title'} || 'A background job is already running.');
     } elsif ($err eq 'not_newer') {
-        &error($text{'mc_upgrade_not_newer'}
+        my $key = $mode eq 'mc' ? 'mc_upgrade_mc_not_newer' : 'mc_upgrade_loader_not_newer';
+        &error($text{$key} || $text{'mc_upgrade_not_newer'}
             || 'Selected version is not newer than the current one.');
     } elsif ($err eq 'same_version') {
         &error($text{'mc_upgrade_same_version'}
             || 'Selected Minecraft version matches the current profile.');
     } elsif ($err eq 'invalid_target') {
-        &error($text{'mc_upgrade_invalid_target'}
+        my $key = $mode eq 'mc' ? 'mc_upgrade_mc_invalid_target' : 'mc_upgrade_loader_invalid_target';
+        &error($text{$key} || $text{'mc_upgrade_invalid_target'}
             || 'Invalid target for this Minecraft profile.');
     } elsif ($err eq 'loader_not_modded') {
         &error($text{'mc_loader_not_modded'});
     } else {
-        &error($text{'mc_upgrade_failed'} || 'Could not prepare loader upgrade.');
+        my $key = $mode eq 'mc' ? 'mc_upgrade_mc_failed'
+            : $mode eq 'loader' ? 'mc_upgrade_loader_failed'
+            : 'mc_upgrade_job_failed';
+        &error($text{$key} || $text{'mc_upgrade_failed'} || 'Could not prepare upgrade.');
     }
 }
 
@@ -524,7 +556,8 @@ sub _manage_render_mc_loader_upgrade_block {
         . "</p>\n";
     if ($runtime_status eq 'online' || $runtime_status eq 'running') {
         print "<div class=\"alert alert-warning\">"
-            . &html_escape($text{'mc_upgrade_server_must_be_stopped'}
+            . &html_escape($text{'mc_upgrade_loader_server_must_be_stopped'}
+                || $text{'mc_upgrade_server_must_be_stopped'}
                 || 'Stop the server before upgrading the loader.')
             . "</div>\n";
     }
@@ -557,9 +590,9 @@ sub _manage_launch_mc_upgrade_job {
     my $job_id = &create_job($unix_user);
     my $job_dir = &_job_dir($job_id);
     &write_job_meta($job_id, $instance_id, $action, $unix_user)
-        or do { &job_mark_launch_failed($job_id); &error($text{'mc_upgrade_failed'}); };
-    &write_upgrade_job_plan($job_dir, $plan)
-        or do { &delete_job($job_id); &error($text{'mc_upgrade_failed'}); };
+        or do { &job_mark_launch_failed($job_id); &error($text{'mc_upgrade_job_failed'}); };
+    &write_upgrade_job_plan($job_dir, $plan, $unix_user)
+        or do { &delete_job($job_id); &error($text{'mc_upgrade_job_failed'}); };
     &log_action('job_started', $job_id, { instance_id => $instance_id, action => $action });
     my $rc = &system_logged(&user_worker_launch_cmd(
         unix_user   => $unix_user,
@@ -569,7 +602,11 @@ sub _manage_launch_mc_upgrade_job {
     ));
     if ($rc != 0 || !&job_dispatch_verified($job_id)) {
         &job_mark_launch_failed($job_id);
-        &error($text{'mc_upgrade_failed'} || 'Could not start upgrade job.');
+        my $fail_key = $action eq 'mc_upgrade_mc' ? 'mc_upgrade_mc_failed'
+            : $action eq 'mc_upgrade_loader' ? 'mc_upgrade_loader_failed'
+            : 'mc_upgrade_job_failed';
+        &error($text{$fail_key} || $text{'mc_upgrade_job_failed'}
+            || 'Could not start upgrade job.');
     }
     &_manage_redirect_poll_job($job_id, $instance_id);
 }
@@ -585,9 +622,7 @@ sub _manage_render_mc_mod_compat_warning {
     my $bad = $report->{'incompatible'} // [];
     my $cf_skip = $report->{'unchecked_curseforge'} // [];
     if (@$bad) {
-        my $msg = sprintf(
-            $text{'mc_upgrade_mod_compat_warning'}
-                // '%d mod(s) have no version for Minecraft %s.',
+        my $msg = &text('mc_upgrade_mod_compat_warning',
             scalar @$bad,
             $target,
         );
@@ -613,23 +648,21 @@ sub _manage_render_mc_mod_compat_warning {
             \@rows,
         );
         if (@$bad > 25) {
-            $out .= "<p><small>" . &html_escape(sprintf(
-                $text{'mc_upgrade_mod_compat_truncated'} // '… and %d more.',
+            $out .= "<p><small>" . &html_escape(&text(
+                'mc_upgrade_mod_compat_truncated',
                 scalar(@$bad) - 25,
             )) . "</small></p>\n";
         }
     } elsif (!@$cf_skip) {
-        $out .= "<p><em>" . &html_escape(sprintf(
-            $text{'mc_upgrade_mod_compat_ok'}
-                // 'All %d indexed mod(s) have a compatible version for Minecraft %s.',
+        $out .= "<p><em>" . &html_escape(&text(
+            'mc_upgrade_mod_compat_ok',
             $report->{'total'} // 0,
             $target,
         )) . "</em></p>\n";
     }
     if (@$cf_skip) {
-        $out .= "<p><em>" . &html_escape(sprintf(
-            $text{'mc_upgrade_mod_compat_cf_skipped'}
-                // '%d CurseForge mod(s) not checked — CurseForge API key missing in Integrations.',
+        $out .= "<p><em>" . &html_escape(&text(
+            'mc_upgrade_mod_compat_cf_skipped',
             scalar @$cf_skip,
         )) . "</em></p>\n";
     }
@@ -655,7 +688,8 @@ sub _manage_render_mc_version_upgrade_block {
         . "</p>\n";
     if ($runtime_status eq 'online' || $runtime_status eq 'running') {
         print "<div class=\"alert alert-warning\">"
-            . &html_escape($text{'mc_upgrade_server_must_be_stopped'}
+            . &html_escape($text{'mc_upgrade_mc_server_must_be_stopped'}
+                || $text{'mc_upgrade_server_must_be_stopped'}
                 || 'Stop the server before upgrading.')
             . "</div>\n";
     }
@@ -669,25 +703,27 @@ sub _manage_render_mc_version_upgrade_block {
     );
     my @opts = map { [ $_, $_ ] } @candidates;
     my $default = $candidates[0];
-    my $needs_java = &mc_upgrade_mc_needs_java($mc_prof, $default);
+    my $preview_target = $in{'target_mc_version'} // '';
+    $preview_target =~ s/[^0-9.]//g;
+    my $compat_target = $default;
+    if ($preview_target =~ /^[0-9.]+$/ && grep { $_ eq $preview_target } @candidates) {
+        $compat_target = $preview_target;
+    }
+    my $needs_java = &mc_upgrade_mc_needs_java($mc_prof, $compat_target);
     if ($server_dir) {
-        my $compat = &mc_upgrade_mod_compat_report($server_dir, $mc_prof, $default);
+        my $compat = &mc_upgrade_mod_compat_report($server_dir, $mc_prof, $compat_target);
         my $compat_html = _manage_render_mc_mod_compat_warning($compat);
         print $compat_html if $compat_html ne '';
     }
     print &ui_table_row(
         $text{'mc_upgrade_mc_target'} || 'Target version',
-        &ui_select('target_mc_version', $default, \@opts),
+        &ui_select('target_mc_version', $compat_target, \@opts),
     );
     if ($needs_java) {
-        my $target_java = &resolve_java_major($default);
+        my $target_java = &resolve_java_major($compat_target);
         print &ui_table_row(
             $text{'mc_upgrade_mc_java_note'} || 'Java',
-            &html_escape(sprintf(
-                $text{'mc_upgrade_mc_java_change'}
-                    // 'Installs Java %s before rebuilding the loader.',
-                $target_java,
-            )),
+            &html_escape(&text('mc_upgrade_mc_java_change', $target_java)),
         );
     }
     print &ui_table_end();
@@ -1460,7 +1496,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|monitor)$/) {
 
         &_write_file_as_user($config_file, $cfg_content, $unix_user,
             mkdir => "$script_dir/lgsm/config-lgsm/$script_name");
-
+        &_manage_config_save_ok($instance_id, 'fix', $config_file);
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
         exit;
     }
@@ -1504,6 +1540,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|monitor)$/) {
             unlink $common_path;
         }
 
+        &_manage_config_save_ok($instance_id, 'migrate', $script_path);
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
         exit;
     }
@@ -1608,6 +1645,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|monitor)$/) {
             &_write_file_as_user($cfg_path, $form_content, $unix_user, mkdir => $cfg_dir);
         }
 
+        &_manage_config_save_ok($instance_id, 'save', $cfg_path);
         &log_action('config_saved', $instance_id, {config_type => $cfg_file_key});
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) .
                   "&config_file=" . &html_escape($cfg_file_key) .
@@ -1713,12 +1751,19 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|monitor)$/) {
     elsif ($action eq 'delete_instance_ftp_user') {
         &can_manage_ftp() or &error($text{'err_acl_admin_only'} || 'Access denied');
         my $ftp_user  = &sanitize_input($in{'ftp_user'});
+        my $expected  = &resolve_instance_sftp_user($instance_id, $unix_user) // '';
+        &error($text{'ftp_user_mismatch'} || 'FTP user does not match this instance.')
+            unless $expected ne '' && $ftp_user eq $expected;
         my %ftp_state = &discover_ftp_state();
         my $auth_file = $ftp_state{'auth_user_file'} || '/etc/proftpd/ftpd.passwd';
-        &ftpasswd_delete_user(file => $auth_file, name => $ftp_user);
+        &ftpasswd_delete_user(file => $auth_file, name => $ftp_user) == 0
+            or &error($text{'ftp_delete_failed'} || 'Failed deleting FTP user.');
         &register_instance($instance_id, $unix_user, $inst->{'script'}, {
             sftp_user => '',
         }) or &error($text{'ftp_register_failed'} || $text{'wizard_register_failed'});
+        my $reg = &get_registered_instance($instance_id);
+        &error($text{'ftp_register_failed'} || 'FTP registry update failed.')
+            if $reg && ($reg->{'sftp_user'} // '') ne '';
         &delete_ftp_password($config_directory, $instance_id);
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
         exit;
@@ -1833,7 +1878,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|monitor)$/) {
         $target_raw = substr($target_raw, 0, 64);
         my $loader = $profile->{'loader'} // '';
         my $target_pin = &mc_sanitize_loader_version_pin($loader, $target_raw);
-        &error($text{'mc_upgrade_invalid_target'} || 'Invalid loader version.')
+        &error($text{'mc_upgrade_loader_invalid_target'} || 'Invalid loader version.')
             unless defined $target_pin;
         my $runtime = _manage_runtime_status($inst, $effective_source, light => 1);
         my $pf = &mc_upgrade_preflight(
@@ -1841,9 +1886,9 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|monitor)$/) {
             { mode => 'loader', target_loader_version => $target_pin },
             { instance_id => $instance_id, runtime_status => $runtime },
         );
-        _manage_mc_upgrade_error($pf->{'err'}) unless $pf->{'ok'};
+        _manage_mc_upgrade_error($pf->{'err'}, 'loader') unless $pf->{'ok'};
         my ($ok, $plan, $err) = &mc_upgrade_loader_plan($profile, $target_pin);
-        _manage_mc_upgrade_error($err) unless $ok;
+        _manage_mc_upgrade_error($err, 'loader') unless $ok;
         _manage_launch_mc_upgrade_job($instance_id, $inst, $unix_user, 'mc_upgrade_loader', $plan);
     }
     elsif ($action eq 'mc_upgrade_mc') {
@@ -1855,7 +1900,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|monitor)$/) {
         $target_raw =~ s/[\t\n\r\0]//g;
         $target_raw =~ s/[^0-9.]//g;
         $target_raw = substr($target_raw, 0, 32);
-        &error($text{'mc_upgrade_invalid_target'} || 'Invalid Minecraft version.')
+        &error($text{'mc_upgrade_mc_invalid_target'} || 'Invalid Minecraft version.')
             unless $target_raw =~ /^[0-9.]+$/;
         my $runtime = _manage_runtime_status($inst, $effective_source, light => 1);
         my $pf = &mc_upgrade_preflight(
@@ -1863,9 +1908,9 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|monitor)$/) {
             { mode => 'mc', target_mc_version => $target_raw },
             { instance_id => $instance_id, runtime_status => $runtime },
         );
-        _manage_mc_upgrade_error($pf->{'err'}) unless $pf->{'ok'};
+        _manage_mc_upgrade_error($pf->{'err'}, 'mc') unless $pf->{'ok'};
         my ($ok, $plan, $err) = &mc_upgrade_mc_plan($profile, $target_raw);
-        _manage_mc_upgrade_error($err) unless $ok;
+        _manage_mc_upgrade_error($err, 'mc') unless $ok;
         _manage_launch_mc_upgrade_job($instance_id, $inst, $unix_user, 'mc_upgrade_mc', $plan);
     }
     elsif ($action eq 'install_game') {
@@ -2678,6 +2723,15 @@ if ($job_aborted_id ne ''
             . &html_escape($text{'schedule_saved_ok'} || 'Geplanter Neustart gespeichert.')
             . "</div>\n";
     }
+    if ($flash_id ne '' && &module_config_flash_consume("cfg_save_$flash_id")) {
+        print &ui_success($text{'manage_config_saved_ok'} || 'Configuration saved.');
+    }
+    if ($flash_id ne '' && &module_config_flash_consume("cfg_fix_$flash_id")) {
+        print &ui_success($text{'manage_config_fix_ok'} || 'Configuration repaired.');
+    }
+    if ($flash_id ne '' && &module_config_flash_consume("cfg_migrate_$flash_id")) {
+        print &ui_success($text{'manage_config_migrate_ok'} || 'Configuration migrated.');
+    }
 }
 
 my $silent_job_id = $in{'silent_job'} // '';
@@ -3028,7 +3082,7 @@ if (&is_admin()) {
         print &ui_form_start("manage.cgi", "post");
         print &ui_hidden("instance_id", $safe_id);
         print &ui_hidden("action", "delete_instance_ftp_user");
-        print &ui_hidden("ftp_user", $cur_ftp_user);
+        print &ui_hidden("ftp_user", &html_escape($cur_ftp_user));
         print &ui_submit($text{'ftp_delete_btn'}, undef, 0, undef, 'btn-danger');
         print &ui_form_end();
     } else {

@@ -4,25 +4,31 @@ use warnings;
 
 our @MC_UPGRADE_TEST_LOADER_VERSIONS;
 our @MC_UPGRADE_TEST_MC_VERSIONS;
+our $MC_UPGRADE_TEST_MC_VERSIONS_OVERRIDE;
+our $MC_UPGRADE_TEST_LOADER_VERSIONS_OVERRIDE;
 
 sub mc_upgrade_set_loader_versions_for_test {
     @MC_UPGRADE_TEST_LOADER_VERSIONS = @_;
+    $MC_UPGRADE_TEST_LOADER_VERSIONS_OVERRIDE = 1;
 }
 
 sub mc_upgrade_clear_loader_versions_for_test {
     @MC_UPGRADE_TEST_LOADER_VERSIONS = ();
+    $MC_UPGRADE_TEST_LOADER_VERSIONS_OVERRIDE = 0;
 }
 
 sub mc_upgrade_set_mc_versions_for_test {
     @MC_UPGRADE_TEST_MC_VERSIONS = @_;
+    $MC_UPGRADE_TEST_MC_VERSIONS_OVERRIDE = 1;
 }
 
 sub mc_upgrade_clear_mc_versions_for_test {
     @MC_UPGRADE_TEST_MC_VERSIONS = ();
+    $MC_UPGRADE_TEST_MC_VERSIONS_OVERRIDE = 0;
 }
 
 sub _mc_upgrade_avail_mc_versions {
-    if (@MC_UPGRADE_TEST_MC_VERSIONS) {
+    if ($MC_UPGRADE_TEST_MC_VERSIONS_OVERRIDE) {
         return @MC_UPGRADE_TEST_MC_VERSIONS;
     }
     return mc_list_mc_versions();
@@ -30,7 +36,7 @@ sub _mc_upgrade_avail_mc_versions {
 
 sub _mc_upgrade_avail_loader_versions {
     my ($loader, $mc_version) = @_;
-    if (@MC_UPGRADE_TEST_LOADER_VERSIONS) {
+    if ($MC_UPGRADE_TEST_LOADER_VERSIONS_OVERRIDE) {
         return @MC_UPGRADE_TEST_LOADER_VERSIONS;
     }
     return mc_fetch_loader_versions($loader, $mc_version);
@@ -101,8 +107,9 @@ sub mc_upgrade_mc_loader_supports {
     return 0 unless mc_loader_is_modded($loader);
     return 0 unless mc_loader_config($loader);
     my @list = _mc_upgrade_avail_mc_versions();
+    return 0 unless @list;
     return 1 if grep { $_ eq $mc_version } @list;
-    return 1;
+    return 0;
 }
 
 sub mc_upgrade_mc_needs_java {
@@ -110,6 +117,8 @@ sub mc_upgrade_mc_needs_java {
     return 0 unless ref($profile) eq 'HASH';
     $target_mc =~ s/[^0-9.]//g;
     return 0 unless $target_mc =~ /^[0-9.]+$/;
+    my %probe = (%$profile, mc_version => $target_mc);
+    return 1 if mc_profile_java_needs_sync(\%probe);
     my $target_java = int(resolve_java_major($target_mc));
     my $current_java = int($profile->{'java_major'} // 0);
     return $target_java != $current_java ? 1 : 0;
@@ -331,13 +340,22 @@ sub mc_upgrade_preflight {
 }
 
 sub write_upgrade_job_plan {
-    my ($job_dir, $plan) = @_;
+    my ($job_dir, $plan, $unix_user) = @_;
     return 0 unless defined $job_dir && -d $job_dir;
     return 0 unless ref($plan) eq 'HASH';
     require JSON::PP;
-    open(my $fh, '>', "$job_dir/upgrade_plan.json") or return 0;
-    print $fh JSON::PP::encode_json($plan);
+    my $path = "$job_dir/upgrade_plan.json";
+    my $json = JSON::PP::encode_json($plan);
+    open(my $fh, '>', $path) or return 0;
+    print $fh $json;
     close($fh);
+    &chown_job_files_to_user($unix_user, $path)
+        if defined $unix_user && $unix_user ne '';
+    open(my $rfh, '<', $path) or return 0;
+    local $/;
+    my $read = <$rfh>;
+    close($rfh);
+    return 0 unless defined $read && $read eq $json;
     return 1;
 }
 

@@ -411,6 +411,8 @@ sub curseforge_file_dependencies {
         next unless mod_dependency_type_installable($dtype);
         push @out, {
             project_id       => "$mid",
+            # CurseForge dependency entries expose modId only (no fileId); resolve
+            # picks the newest loader/MC-compatible file via curseforge_resolve_mod_file.
             version_id       => undef,
             dependency_type  => $dtype,
             source           => 'curseforge',
@@ -1407,7 +1409,7 @@ sub mc_mod_search {
 
 # True when index lists the same Modrinth slug / CurseForge mod id.
 sub mod_index_has_project {
-    my ($server_dir, $source, $project_id, $profile) = @_;
+    my ($server_dir, $source, $project_id, $profile, $idx) = @_;
     return 0 unless defined $server_dir && $server_dir ne '';
     return 0 unless defined $project_id && $project_id =~ /\S/;
     $source =~ s/[^a-z]//g;
@@ -1419,7 +1421,7 @@ sub mod_index_has_project {
         return 0 unless $want;
     }
 
-    my $idx = read_mc_mods_index($server_dir);
+    $idx = read_mc_mods_index($server_dir) unless ref($idx) eq 'HASH';
     for my $key (keys %$idx) {
         my $rec = $idx->{$key};
         next unless ref($rec) eq 'HASH';
@@ -1441,7 +1443,6 @@ sub mod_index_has_project {
             my ($active, $disabled) = mod_file_paths($server_dir, $mod_dir, $base);
             return 1 if defined $active && (-f $active || -f $disabled);
         }
-        return 1;
     }
     return 0;
 }
@@ -1455,12 +1456,13 @@ sub mod_dependency_status {
     return { missing => \@missing, satisfied => \@satisfied, optional => \@optional }
         unless ref($deps) eq 'ARRAY';
 
+    my $idx = read_mc_mods_index($server_dir);
     for my $d (@$deps) {
         next unless ref($d) eq 'HASH';
         my $source = $d->{'source'} // 'modrinth';
         my $pid = $d->{'project_id'} // '';
         my $dtype = normalize_mod_dependency_type($d->{'dependency_type'} // 'required');
-        if (mod_index_has_project($server_dir, $source, $pid, $profile)) {
+        if (mod_index_has_project($server_dir, $source, $pid, $profile, $idx)) {
             push @satisfied, { %$d, dependency_type => $dtype, status => 'satisfied' };
         } elsif ($dtype eq 'optional') {
             push @optional, { %$d, dependency_type => $dtype, status => 'optional' };
@@ -1479,15 +1481,6 @@ sub _modrinth_version_deps_by_id {
         { 'User-Agent' => modrinth_user_agent() },
     );
     return modrinth_version_dependencies($ver);
-}
-
-sub _curseforge_file_deps_by_id {
-    my ($project_id, $file_id) = @_;
-    $project_id =~ s/\D//g;
-    $file_id    =~ s/\D//g;
-    return [] unless $project_id && $file_id;
-    my $cf = curseforge_mod_file_meta($project_id, $file_id);
-    return curseforge_file_dependencies($cf);
 }
 
 sub _resolve_mod_dependency_meta {
@@ -1715,26 +1708,30 @@ sub prepare_mod_install_meta {
 }
 
 sub write_mod_install_job_meta {
-    my ($job_dir, $meta) = @_;
+    my ($job_dir, $meta, $unix_user) = @_;
     return 0 unless defined $job_dir && -d $job_dir && ref($meta) eq 'HASH';
     require JSON::PP;
     my $json = JSON::PP::encode_json($meta);
-    open(my $fh, '>', "$job_dir/mod_meta.json") or return 0;
+    my $path = "$job_dir/mod_meta.json";
+    open(my $fh, '>', $path) or return 0;
     print $fh $json;
     close($fh);
+    &chown_job_files_to_user($unix_user, $path)
+        if defined $unix_user && $unix_user ne '';
     return 1;
 }
 
 # Write primary + dependency metas and mod_install_plan.json for the worker.
 sub write_mod_install_plan_job_meta {
-    my ($job_dir, $plan) = @_;
+    my ($job_dir, $plan, $unix_user) = @_;
     return 0 unless defined $job_dir && -d $job_dir;
     return 0 unless ref($plan) eq 'HASH' && ref($plan->{'primary'}) eq 'HASH';
     require JSON::PP;
 
     my $primary = $plan->{'primary'};
-    my @deps = ref($plan->{'dependencies'}) eq 'ARRAY' ? @{ $plan->{'dependencies'} } : ();
+    my @deps = ref($plan->{'dependencies'}) eq 'ARRAY' ? @{ $plan->{'dependencies'} } : [];
     my @order;
+    my @written;
     for my $i (0 .. $#deps) {
         next unless ref($deps[$i]) eq 'HASH';
         my $path = "dep_meta_$i.json";
@@ -1743,6 +1740,7 @@ sub write_mod_install_plan_job_meta {
         open(my $fh, '>', "$job_dir/$path") or return 0;
         print $fh $json;
         close($fh);
+        push @written, "$job_dir/$path";
     }
     push @order, 'mod_meta.json';
 
@@ -1751,11 +1749,16 @@ sub write_mod_install_plan_job_meta {
         dependencies  => \@deps,
         install_order => \@order,
     );
-    open(my $pfh, '>', "$job_dir/mod_install_plan.json") or return 0;
+    my $plan_path = "$job_dir/mod_install_plan.json";
+    open(my $pfh, '>', $plan_path) or return 0;
     print $pfh JSON::PP::encode_json(\%plan_out);
     close($pfh);
+    push @written, $plan_path;
 
-    return write_mod_install_job_meta($job_dir, $primary);
+    return 0 unless write_mod_install_job_meta($job_dir, $primary, $unix_user);
+    &chown_job_files_to_user($unix_user, @written)
+        if defined $unix_user && $unix_user ne '' && @written;
+    return 1;
 }
 
 1;

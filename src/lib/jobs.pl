@@ -317,6 +317,9 @@ sub finish_job {
     open(my $fh, '>', $file) or return 0;
     print $fh "$status\n";
     close($fh);
+    my %meta = _read_meta($job_id);
+    _chown_to_unix_user($meta{unix_user}, $file)
+        if defined $meta{unix_user} && $meta{unix_user} ne '';
     _invalidate_all_jobs_cache();
     return 1;
 }
@@ -465,6 +468,9 @@ sub _write_error_hint {
     open(my $fh, '>', $file) or return;
     print $fh "$hint\n";
     close($fh);
+    my %meta = _read_meta($job_id);
+    _chown_to_unix_user($meta{unix_user}, $file)
+        if defined $meta{unix_user} && $meta{unix_user} ne '';
 }
 
 sub _read_job_pgid {

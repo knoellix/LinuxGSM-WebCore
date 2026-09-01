@@ -16,6 +16,30 @@ our (%text, %in);
 
 &can_manage_ftp() or &error($text{'err_acl_admin_only'} || 'Access denied');
 
+sub _ftp_user_is_allowed {
+    my ($ftp_user) = @_;
+    $ftp_user = &sanitize_input($ftp_user // '');
+    return 0 unless $ftp_user ne '';
+    return 1 if &is_admin();
+    my @ok = &allowed_ftp_users($ftp_user);
+    return grep { $_ eq $ftp_user } @ok ? 1 : 0;
+}
+
+sub _ftp_assert_user_allowed {
+    my ($ftp_user) = @_;
+    &error($text{'ftp_acl_denied'} || 'Access denied for this FTP user.')
+        unless _ftp_user_is_allowed($ftp_user);
+    return 1;
+}
+
+sub _ftp_assert_instance_manage {
+    my ($instance_id) = @_;
+    $instance_id = &sanitize_input($instance_id // '');
+    &error($text{'err_acl'} || 'Access denied.')
+        unless $instance_id ne '' && &user_can_manage($instance_id);
+    return 1;
+}
+
 my %state = &discover_ftp_state();
 # Determine the auth file: prefer value from config, fall back to common default.
 # Track whether the path came from config so the UI can indicate this clearly.
@@ -38,6 +62,7 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
         my $ftp_user = &sanitize_input($in{'ftp_user'});
         my $ftp_pass = $in{'ftp_pass'} // '';
         length($ftp_pass) or &error($text{'err_invalid_input'});
+        _ftp_assert_instance_manage($instance_id);
         my $inst = &get_instance($instance_id) or &error($text{'err_not_found'});
         my $home = $inst->{'home'};
         my @pw = getpwnam($inst->{'user'});
@@ -64,6 +89,7 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
         my $ftp_user = &sanitize_input($in{'ftp_user'});
         my $ftp_pass = $in{'ftp_pass'} // '';
         length($ftp_pass) or &error($text{'err_invalid_input'});
+        _ftp_assert_user_allowed($ftp_user);
         &ftpasswd_change_password(
             file     => $auth_file,
             name     => $ftp_user,
@@ -74,6 +100,7 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
     }
     elsif ($action eq 'delete_ftp_user') {
         my $ftp_user = &sanitize_input($in{'ftp_user'});
+        _ftp_assert_user_allowed($ftp_user);
         &ftpasswd_delete_user(
             file => $auth_file,
             name => $ftp_user,
@@ -84,6 +111,8 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
     elsif ($action eq 'assign_ftp_user') {
         my $ftp_user    = &sanitize_input($in{'ftp_user'});
         my $instance_id = &sanitize_input($in{'instance_id'});
+        _ftp_assert_user_allowed($ftp_user);
+        _ftp_assert_instance_manage($instance_id);
         my $inst = &get_instance($instance_id) or &error($text{'err_not_found'});
         &register_instance($instance_id, $inst->{'user'}, $inst->{'script'}, {
             sftp_user => $ftp_user,
@@ -138,6 +167,8 @@ unless (&is_admin()) {
 if (@ftp_users) {
     # Build lookup: ftp_username -> instance_id
     my @all_instances = &list_instances();
+    @all_instances = grep { &user_can_manage($_->{'id'} // '') } @all_instances
+        unless &is_admin();
     my %ftp_to_inst;
     for my $inst (@all_instances) {
         my $su = $inst->{'sftp_user'} // '';
@@ -194,6 +225,8 @@ if (@ftp_users) {
 
 print "<h3>$text{'ftp_instance_user_title'}</h3>\n";
 my @instances = &list_instances();
+@instances = grep { &user_can_manage($_->{'id'} // '') } @instances
+    unless &is_admin();
 my @inst_opts = map { [$_->{'id'}, "$_->{'id'} ($_->{'user'})"] } @instances;
 print &ui_form_start('ftp_settings.cgi', 'post');
 print &ui_hidden('action', 'create_ftp_user');

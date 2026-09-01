@@ -904,9 +904,9 @@ sub _mods_launch_mod_install {
         && ref($plan->{'dependencies'}) eq 'ARRAY'
         && @{ $plan->{'dependencies'} }) {
         $plan->{'primary'} = $meta;
-        $meta_ok = &write_mod_install_plan_job_meta($job_dir, $plan);
+        $meta_ok = &write_mod_install_plan_job_meta($job_dir, $plan, $unix_user);
     } else {
-        $meta_ok = &write_mod_install_job_meta($job_dir, $meta);
+        $meta_ok = &write_mod_install_job_meta($job_dir, $meta, $unix_user);
     }
     unless ($meta_ok) {
         &delete_job($job_id);
@@ -914,6 +914,7 @@ sub _mods_launch_mod_install {
     }
     &write_job_meta($job_id, $instance_id, 'mc_mod_install', $unix_user)
         or do { &job_mark_launch_failed($job_id); _mods_job_launch_failed(); };
+    _mods_write_job_worker_secrets($job_dir, $unix_user);
 
     my $rc = &system_logged(&user_worker_launch_cmd(
         unix_user   => $unix_user,
@@ -1165,9 +1166,9 @@ if ($action eq 'mod_install_preview') {
             print &ui_hidden('mod_project_id', $ids{'project_id'} // '');
             print &ui_hidden('mod_version_id', $ids{'version_id'} // '');
             print &ui_hidden('mod_file_id', $ids{'file_id'} // '');
-            print &ui_hidden('mod_hangar_owner', $ids{'hangar_owner'} // '');
-            print &ui_hidden('mod_hangar_slug', $ids{'hangar_slug'} // '');
-            print &ui_hidden('mod_title', $ids{'title'} // '');
+            print &ui_hidden('mod_hangar_owner', &html_escape($ids{'hangar_owner'} // ''));
+            print &ui_hidden('mod_hangar_slug', &html_escape($ids{'hangar_slug'} // ''));
+            print &ui_hidden('mod_title', &html_escape($ids{'title'} // ''));
         }
         print '<p>' . _mods_install_deps_checkbox(1) . "</p>\n";
         print &ui_submit($text{'mc_mod_deps_confirm_btn'} || 'Start installation',
@@ -1595,7 +1596,7 @@ if ($action eq 'mod_search_versions') {
                     $action_form .= &ui_hidden('mod_project_id', $ids{'project_id'} // '');
                     $action_form .= &ui_hidden('mod_hangar_owner', $ids{'hangar_owner'} // '');
                     $action_form .= &ui_hidden('mod_hangar_slug', $ids{'hangar_slug'} // '');
-                    $action_form .= &ui_hidden('mod_title', $ids{'title'} // '');
+                    $action_form .= &ui_hidden('mod_title', &html_escape($ids{'title'} // ''));
                     $action_form .= &ui_hidden('mod_version_id', $row->{'version_id'} // '');
                     $action_form .= &ui_hidden('mod_file_id', $row->{'file_id'} // '');
                     $action_form .= &ui_submit($text{'mc_mods_page_versions_install_btn'} || 'Install version',
@@ -2029,7 +2030,7 @@ if (length($pack_q) >= 2) {
                 $import_form .= &ui_hidden('pack_project_id', $r->{'project_id'} // '');
                 $import_form .= &ui_hidden('pack_version_id', $r->{'version_id'} // '');
                 $import_form .= &ui_hidden('pack_file_id', $r->{'file_id'} // '');
-                $import_form .= &ui_hidden('pack_title', $r->{'title'} // '');
+                $import_form .= &ui_hidden('pack_title', &html_escape($r->{'title'} // ''));
                 $import_form .= &ui_submit($text{'mc_modpack_import_search_btn'} || 'Install',
                     undef, undef, undef, 'btn-primary');
                 $import_form .= &ui_form_end();
@@ -2193,9 +2194,9 @@ if (length($mod_q) >= 2) {
                     $install_form .= &ui_hidden('mod_project_id', $r->{'project_id'} // '');
                     $install_form .= &ui_hidden('mod_version_id', $r->{'version_id'} // '');
                     $install_form .= &ui_hidden('mod_file_id', $r->{'file_id'} // '');
-                    $install_form .= &ui_hidden('mod_hangar_owner', $r->{'hangar_owner'} // '');
-                    $install_form .= &ui_hidden('mod_hangar_slug', $r->{'hangar_slug'} // '');
-                    $install_form .= &ui_hidden('mod_title', $r->{'title'} // '');
+                    $install_form .= &ui_hidden('mod_hangar_owner', &html_escape($r->{'hangar_owner'} // ''));
+                    $install_form .= &ui_hidden('mod_hangar_slug', &html_escape($r->{'hangar_slug'} // ''));
+                    $install_form .= &ui_hidden('mod_title', &html_escape($r->{'title'} // ''));
                     $install_form .= &ui_submit($text{'mc_mods_install_btn'} || 'Install',
                         undef, undef, undef, 'btn-primary');
                     $install_form .= &ui_form_end();

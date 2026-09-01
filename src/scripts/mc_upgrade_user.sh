@@ -133,6 +133,11 @@ _run_mc_upgrade() {
     _apply_profile_for_mc_upgrade "$target_mc" "$target_java"
     echo "OK: profile mc_version=$target_mc java_major=$target_java"
 
+    SYNC_JAVA_PL="$MODULE_ROOT/scripts/mc_profile_sync_java.pl"
+    if [ -f "$SYNC_JAVA_PL" ]; then
+        perl "$SYNC_JAVA_PL" "$SERVER_DIR" "$UNIX_USER" || true
+    fi
+
     if [ "$NEEDS_JAVA" = "1" ]; then
         echo "--- Installing Java $target_java ---"
         export WEBCORE_SUBSTEP=1

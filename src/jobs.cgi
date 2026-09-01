@@ -93,7 +93,7 @@ if ($action eq 'view_output') {
     if (defined $out && $out ne '') {
         print &job_log_view_block($out, id => 'jobs_output');
     } else {
-        print "<p><i>" . &html_escape('Keine Ausgabe vorhanden.') . "</i></p>\n";
+        print "<p><i>" . &html_escape($text{'jobs_no_output'} || 'No output available.') . "</i></p>\n";
     }
     print &job_log_view_page_close();
     &footer('jobs.cgi', $text{'jobs_title'} || 'Jobs');
@@ -139,10 +139,12 @@ if (!@all_jobs) {
         if ($status eq 'running') {
             $out_cell = "<a href='job_live.cgi?instance_id="
                 . &html_escape($job->{instance_id} // '')
-                . "&amp;job=" . &html_escape($jid) . "&amp;xnavigation=1'>Live</a>";
+                . "&amp;job=" . &html_escape($jid) . "&amp;xnavigation=1'>"
+                . &html_escape($text{'manage_job_open_live'} || 'Live') . "</a>";
         } elsif ($status eq 'ok' || $status eq 'failed' || $status eq 'aborted') {
             $out_cell = "<a href='jobs.cgi?action=view_output&amp;job_id="
-                . &html_escape($jid) . "'>Log</a>";
+                . &html_escape($jid) . "'>"
+                . &html_escape($text{'jobs_view_log'} || 'Log') . "</a>";
         } else {
             $out_cell = '—';
         }

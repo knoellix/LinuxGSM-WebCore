@@ -135,6 +135,7 @@ chmod 700 "$HOME/jobs" "$JOB_HOME" 2>/dev/null || true
     printf 'trigger=schedule\n'
 } >"$JOB_HOME/meta"
 printf 'running\n' >"$JOB_HOME/status"
+echo $$ >"$JOB_HOME/pgid"
 : >"$JOB_HOME/output"
 chmod 600 "$JOB_HOME/meta" "$JOB_HOME/status" 2>/dev/null || true
 

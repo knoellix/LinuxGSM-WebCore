@@ -96,6 +96,13 @@ subtest 'mod_index_has_project and dependency status' => sub {
     ok(mod_index_has_project($tmp, 'modrinth', 'balm', $profile),
         'balm found in index with jar on disk');
 
+    unlink "$sf/balm-1.21.1.jar";
+    ok(!mod_index_has_project($tmp, 'modrinth', 'balm', $profile),
+        'stale index entry without jar is not satisfied');
+
+    open my $fh2, '>', "$sf/balm-1.21.1.jar" or die $!;
+    print $fh2 'balm'; close $fh2;
+
     my $ver = _read_json_fixture('modrinth_version_with_dep.json');
     my $deps = modrinth_version_dependencies($ver);
 

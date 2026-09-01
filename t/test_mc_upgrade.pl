@@ -181,5 +181,38 @@ subtest 'mod compat report for MC upgrade' => sub {
     mc_upgrade_clear_mod_compat_for_test();
 };
 
+subtest 'loader supports fail closed without version list' => sub {
+    mc_upgrade_set_mc_versions_for_test();
+    ok(!mc_upgrade_mc_loader_supports('neoforge', '1.21.1'),
+        'no MC support when version list unavailable');
+    mc_upgrade_clear_mc_versions_for_test();
+};
+
+subtest 'preflight rejects concurrent job' => sub {
+    no warnings 'redefine';
+    local *find_running_job_for_instance = sub { return 'deadbeefdeadbeef' };
+    mc_upgrade_set_mc_versions_for_test(qw(1.20.4 1.21.1));
+    my $pf = mc_upgrade_preflight(
+        {}, $profile_mc, '/tmp/srv',
+        { mode => 'mc', target_mc_version => '1.21.1' },
+        { runtime_status => 'offline', instance_id => 'u1' },
+    );
+    ok(!$pf->{'ok'}, 'preflight rejects when job running');
+    is($pf->{'err'}, 'job_running', 'job_running token');
+    mc_upgrade_clear_mc_versions_for_test();
+};
+
+subtest 'needs java when java_home stale for target mc' => sub {
+    my $stale = {
+        loader      => 'neoforge',
+        mc_version  => '1.20.4',
+        java_major  => 21,
+        java_home   => '.java/temurin-8',
+        lgsm_script => 'mcserver',
+    };
+    ok(mc_upgrade_mc_needs_java($stale, '1.21.1'),
+        'java step when profile java_home does not match target major');
+};
+
 mc_upgrade_clear_loader_versions_for_test();
 done_testing();
