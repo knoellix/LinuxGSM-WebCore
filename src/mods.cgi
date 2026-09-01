@@ -728,13 +728,6 @@ sub _mods_steamcmd_worker_cmd {
     );
 }
 
-sub _filemin_path_urlencode {
-    my ($s) = @_;
-    $s //= '';
-    $s =~ s/([^A-Za-z0-9\-_.~\/])/sprintf("%%%02X", ord($1))/ge;
-    return $s;
-}
-
 sub _mods_sanitize_mod_basename {
     my ($raw) = @_;
     $raw //= '';
@@ -1683,134 +1676,38 @@ if ($action eq 'poll_monitor') {
 
 if ($action eq 'monitor') {
     my $source = &instance_effective_source($inst);
-    my @log_candidates = grep { -f $_ } server_log_candidates(
-        server_dir  => $server_dir,
-        script_name => $script_name,
-        source      => $source,
-        minecraft   => 1,
-    );
-    my $log_file = server_log_resolve_pick($in{'log_file'}, \@log_candidates);
-    $log_file = $log_candidates[0] if $log_file eq '' && @log_candidates;
-    my $log_base = $log_file ne '' ? basename($log_file) : '';
-    my $auto_refresh = 1;
-    if (defined $in{'auto_refresh'} && ($in{'auto_refresh'} // '') ne '1') {
-        $auto_refresh = 0;
-    }
+    my $mn = $module_name // $main::module_name // 'linuxgsm-webcore';
+    $mn =~ s/[^a-zA-Z0-9_-]//g;
 
     &header($text{'mc_mods_page_monitor_title'} || 'Server log (live)', '');
     print &job_log_view_page_css();
     print &job_log_view_page_open('fill');
     print &job_log_live_page_js();
-    print "<h3>" . &html_escape($text{'mc_mods_page_monitor_title'} || 'Server log (live)') . "</h3>\n";
-    print &job_log_view_toolbar_open();
-
-    print &ui_form_start('mods.cgi', 'get', undef, 'id="monitor_refresh_form"');
-    print &ui_hidden('instance_id', &html_escape($instance_id));
-    print &ui_hidden('action', 'monitor');
-    print &ui_hidden('xnavigation', '1');
-    if (@log_candidates > 1) {
-        my (%seen_bn, @opts);
-        for my $p (@log_candidates) {
-            my $bn = basename($p);
-            next if $seen_bn{$bn}++;
-            my $label = $bn;
-            $label .= ' [gz]' if $bn =~ /\.gz$/i;
-            push @opts, [ $bn, $label ];
-        }
-        print &html_escape($text{'mc_mods_page_monitor_log_pick_label'} || 'Log file') . ': ';
-        print &ui_select('log_file', $log_base, \@opts);
-        print " ";
-    } elsif ($log_base ne '') {
-        print &ui_hidden('log_file', &html_escape($log_base));
-    }
-    print '<label style="margin-right:8px"><input type="checkbox" name="auto_refresh"'
-        . ' id="monitor_auto_refresh" value="1"'
-        . ($auto_refresh ? ' checked' : '') . '> '
-        . &html_escape($text{'mc_mods_page_monitor_auto_label'} || 'Auto refresh (3s)')
-        . '</label> ';
-    print &ui_submit($text{'mc_mods_page_monitor_refresh_btn'} || 'Refresh',
-        undef, undef, undef, 'btn-default');
-    print &ui_form_end();
-
-    print &ui_form_start('mods.cgi', 'get');
-    print &ui_hidden('instance_id', &html_escape($instance_id));
-    print &ui_hidden('xnavigation', '1');
-    print &ui_submit($text{'mc_mods_page_monitor_back_btn'} || 'Back to mods',
-        undef, undef, undef, 'btn-default');
-    print &ui_form_end();
-
-    print &ui_form_start('manage.cgi', 'get');
-    print &ui_hidden('instance_id', &html_escape($instance_id));
-    print &ui_hidden('xnavigation', '1');
-    print &ui_submit($text{'manage_monitor_back_btn'} || 'Back to instance',
-        undef, undef, undef, 'btn-default');
-    print &ui_form_end();
-
-    print &job_log_view_toolbar_close();
-
-    if (!$log_file) {
-        print "<p>" . &html_escape($text{'mc_mods_page_monitor_no_log'}
-            || 'No log file found. Server must have been started at least once.')
-            . "</p>\n";
-    } else {
-        my $log_dir  = dirname($log_file);
-        my $enc_dir  = _filemin_path_urlencode($log_dir);
-        my $enc_file = _filemin_path_urlencode($log_base);
-        my $href_edit = "/filemin/edit_file.cgi?path=$enc_dir&file=$enc_file";
-        my $href_dl   = "/filemin/download.cgi?path=$enc_dir&file=$enc_file";
-        my $href_dir  = "/filemin/?path=$enc_dir";
-        my $hint = $text{'mc_mods_page_monitor_filemin_hint'}
-            || 'Open folder lists the log directory; use Download for very large files.';
-        print "<p><small>" . &html_escape($text{'mc_mods_page_monitor_shown_file'} || 'Log file')
-            . ": <code>" . &html_escape($log_file) . "</code><br>\n";
-        if ($log_base !~ /\.gz$/i) {
-            print "<a href=\"" . &html_escape($href_edit)
-                . "\" target=\"_blank\" rel=\"noopener noreferrer\">"
-                . &html_escape($text{'mc_mods_page_monitor_log_edit'} || 'View in file manager')
-                . "</a> - ";
-        }
-        print "<a href=\"" . &html_escape($href_dl)
-            . "\" target=\"_blank\" rel=\"noopener noreferrer\">"
-            . &html_escape($text{'mc_mods_page_monitor_log_download'} || 'Download full log')
-            . "</a> - ";
-        print "<a href=\"" . &html_escape($href_dir)
-            . "\" target=\"_blank\" rel=\"noopener noreferrer\">"
-            . &html_escape($text{'mc_mods_page_monitor_log_folder'} || 'Open log folder')
-            . "</a><br>\n";
-        print &html_escape($hint) . "</small></p>\n";
-        if ($log_base =~ /\.gz$/i) {
-            print "<p><small>" . &html_escape($text{'mc_mods_page_monitor_log_gzip_note'}
-                || 'This file is gzip-compressed and is shown decompressed here.')
-                . "</small></p>\n";
-        }
-
-        my $tail = server_log_read_tail($log_file, 8192);
-        if (!defined $tail) {
-            print "<p>" . &html_escape($text{'mc_mods_page_monitor_no_log'} || 'No log file found.') . "</p>\n";
-        } else {
-            if (server_log_looks_binary($tail)) {
-                print "<p>" . &html_escape($text{'mc_mods_page_monitor_log_binary_warn'}
-                    || 'File looks binary.') . "</p>\n";
-            }
-            print &job_log_view_block($tail, id => 'monitor_log', live => 1);
-            my $mn = $module_name // $main::module_name // 'linuxgsm-webcore';
-            $mn =~ s/[^a-zA-Z0-9_-]//g;
-            my $poll_path = "/$mn/mods.cgi?instance_id=" . &urlize($instance_id)
-                . "&action=poll_monitor";
-            print &server_monitor_poll_client_js(
-                poll_url_base  => $poll_path,
-                out_id         => 'monitor_log',
-                form_id        => 'monitor_refresh_form',
-                checkbox_id    => 'monitor_auto_refresh',
-                log_file       => $log_base,
-                wait_msg       => $text{'mc_mods_page_monitor_no_log'} || '',
-                poll_fail_msg  => $text{'mc_mods_page_monitor_no_log'} || '',
-                poll_interval  => 3000,
-                auto_start     => $auto_refresh,
-            );
-        }
-    }
-
+    &server_log_render_monitor_page(
+        form_cgi       => 'mods.cgi',
+        instance_id    => $instance_id,
+        server_dir     => $server_dir,
+        script_name    => $script_name,
+        source         => $source,
+        minecraft      => 1,
+        log_file_pick  => $in{'log_file'},
+        auto_refresh   => $in{'auto_refresh'},
+        poll_url_base  => "/$mn/mods.cgi?instance_id=" . &urlize($instance_id)
+            . '&action=poll_monitor',
+        text_keys      => server_log_monitor_text_keys_mods(),
+        back_forms     => [
+            {
+                cgi        => 'mods.cgi',
+                label_keys => ['mc_mods_page_monitor_back_btn'],
+                default    => 'Back to mods',
+            },
+            {
+                cgi        => 'manage.cgi',
+                label_keys => ['manage_monitor_back_btn'],
+                default    => 'Back to instance',
+            },
+        ],
+    );
     print &job_log_view_page_close();
     &footer('', '');
     exit;
@@ -2114,7 +2011,7 @@ print "<p>" . &html_escape($text{'mc_modpack_server_limit_hint'}
     . "</p>\n";
 my $filemin_html = '';
 if ($server_dir && -d $server_dir) {
-    my $enc = _filemin_path_urlencode($server_dir);
+    my $enc = &server_log_filemin_path_urlencode($server_dir);
     $filemin_html = " <a href='/filemin/?path=$enc' target='_blank'>"
         . &html_escape($text{'mc_modpack_filemin_link'} || 'Open file manager') . "</a>";
 }

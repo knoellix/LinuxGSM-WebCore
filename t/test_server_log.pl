@@ -89,4 +89,38 @@ ok(server_log_looks_binary($raw_gz), 'raw gzip bytes look binary');
     is($payload->{error}, 'no_log', 'poll error is no_log');
 }
 
+{
+    my $ctx = server_log_monitor_prepare(
+        server_dir    => $root,
+        script_name   => 'mcserver',
+        source        => 'lgsm',
+        minecraft     => 1,
+        log_file_pick => 'latest.log',
+    );
+    is($ctx->{log_base}, 'latest.log', 'monitor prepare picks latest.log');
+    ok($ctx->{auto_refresh}, 'monitor prepare auto refresh default on');
+}
+
+ok(!server_log_monitor_resolve_auto_refresh('0'), 'auto refresh off when unchecked');
+ok(server_log_monitor_resolve_auto_refresh(undef), 'auto refresh on when unset');
+
+{
+    our %text;
+    local $text{manage_monitor_title} = 'Manage title';
+    is(server_log_monitor_text(['manage_monitor_title'], 'fallback'),
+        'Manage title', 'monitor text from lang');
+    is(server_log_monitor_text(['missing_key'], 'fallback'), 'fallback',
+        'monitor text fallback');
+}
+
+{
+    my $mods_keys = server_log_monitor_text_keys_mods();
+    ok(ref($mods_keys->{title}) eq 'ARRAY', 'mods monitor text keys');
+    ok(grep { $_ eq 'mc_mods_page_monitor_title' } @{ $mods_keys->{title} },
+        'mods title key present');
+}
+
+like(server_log_filemin_path_urlencode('/foo bar'), qr/%20/,
+    'filemin path urlencode spaces');
+
 done_testing();

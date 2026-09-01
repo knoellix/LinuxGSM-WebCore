@@ -215,4 +215,219 @@ sub server_log_monitor_poll_payload {
     };
 }
 
+# Percent-encode path for filemin query strings (same rules as config editor).
+sub server_log_filemin_path_urlencode {
+    my ($s) = @_;
+    $s //= '';
+    $s =~ s/([^A-Za-z0-9\-_.~\/])/sprintf("%%%02X", ord($1))/ge;
+    return $s;
+}
+
+sub server_log_monitor_resolve_auto_refresh {
+    my ($in_val) = @_;
+    return 0 if defined $in_val && ($in_val // '') ne '1';
+    return 1;
+}
+
+# Resolve log candidates + pick for monitor GET / render.
+sub server_log_monitor_prepare {
+    my (%opts) = @_;
+    my $server_dir  = $opts{server_dir}  // '';
+    my $script_name = $opts{script_name} // '';
+    my $source      = $opts{source}      // '';
+    my $minecraft   = $opts{minecraft}   ? 1 : 0;
+    my $pick        = $opts{log_file_pick} // $opts{log_file} // '';
+
+    my @log_candidates = grep { -f $_ } server_log_candidates(
+        server_dir  => $server_dir,
+        script_name => $script_name,
+        source      => $source,
+        minecraft   => $minecraft,
+    );
+    my $log_file = server_log_resolve_pick($pick, \@log_candidates);
+    $log_file = $log_candidates[0] if $log_file eq '' && @log_candidates;
+    my $log_base = $log_file ne '' ? basename($log_file) : '';
+
+    return {
+        log_candidates => \@log_candidates,
+        log_file       => $log_file,
+        log_base       => $log_base,
+        auto_refresh   => server_log_monitor_resolve_auto_refresh($opts{auto_refresh}),
+    };
+}
+
+sub server_log_monitor_text {
+    my ($keys, $default) = @_;
+    our %text;
+    if (ref($keys) eq 'ARRAY') {
+        for my $k (@$keys) {
+            return $text{$k} if defined $text{$k} && $text{$k} =~ /\S/;
+        }
+    } elsif (defined $keys && $keys ne '' && defined $text{$keys} && $text{$keys} =~ /\S/) {
+        return $text{$keys};
+    }
+    return $default // '';
+}
+
+sub server_log_monitor_text_keys_manage {
+    return {
+        title          => ['manage_monitor_title'],
+        log_pick_label => ['manage_monitor_log_pick_label'],
+        auto_label     => ['manage_monitor_auto_label'],
+        refresh_btn    => ['manage_monitor_refresh_btn'],
+        no_log         => ['manage_monitor_no_log'],
+        shown_file     => ['manage_monitor_shown_file'],
+        log_edit       => ['manage_monitor_log_edit'],
+        log_download   => ['manage_monitor_log_download'],
+        log_folder     => ['manage_monitor_log_folder'],
+        filemin_hint   => ['manage_monitor_filemin_hint'],
+        log_gzip_note  => ['manage_monitor_log_gzip_note'],
+        log_binary_warn => ['manage_monitor_log_binary_warn'],
+    };
+}
+
+sub server_log_monitor_text_keys_mods {
+    return {
+        title          => ['mc_mods_page_monitor_title'],
+        log_pick_label => ['mc_mods_page_monitor_log_pick_label', 'manage_monitor_log_pick_label'],
+        auto_label     => ['mc_mods_page_monitor_auto_label', 'manage_monitor_auto_label'],
+        refresh_btn    => ['mc_mods_page_monitor_refresh_btn', 'manage_monitor_refresh_btn'],
+        no_log         => ['mc_mods_page_monitor_no_log', 'manage_monitor_no_log'],
+        shown_file     => ['mc_mods_page_monitor_shown_file', 'manage_monitor_shown_file'],
+        log_edit       => ['mc_mods_page_monitor_log_edit', 'manage_monitor_log_edit'],
+        log_download   => ['mc_mods_page_monitor_log_download', 'manage_monitor_log_download'],
+        log_folder     => ['mc_mods_page_monitor_log_folder', 'manage_monitor_log_folder'],
+        filemin_hint   => ['mc_mods_page_monitor_filemin_hint', 'manage_monitor_filemin_hint'],
+        log_gzip_note  => ['mc_mods_page_monitor_log_gzip_note', 'manage_monitor_log_gzip_note'],
+        log_binary_warn => ['mc_mods_page_monitor_log_binary_warn', 'manage_monitor_log_binary_warn'],
+    };
+}
+
+# Shared monitor page body (toolbar + log tail + poll JS). Caller prints header/footer.
+sub server_log_render_monitor_page {
+    my (%opts) = @_;
+    my $form_cgi      = $opts{form_cgi}      // 'manage.cgi';
+    my $instance_id   = $opts{instance_id}   // '';
+    my $poll_url_base = $opts{poll_url_base} // '';
+    my $text_keys     = $opts{text_keys}     // server_log_monitor_text_keys_manage();
+    my $back_forms    = $opts{back_forms}    // [];
+
+    my $ctx = server_log_monitor_prepare(%opts);
+    my $log_candidates = $ctx->{log_candidates};
+    my $log_file       = $ctx->{log_file};
+    my $log_base       = $ctx->{log_base};
+    my $auto_refresh   = $ctx->{auto_refresh};
+
+    my $t = sub {
+        my ($suffix, $default) = @_;
+        return server_log_monitor_text($text_keys->{$suffix}, $default);
+    };
+
+    my $safe_id = &html_escape($instance_id);
+    print "<h3>" . &html_escape($t->('title', 'Server log (live)')) . "</h3>\n";
+    print &job_log_view_toolbar_open();
+
+    print &ui_form_start($form_cgi, 'get', undef, 'id="monitor_refresh_form"');
+    print &ui_hidden('instance_id', $safe_id);
+    print &ui_hidden('action', 'monitor');
+    print &ui_hidden('xnavigation', '1');
+    if (@$log_candidates > 1) {
+        my (%seen_bn, @select_opts);
+        for my $p (@$log_candidates) {
+            my $bn = basename($p);
+            next if $seen_bn{$bn}++;
+            my $label = $bn;
+            $label .= ' [gz]' if $bn =~ /\.gz$/i;
+            push @select_opts, [ $bn, $label ];
+        }
+        print &html_escape($t->('log_pick_label', 'Log file')) . ': ';
+        print &ui_select('log_file', $log_base, \@select_opts);
+        print " ";
+    } elsif ($log_base ne '') {
+        print &ui_hidden('log_file', &html_escape($log_base));
+    }
+    print '<label style="margin-right:8px"><input type="checkbox" name="auto_refresh"'
+        . ' id="monitor_auto_refresh" value="1"'
+        . ($auto_refresh ? ' checked' : '') . '> '
+        . &html_escape($t->('auto_label', 'Auto refresh (3s)')) . '</label> ';
+    print &ui_submit($t->('refresh_btn', 'Refresh'), undef, undef, undef, 'btn-default');
+    print &ui_form_end();
+
+    for my $bf (@$back_forms) {
+        my $cgi = $bf->{cgi} // $form_cgi;
+        print &ui_form_start($cgi, 'get');
+        print &ui_hidden('instance_id', $safe_id);
+        print &ui_hidden('xnavigation', '1');
+        if (defined $bf->{action} && $bf->{action} ne '') {
+            print &ui_hidden('action', $bf->{action});
+        }
+        my $label = server_log_monitor_text($bf->{label_keys}, $bf->{default} // 'Back');
+        print &ui_submit($label, undef, undef, undef, $bf->{btn_class} // 'btn-default');
+        print &ui_form_end();
+    }
+
+    print &job_log_view_toolbar_close();
+
+    my $no_log_msg = $t->('no_log', 'No log file found.');
+    unless ($log_file) {
+        print "<p>" . &html_escape($no_log_msg) . "</p>\n";
+        return;
+    }
+
+    my $log_dir  = dirname($log_file);
+    my $enc_dir  = server_log_filemin_path_urlencode($log_dir);
+    my $enc_file = server_log_filemin_path_urlencode($log_base);
+    my $href_edit = "/filemin/edit_file.cgi?path=$enc_dir&file=$enc_file";
+    my $href_dl   = "/filemin/download.cgi?path=$enc_dir&file=$enc_file";
+    my $href_dir  = "/filemin/?path=$enc_dir";
+    my $hint = $t->('filemin_hint',
+        'Open folder lists the log directory; use Download for very large files.');
+    print "<p><small>" . &html_escape($t->('shown_file', 'Log file'))
+        . ": <code>" . &html_escape($log_file) . "</code><br>\n";
+    if ($log_base !~ /\.gz$/i) {
+        print "<a href=\"" . &html_escape($href_edit)
+            . "\" target=\"_blank\" rel=\"noopener noreferrer\">"
+            . &html_escape($t->('log_edit', 'View in file manager'))
+            . "</a> - ";
+    }
+    print "<a href=\"" . &html_escape($href_dl)
+        . "\" target=\"_blank\" rel=\"noopener noreferrer\">"
+        . &html_escape($t->('log_download', 'Download full log'))
+        . "</a> - ";
+    print "<a href=\"" . &html_escape($href_dir)
+        . "\" target=\"_blank\" rel=\"noopener noreferrer\">"
+        . &html_escape($t->('log_folder', 'Open log folder'))
+        . "</a><br>\n";
+    print &html_escape($hint) . "</small></p>\n";
+    if ($log_base =~ /\.gz$/i) {
+        print "<p><small>" . &html_escape($t->('log_gzip_note',
+            'This file is gzip-compressed and is shown decompressed here.'))
+            . "</small></p>\n";
+    }
+
+    my $tail = server_log_read_tail($log_file, 8192);
+    unless (defined $tail) {
+        print "<p>" . &html_escape($no_log_msg) . "</p>\n";
+        return;
+    }
+    if (server_log_looks_binary($tail)) {
+        print "<p>" . &html_escape($t->('log_binary_warn', 'File looks binary.'))
+            . "</p>\n";
+    }
+    print &job_log_view_block($tail, id => 'monitor_log', live => 1);
+    return unless $poll_url_base ne '';
+
+    print &server_monitor_poll_client_js(
+        poll_url_base  => $poll_url_base,
+        out_id         => 'monitor_log',
+        form_id        => 'monitor_refresh_form',
+        checkbox_id    => 'monitor_auto_refresh',
+        log_file       => $log_base,
+        wait_msg       => $no_log_msg,
+        poll_fail_msg  => $no_log_msg,
+        poll_interval  => 3000,
+        auto_start     => $auto_refresh,
+    );
+}
+
 1;
