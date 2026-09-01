@@ -1,0 +1,36 @@
+{
+  "id": "abc123",
+  "project_id": "farming-for-blockheads",
+  "dependencies": [
+    {
+      "project_id": "balm",
+      "version_id": null,
+      "dependency_type": "required"
+    },
+    {
+      "project_id": "cloth-config",
+      "version_id": "v123",
+      "dependency_type": "optional"
+    },
+    {
+      "project_id": "embedded-lib",
+      "version_id": null,
+      "dependency_type": "embedded"
+    },
+    {
+      "project_id": "bad-mod",
+      "version_id": null,
+      "dependency_type": "incompatible"
+    }
+  ],
+  "files": [
+    {
+      "primary": true,
+      "filename": "farming.jar",
+      "url": "https://cdn.modrinth.com/data/x/versions/y/farming.jar",
+      "hashes": {
+        "sha1": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    }
+  ]
+}

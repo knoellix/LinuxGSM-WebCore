@@ -54,14 +54,8 @@ fi
 
 echo "=== Mod install started ==="
 
-META_FILE="$JOB_DIR/mod_meta.json"
-if [ ! -f "$META_FILE" ]; then
-    echo "ERROR: missing mod_meta.json"
-    set_final_status "failed"
-    exit 1
-fi
-
-read_meta() {
+read_meta_file() {
+    local meta_file="$1"
     # IMPORTANT: never use `print (EXPR), "\n"` — Perl treats that as
     # (print EXPR), "\n" and drops the newline (sha1 then glues to prefer_disabled=0).
     perl -MJSON::PP=decode_json -e '
@@ -78,159 +72,232 @@ read_meta() {
         print(($m->{prefer_disabled} // 0) ? 1 : 0, "\n");
         print $m->{replace_basename} // "", "\n";
         print(($m->{force_replace} // 0) ? 1 : 0, "\n");
-    ' "$META_FILE"
+    ' "$meta_file"
 }
 
-mapfile -t _META < <(read_meta) || {
-    echo "ERROR: cannot parse mod_meta.json"
-    set_final_status "failed"
-    exit 1
+_update_mod_index() {
+    local meta_file="$1"
+    perl -MJSON::PP=decode_json,encode_json -e '
+        my ($meta_f, $server_dir) = @ARGV;
+        open my $mf, "<", $meta_f or exit 1;
+        local $/; my $m = decode_json(<$mf>);
+        close $mf;
+        my $idx_path = "$server_dir/.mc_mods_index.json";
+        my $idx = {};
+        if (-f $idx_path) {
+            open my $if, "<", $idx_path or exit 1;
+            local $/; eval { $idx = decode_json(<$if>); };
+            close $if;
+            $idx = {} unless ref($idx) eq "HASH";
+        }
+        my $mod_dir = $m->{mod_dir} // "mods";
+        my $replace = $m->{replace_basename} // "";
+        $replace =~ s/[\t\n\r\0]//g;
+        $replace =~ s/^\s+|\s+$//g;
+        $replace =~ s/\.disabled\z//i;
+        $replace = "" unless $replace =~ /\A[\w.\-]+\.jar\z/;
+        if ($replace ne "" && $replace ne ($m->{filename} // "")) {
+            my $old_key = $mod_dir . "/" . $replace;
+            delete $idx->{$old_key};
+        }
+        my $key = $mod_dir . "/" . ($m->{filename} // "mod.jar");
+        my $rec = { env => ($m->{env} // "unknown"), source => ($m->{source} // "") };
+        $rec->{title} = $m->{title} if defined $m->{title} && $m->{title} =~ /\S/;
+        if (($m->{source} // "") eq "modrinth") {
+            $rec->{modrinth_project} = $m->{project_id} if $m->{project_id};
+            $rec->{modrinth_version} = $m->{version_id} if $m->{version_id};
+        } elsif (($m->{source} // "") eq "curseforge") {
+            $rec->{project_id} = $m->{project_id} if $m->{project_id};
+            $rec->{file_id} = $m->{file_id} if $m->{file_id};
+        } elsif (($m->{source} // "") eq "hangar") {
+            $rec->{hangar_owner} = $m->{hangar_owner} if $m->{hangar_owner};
+            $rec->{hangar_slug} = $m->{hangar_slug} if $m->{hangar_slug};
+            $rec->{version_id} = $m->{version_id} if $m->{version_id};
+        }
+        $idx->{$key} = $rec;
+        open my $of, ">", $idx_path or exit 1;
+        print $of encode_json($idx);
+        close $of;
+    ' "$meta_file" "$SERVER_DIR"
 }
 
-TITLE="${_META[0]}"
-FNAME="${_META[1]}"
-DL_URL="${_META[2]}"
-MOD_DIR="${_META[3]}"
-SOURCE="${_META[4]}"
-SHA1="${_META[5]}"
-PREFER_DISABLED="${_META[6]:-0}"
-REPLACE_BASENAME="${_META[7]:-}"
-FORCE_REPLACE="${_META[8]:-0}"
+install_one_mod() {
+    local meta_file="$1"
+    local step_label="${2:-}"
 
-if [ -z "$FNAME" ] || [ -z "$DL_URL" ]; then
-    echo "ERROR: missing filename or download URL"
-    set_final_status "failed"
-    exit 1
-fi
-
-TARGET="$SERVER_DIR/serverfiles/$MOD_DIR"
-DEST="$TARGET/$FNAME"
-TMP="$TARGET/.$FNAME.download"
-
-echo "=== Installing: $TITLE ($FNAME) ==="
-echo "=== Target: $DEST ==="
-
-if ! mkdir -p "$TARGET"; then
-    echo "ERROR: cannot create target directory"
-    set_final_status "failed"
-    exit 1
-fi
-
-_remove_replace_target() {
-    local base="$1"
-    [[ "$base" =~ ^[A-Za-z0-9._-]+\.jar$ ]] \
-        && [[ "$base" != *"/"* ]] \
-        && [[ "$base" != *".."* ]] || return 0
-    local old_base="$TARGET/$base"
-    rm -f "$old_base" "${old_base}.disabled" 2>/dev/null || true
-}
-
-if [ "$FORCE_REPLACE" = "1" ] || [ -n "$REPLACE_BASENAME" ]; then
-    if [ -n "$REPLACE_BASENAME" ]; then
-        _remove_replace_target "$REPLACE_BASENAME"
-        echo "OK: prepared replace of $REPLACE_BASENAME"
+    if [ ! -f "$meta_file" ]; then
+        echo "ERROR: missing meta file: $meta_file"
+        set_final_status "failed"
+        exit 1
     fi
-    if [ -n "$FNAME" ] && [ "$REPLACE_BASENAME" != "$FNAME" ]; then
-        _remove_replace_target "$FNAME"
-    fi
-fi
 
-if [ -f "$DEST" ]; then
-    if [ "$FORCE_REPLACE" = "1" ] || [ -n "$REPLACE_BASENAME" ]; then
-        rm -f "$DEST" "${DEST}.disabled" 2>/dev/null || true
-        echo "OK: overwriting existing file $FNAME"
+    mapfile -t _META < <(read_meta_file "$meta_file") || {
+        echo "ERROR: cannot parse $(basename "$meta_file")"
+        set_final_status "failed"
+        exit 1
+    }
+
+    local title="${_META[0]}"
+    local fname="${_META[1]}"
+    local dl_url="${_META[2]}"
+    local mod_dir="${_META[3]}"
+    local source="${_META[4]}"
+    local sha1="${_META[5]}"
+    local prefer_disabled="${_META[6]:-0}"
+    local replace_basename="${_META[7]:-}"
+    local force_replace="${_META[8]:-0}"
+
+    if [ -z "$fname" ] || [ -z "$dl_url" ]; then
+        echo "ERROR: missing filename or download URL in $(basename "$meta_file")"
+        set_final_status "failed"
+        exit 1
+    fi
+
+    local target="$SERVER_DIR/serverfiles/$mod_dir"
+    local dest="$target/$fname"
+    local tmp="$target/.$fname.download"
+
+    if [ -n "$step_label" ]; then
+        echo "=== $step_label: $title ($fname) ==="
     else
-        echo "ERROR: file already exists: $FNAME"
+        echo "=== Installing: $title ($fname) ==="
+    fi
+    echo "=== Target: $dest ==="
+
+    if ! mkdir -p "$target"; then
+        echo "ERROR: cannot create target directory"
         set_final_status "failed"
         exit 1
     fi
-fi
 
-echo "--- Download ---"
-if ! $PRIO_LOW curl -fsSL --max-time 600 -o "$TMP" "$DL_URL"; then
-    echo "ERROR: download failed"
-    rm -f "$TMP" 2>/dev/null || true
+    _remove_replace_target() {
+        local base="$1"
+        [[ "$base" =~ ^[A-Za-z0-9._-]+\.jar$ ]] \
+            && [[ "$base" != *"/"* ]] \
+            && [[ "$base" != *".."* ]] || return 0
+        local old_base="$target/$base"
+        rm -f "$old_base" "${old_base}.disabled" 2>/dev/null || true
+    }
+
+    if [ "$force_replace" = "1" ] || [ -n "$replace_basename" ]; then
+        if [ -n "$replace_basename" ]; then
+            _remove_replace_target "$replace_basename"
+            echo "OK: prepared replace of $replace_basename"
+        fi
+        if [ -n "$fname" ] && [ "$replace_basename" != "$fname" ]; then
+            _remove_replace_target "$fname"
+        fi
+    fi
+
+    if [ -f "$dest" ]; then
+        if [ "$force_replace" = "1" ] || [ -n "$replace_basename" ]; then
+            rm -f "$dest" "${dest}.disabled" 2>/dev/null || true
+            echo "OK: overwriting existing file $fname"
+        else
+            echo "ERROR: file already exists: $fname"
+            set_final_status "failed"
+            exit 1
+        fi
+    fi
+
+    echo "--- Download ---"
+    if ! $PRIO_LOW curl -fsSL --max-time 600 -o "$tmp" "$dl_url"; then
+        echo "ERROR: download failed for $fname"
+        rm -f "$tmp" 2>/dev/null || true
+        set_final_status "failed"
+        exit 1
+    fi
+
+    if [ -n "$sha1" ]; then
+        if [[ ! "$sha1" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "WARN: ignoring invalid SHA1 from meta ($sha1)"
+            sha1=""
+        fi
+    fi
+    if [ -n "$sha1" ]; then
+        local got_sha1
+        got_sha1="$(sha1sum "$tmp" | awk '{print $1}' 2>/dev/null || true)"
+        if [ -n "$got_sha1" ] && [ "${got_sha1,,}" != "${sha1,,}" ]; then
+            echo "ERROR: SHA1 mismatch for $fname (expected $sha1 got $got_sha1)"
+            rm -f "$tmp" 2>/dev/null || true
+            set_final_status "failed"
+            exit 1
+        fi
+    fi
+
+    if ! mv -f "$tmp" "$dest"; then
+        echo "ERROR: cannot install $fname"
+        set_final_status "failed"
+        exit 1
+    fi
+
+    if [ "$prefer_disabled" = "1" ]; then
+        if ! mv -f "$dest" "${dest}.disabled"; then
+            echo "ERROR: cannot mark $fname as disabled"
+            set_final_status "failed"
+            exit 1
+        fi
+        echo "OK: preserved disabled state for $fname"
+    fi
+
+    echo "OK: installed $fname"
+
+    echo "=== Updating mod index ==="
+    if ! _update_mod_index "$meta_file"; then
+        echo "WARN: could not update .mc_mods_index.json for $fname"
+    fi
+}
+
+PLAN_FILE="$JOB_DIR/mod_install_plan.json"
+META_FILE="$JOB_DIR/mod_meta.json"
+if [ ! -f "$META_FILE" ] && [ ! -f "$PLAN_FILE" ]; then
+    echo "ERROR: missing mod_meta.json"
     set_final_status "failed"
     exit 1
 fi
 
-if [ -n "$SHA1" ]; then
-    if [[ ! "$SHA1" =~ ^[0-9a-fA-F]{40}$ ]]; then
-        echo "WARN: ignoring invalid SHA1 from meta ($SHA1)"
-        SHA1=""
-    fi
-fi
-if [ -n "$SHA1" ]; then
-    GOT_SHA1="$(sha1sum "$TMP" | awk '{print $1}' 2>/dev/null || true)"
-    if [ -n "$GOT_SHA1" ] && [ "${GOT_SHA1,,}" != "${SHA1,,}" ]; then
-        echo "ERROR: SHA1 mismatch (expected $SHA1 got $GOT_SHA1)"
-        rm -f "$TMP" 2>/dev/null || true
+if [ -f "$PLAN_FILE" ]; then
+    mapfile -t _INSTALL_QUEUE < <(perl -MJSON::PP=decode_json -e '
+        open my $f, "<", shift or exit 1;
+        local $/; my $p = decode_json(<$f>);
+        exit 1 unless ref($p) eq "HASH";
+        my @order = ref($p->{install_order}) eq "ARRAY" ? @{ $p->{install_order} } : ("mod_meta.json");
+        print "$_\n" for @order;
+    ' "$PLAN_FILE") || {
+        echo "ERROR: cannot parse mod_install_plan.json"
         set_final_status "failed"
         exit 1
-    fi
+    }
+else
+    _INSTALL_QUEUE=("mod_meta.json")
 fi
 
-if ! mv -f "$TMP" "$DEST"; then
-    echo "ERROR: cannot install $FNAME"
-    set_final_status "failed"
-    exit 1
+TOTAL="${#_INSTALL_QUEUE[@]}"
+DEP_TOTAL=0
+if [ "$TOTAL" -gt 1 ]; then
+    DEP_TOTAL=$((TOTAL - 1))
 fi
+DEP_IDX=0
 
-if [ "$PREFER_DISABLED" = "1" ]; then
-    if ! mv -f "$DEST" "${DEST}.disabled"; then
-        echo "ERROR: cannot mark $FNAME as disabled"
+for rel in "${_INSTALL_QUEUE[@]}"; do
+    rel="${rel//$'\r'/}"
+    rel="${rel//$'\n'/}"
+    [[ "$rel" =~ ^[A-Za-z0-9._-]+\.json$ ]] || {
+        echo "ERROR: invalid install queue entry: $rel"
         set_final_status "failed"
         exit 1
+    }
+    full_meta="$JOB_DIR/$rel"
+    label=""
+    if [ "$rel" = "mod_meta.json" ]; then
+        if [ "$DEP_TOTAL" -gt 0 ]; then
+            label="Installing primary mod"
+        fi
+    else
+        DEP_IDX=$((DEP_IDX + 1))
+        label="Installing dependency $DEP_IDX/$DEP_TOTAL"
     fi
-    echo "OK: preserved disabled state for $FNAME"
-fi
-
-echo "OK: installed $FNAME"
-
-echo "=== Updating mod index ==="
-if ! perl -MJSON::PP=decode_json,encode_json -e '
-    my ($meta_f, $server_dir) = @ARGV;
-    open my $mf, "<", $meta_f or exit 1;
-    local $/; my $m = decode_json(<$mf>);
-    close $mf;
-    my $idx_path = "$server_dir/.mc_mods_index.json";
-    my $idx = {};
-    if (-f $idx_path) {
-        open my $if, "<", $idx_path or exit 1;
-        local $/; eval { $idx = decode_json(<$if>); };
-        close $if;
-        $idx = {} unless ref($idx) eq "HASH";
-    }
-    my $mod_dir = $m->{mod_dir} // "mods";
-    my $replace = $m->{replace_basename} // "";
-    $replace =~ s/[\t\n\r\0]//g;
-    $replace =~ s/^\s+|\s+$//g;
-    $replace =~ s/\.disabled\z//i;
-    $replace = "" unless $replace =~ /\A[\w.\-]+\.jar\z/;
-    if ($replace ne "" && $replace ne ($m->{filename} // "")) {
-        my $old_key = $mod_dir . "/" . $replace;
-        delete $idx->{$old_key};
-    }
-    my $key = $mod_dir . "/" . ($m->{filename} // "mod.jar");
-    my $rec = { env => ($m->{env} // "unknown"), source => ($m->{source} // "") };
-    $rec->{title} = $m->{title} if defined $m->{title} && $m->{title} =~ /\S/;
-    if (($m->{source} // "") eq "modrinth") {
-        $rec->{modrinth_project} = $m->{project_id} if $m->{project_id};
-        $rec->{modrinth_version} = $m->{version_id} if $m->{version_id};
-    } elsif (($m->{source} // "") eq "curseforge") {
-        $rec->{project_id} = $m->{project_id} if $m->{project_id};
-        $rec->{file_id} = $m->{file_id} if $m->{file_id};
-    } elsif (($m->{source} // "") eq "hangar") {
-        $rec->{hangar_owner} = $m->{hangar_owner} if $m->{hangar_owner};
-        $rec->{hangar_slug} = $m->{hangar_slug} if $m->{hangar_slug};
-        $rec->{version_id} = $m->{version_id} if $m->{version_id};
-    }
-    $idx->{$key} = $rec;
-    open my $of, ">", $idx_path or exit 1;
-    print $of encode_json($idx);
-    close $of;
-' "$META_FILE" "$SERVER_DIR"; then
-    echo "WARN: could not update .mc_mods_index.json"
-fi
+    install_one_mod "$full_meta" "$label"
+done
 
 set_final_status "ok"

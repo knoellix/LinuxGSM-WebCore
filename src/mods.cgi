@@ -662,7 +662,7 @@ sub _mods_render_instance_jobs_table {
     $max_rows //= 8;
     return unless defined $instance_id && $instance_id =~ /\S/;
     &sync_monitor_job_pointers();
-    my @inst_jobs = &get_instance_jobs($instance_id);
+    my @inst_jobs = &jobs_dedupe_periodic_restarts(&get_instance_jobs($instance_id));
     return unless @inst_jobs;
     @inst_jobs = @inst_jobs[0 .. ($max_rows - 1)] if @inst_jobs > $max_rows;
 
@@ -755,6 +755,98 @@ sub _mods_find_mod_by_basename {
     return undef;
 }
 
+sub _mods_source_has_dep_preview {
+    my ($source) = @_;
+    $source =~ s/[^a-z]//g;
+    return $source eq 'modrinth' || $source eq 'curseforge';
+}
+
+sub _mods_mod_install_error {
+    my ($err) = @_;
+    if ($err eq 'file_exists' || $err eq 'index_project') {
+        &error($text{'mc_mod_already_installed'} || 'This mod is already installed.');
+    } elsif ($err eq 'curseforge_key_missing') {
+        &error($text{'mc_modpack_curseforge_key_missing'});
+    } elsif ($err eq 'client_only') {
+        &error($text{'mc_mod_client_only'} || 'Client-only mod.');
+    } elsif ($err eq 'resolve_failed' || $err eq 'dep_resolve_failed') {
+        &error($text{'mc_mod_resolve_failed'} || 'Could not resolve mod version.');
+    } elsif ($err eq 'deps_too_many') {
+        &error($text{'mc_mod_deps_deps_too_many'}
+            || 'Too many required dependencies (max. 5 auto-install).');
+    } else {
+        &error($text{'mc_mod_install_failed'} || 'Could not prepare mod installation.');
+    }
+}
+
+sub _mods_render_dependency_table {
+    my ($status) = @_;
+    return '' unless ref($status) eq 'HASH';
+    my @rows;
+    my %state_key = (
+        satisfied => 'mc_mod_deps_satisfied',
+        missing   => 'mc_mod_deps_missing',
+        optional  => 'mc_mod_deps_optional',
+    );
+    for my $kind (qw(satisfied missing optional)) {
+        for my $dep (@{ $status->{$kind} // [] }) {
+            next unless ref($dep) eq 'HASH';
+            my $pid = $dep->{'project_id'} // '';
+            next unless $pid =~ /\S/;
+            my $dtype = $dep->{'dependency_type'} // 'required';
+            my $type_label = $dtype eq 'optional'
+                ? ($text{'mc_mod_deps_optional'} || 'Optional')
+                : ($text{'mc_mod_deps_required'} || 'Required');
+            push @rows, [
+                &html_escape($pid),
+                &html_escape($text{ $state_key{$kind} } // $kind),
+                &html_escape($type_label),
+            ];
+        }
+    }
+    return '<p>' . &html_escape($text{'mc_mod_deps_none'} || 'No mod dependencies.')
+        . "</p>\n" unless @rows;
+    return &ui_columns_table(
+        [
+            $text{'mc_mod_deps_col_mod'}   || 'Dependency',
+            $text{'mc_mod_deps_col_state'} || 'Status',
+            $text{'mc_mod_deps_col_type'}  || 'Type',
+        ],
+        '100%',
+        \@rows,
+    );
+}
+
+sub _mods_install_deps_checkbox {
+    my ($checked) = @_;
+    $checked = 1 unless defined $checked;
+    my $out = &ui_hidden('install_deps', '0');
+    $out .= &ui_checkbox(
+        'install_deps',
+        '1',
+        &html_escape($text{'mc_mod_deps_install_with'} || 'Install required dependencies'),
+        $checked ? 1 : 0,
+    );
+    return $out;
+}
+
+sub _mods_install_preview_qs {
+    my (%args) = @_;
+    my @parts = (
+        'action=mod_install_preview',
+        'xnavigation=1',
+        'instance_id=' . _mods_query_urlencode($args{'instance_id'} // ''),
+    );
+    my @keys = qw(mod_source mod_project_id mod_version_id mod_file_id
+        mod_hangar_owner mod_hangar_slug mod_title mod_basename
+        q status sort dir page mod_q);
+    for my $k (@keys) {
+        next unless defined $args{$k} && $args{$k} ne '';
+        push @parts, "$k=" . _mods_query_urlencode($args{$k});
+    }
+    return join('&', @parts);
+}
+
 sub _mods_launch_mod_install {
     my ($instance_id, $inst, $unix_user, $source, $ids_ref, %opts) = @_;
     my (undef, undef, $server_dir) = _parse_script_info($inst);
@@ -766,19 +858,33 @@ sub _mods_launch_mod_install {
     if (defined $opts{'replace_basename'} && $opts{'replace_basename'} ne '') {
         $replace_basename = _mods_sanitize_mod_basename($opts{'replace_basename'});
     }
-    my $prepare_opts = $replace_basename ne '' ? { force_replace => 1 } : undef;
-    my ($ok, $meta, $err) = &prepare_mod_install_meta($source, $ids_ref, $profile, $server_dir, $prepare_opts);
-    unless ($ok) {
-        if ($err eq 'file_exists' || $err eq 'index_project') {
-            &error($text{'mc_mod_already_installed'} || 'This mod is already installed.');
-        } elsif ($err eq 'curseforge_key_missing') {
-            &error($text{'mc_modpack_curseforge_key_missing'});
-        } elsif ($err eq 'client_only') {
-            &error($text{'mc_mod_client_only'} || 'Client-only mod.');
-        } elsif ($err eq 'resolve_failed') {
-            &error($text{'mc_mod_resolve_failed'} || 'Could not resolve mod version.');
-        } else {
-            &error($text{'mc_mod_install_failed'} || 'Could not prepare mod installation.');
+    my %prepare_opts;
+    $prepare_opts{'force_replace'} = 1 if $replace_basename ne '';
+    my $install_deps = defined $opts{'install_deps'} ? ($opts{'install_deps'} ? 1 : 0) : 1;
+    $prepare_opts{'install_deps'} = $install_deps if _mods_source_has_dep_preview($source);
+
+    my ($ok, $meta, $err, $plan);
+    if (_mods_source_has_dep_preview($source)) {
+        ($ok, $plan, $err) = &build_mod_install_plan(
+            $source, $ids_ref, $profile, $server_dir, \%prepare_opts);
+        unless ($ok) {
+            _mods_mod_install_error($err);
+        }
+        $meta = $plan->{'primary'};
+        my $status = $plan->{'status'} // {};
+        my @missing_required = grep {
+            (&normalize_mod_dependency_type($_->{'dependency_type'} // '') eq 'required')
+        } @{ $status->{'missing'} // [] };
+        if (@missing_required && !$install_deps) {
+            &error($text{'mc_mod_deps_missing_blocked'}
+                || 'Install blocked: missing required dependencies.');
+        }
+    } else {
+        ($ok, $meta, $err) = &prepare_mod_install_meta(
+            $source, $ids_ref, $profile, $server_dir,
+            $replace_basename ne '' ? { force_replace => 1 } : undef);
+        unless ($ok) {
+            _mods_mod_install_error($err);
         }
     }
 
@@ -792,10 +898,20 @@ sub _mods_launch_mod_install {
 
     my $job_id = &create_job($unix_user);
     my $job_dir = &_job_dir($job_id);
-    &write_mod_install_job_meta($job_dir, $meta) or do {
+    my $meta_ok = 0;
+    if (_mods_source_has_dep_preview($source)
+        && ref($plan) eq 'HASH'
+        && ref($plan->{'dependencies'}) eq 'ARRAY'
+        && @{ $plan->{'dependencies'} }) {
+        $plan->{'primary'} = $meta;
+        $meta_ok = &write_mod_install_plan_job_meta($job_dir, $plan);
+    } else {
+        $meta_ok = &write_mod_install_job_meta($job_dir, $meta);
+    }
+    unless ($meta_ok) {
         &delete_job($job_id);
         &error($text{'mc_mod_meta_failed'} || 'Job preparation failed.');
-    };
+    }
     &write_job_meta($job_id, $instance_id, 'mc_mod_install', $unix_user)
         or do { &job_mark_launch_failed($job_id); _mods_job_launch_failed(); };
 
@@ -838,10 +954,10 @@ my $pack_q = _mods_pack_search_query($in{'pack_q'} // '');
 &user_can_manage($instance_id)
     or &error($text{'err_acl_admin_only'} || 'Access denied');
 
-if ($action ne '' && $action !~ /^(?:monitor|monitor_disable|monitor_reset|start|stop|mod_enable|mod_disable|mod_delete|mod_versions|mod_search_versions|mc_mod_install|modpack_import|modpack_import_path|modpack_import_remote|modpack_import_resume)$/) {
+if ($action ne '' && $action !~ /^(?:monitor|poll_monitor|monitor_disable|monitor_reset|start|stop|mod_enable|mod_disable|mod_delete|mod_versions|mod_search_versions|mod_install_preview|mc_mod_install|modpack_import|modpack_import_path|modpack_import_remote|modpack_import_resume)$/) {
     &error($text{'err_invalid_action'} || 'Invalid action');
 }
-if ($action ne '' && $action ne 'monitor' && &user_is_readonly($instance_id)) {
+if ($action ne '' && $action !~ /^(?:monitor|poll_monitor)$/ && &user_is_readonly($instance_id)) {
     &error($text{'err_readonly'} || 'This server is read-only for your account');
 }
 
@@ -955,6 +1071,122 @@ if ($action =~ /^(?:mod_enable|mod_disable|mod_delete)$/) {
     _mods_redirect_with_flash($instance_id, $flash, $q, $status, $sort, $dir, $page);
 }
 
+if ($action eq 'mod_install_preview') {
+    &mc_mod_ui_ready($profile, $server_dir)
+        or &error($text{'mc_mods_page_gate_not_ready'}
+            || 'Mods page is available after Minecraft Java and loader setup is complete.');
+
+    my $source = '';
+    my %ids;
+    my %launch_opts;
+    my $mod_basename = _mods_sanitize_mod_basename($in{'mod_basename'} // '');
+
+    if ($mod_basename ne '') {
+        my $installed = &list_installed_mods($server_dir, $profile);
+        my $selected_mod = _mods_find_mod_by_basename($installed, $mod_basename)
+            or &error($text{'mc_mods_page_invalid_mod'} || 'Invalid mod file.');
+        ($selected_mod->{'has_update_meta'} // 0)
+            or &error($text{'mc_mods_page_update_unavailable'} || 'No version data available for this mod.');
+        $source = $selected_mod->{'source'} // '';
+        $source =~ s/[^a-z]//g;
+        %ids = (
+            project_id   => $selected_mod->{'project_id'} // '',
+            version_id   => $selected_mod->{'version_id'} // '',
+            file_id      => $selected_mod->{'file_id'} // '',
+            hangar_owner => $selected_mod->{'hangar_owner'} // '',
+            hangar_slug  => $selected_mod->{'hangar_slug'} // '',
+            title        => $selected_mod->{'title'} // $selected_mod->{'basename'} // '',
+        );
+        $ids{'version_id'} = $in{'mod_version_id'} // '' if defined $in{'mod_version_id'} && $in{'mod_version_id'} ne '';
+        $ids{'file_id'}    = $in{'mod_file_id'} // ''    if defined $in{'mod_file_id'} && $in{'mod_file_id'} ne '';
+        $launch_opts{'prefer_disabled'} = ($selected_mod->{'enabled'} // 0) ? 0 : 1;
+        $launch_opts{'replace_basename'} = $selected_mod->{'basename'} // '';
+    } else {
+        $source = $in{'mod_source'} // '';
+        $source =~ s/[^a-z]//g;
+        %ids = (
+            project_id   => $in{'mod_project_id'} // '',
+            version_id   => $in{'mod_version_id'} // '',
+            file_id      => $in{'mod_file_id'} // '',
+            hangar_owner => $in{'mod_hangar_owner'} // '',
+            hangar_slug  => $in{'mod_hangar_slug'} // '',
+            title        => $in{'mod_title'} // '',
+        );
+    }
+    _mods_source_has_dep_preview($source)
+        or &error($text{'mc_mod_install_failed'} || 'Could not prepare mod installation.');
+
+    for my $k (keys %ids) {
+        $ids{$k} =~ s/[\t\n\r\0]//g;
+        $ids{$k} = substr($ids{$k}, 0, 128);
+    }
+    if ($source eq 'curseforge') {
+        $ids{'project_id'} =~ s/\D//g if $ids{'project_id'};
+    } else {
+        $ids{'project_id'} =~ s/[^a-zA-Z0-9_-]//g if $ids{'project_id'};
+    }
+    $ids{'version_id'} =~ s/[^a-zA-Z0-9._-]//g if $ids{'version_id'};
+    $ids{'file_id'} =~ s/\D//g if $ids{'file_id'};
+
+    my %prepare_opts;
+    $prepare_opts{'force_replace'} = 1 if ($launch_opts{'replace_basename'} // '') ne '';
+    my ($ok, $plan, $err) = &build_mod_install_plan(
+        $source, \%ids, $profile, $server_dir, \%prepare_opts);
+    unless ($ok) {
+        _mods_mod_install_error($err);
+    }
+
+    my $safe_id = &html_escape($instance_id);
+    my $display_name = $ids{'title'} // $ids{'project_id'} // '';
+    my $dep_status = $plan->{'status'} // {};
+    my $primary = $plan->{'primary'} // {};
+
+    &header($text{'mc_mod_deps_title'} || 'Mod dependencies', '');
+    print "<h3>" . &html_escape($text{'mc_mod_deps_title'} || 'Mod dependencies') . "</h3>\n";
+    print "<p><strong>" . &html_escape($text{'mc_mods_col_name'} || 'Name')
+        . ":</strong> " . &html_escape($display_name) . "<br>\n";
+    print "<strong>" . &html_escape($text{'mc_mods_page_versions_col_file'} || 'File')
+        . ":</strong> " . &html_escape($primary->{'filename'} // '') . "</p>\n";
+    print _mods_render_dependency_table($dep_status);
+
+    unless (&user_is_readonly($instance_id)) {
+        print &ui_form_start('mods.cgi', 'post');
+        print &ui_hidden('instance_id', $safe_id);
+        print &ui_hidden('xnavigation', '1');
+        print _mods_hidden_list_state($q, $status, $sort, $dir, $page);
+        print _mods_hidden_mod_search_state($mod_q);
+        print &ui_hidden('action', 'mc_mod_install');
+        if ($mod_basename ne '') {
+            print &ui_hidden('mod_basename', $mod_basename);
+            print &ui_hidden('mod_version_id', $ids{'version_id'} // '');
+            print &ui_hidden('mod_file_id', $ids{'file_id'} // '');
+        } else {
+            print &ui_hidden('mod_source', $source);
+            print &ui_hidden('mod_project_id', $ids{'project_id'} // '');
+            print &ui_hidden('mod_version_id', $ids{'version_id'} // '');
+            print &ui_hidden('mod_file_id', $ids{'file_id'} // '');
+            print &ui_hidden('mod_hangar_owner', $ids{'hangar_owner'} // '');
+            print &ui_hidden('mod_hangar_slug', $ids{'hangar_slug'} // '');
+            print &ui_hidden('mod_title', $ids{'title'} // '');
+        }
+        print '<p>' . _mods_install_deps_checkbox(1) . "</p>\n";
+        print &ui_submit($text{'mc_mod_deps_confirm_btn'} || 'Start installation',
+            undef, undef, undef, 'btn-primary');
+        print &ui_form_end();
+    }
+
+    print &ui_form_start('mods.cgi', 'get');
+    print &ui_hidden('instance_id', $safe_id);
+    print &ui_hidden('xnavigation', '1');
+    print _mods_hidden_list_state($q, $status, $sort, $dir, $page);
+    print _mods_hidden_mod_search_state($mod_q);
+    print &ui_submit($text{'mc_mod_deps_back_btn'} || 'Back',
+        undef, undef, undef, 'btn-default');
+    print &ui_form_end();
+    &footer('', '');
+    exit;
+}
+
 if ($action eq 'mc_mod_install') {
     $ENV{'REQUEST_METHOD'} eq 'POST'
         or &error($text{'err_invalid_action'} || 'Invalid action');
@@ -1019,6 +1251,8 @@ if ($action eq 'mc_mod_install') {
     $ids{'file_id'} =~ s/\D//g if $ids{'file_id'};
     $ids{'hangar_owner'} =~ s/[^a-zA-Z0-9_-]//g if $ids{'hangar_owner'};
     $ids{'hangar_slug'} =~ s/[^a-zA-Z0-9_-]//g if $ids{'hangar_slug'};
+
+    $launch_opts{'install_deps'} = ($in{'install_deps'} // '1') eq '1' ? 1 : 0;
 
     my $job_id = _mods_launch_mod_install(
         $instance_id, $inst, $unix_user, $source, \%ids, %launch_opts
@@ -1177,18 +1411,38 @@ if ($action eq 'mod_versions') {
 
             my $action_form = &html_escape($text{'mc_mods_page_readonly_mod_hint'} || 'Read-only');
             unless (&user_is_readonly($instance_id)) {
-                $action_form = &ui_form_start('mods.cgi', 'post');
-                $action_form .= &ui_hidden('instance_id', $safe_id);
-                $action_form .= &ui_hidden('xnavigation', '1');
-                $action_form .= _mods_hidden_list_state($q, $status, $sort, $dir, $page);
-                $action_form .= _mods_hidden_mod_search_state($mod_q);
-                $action_form .= &ui_hidden('action', 'mc_mod_install');
-                $action_form .= &ui_hidden('mod_basename', $selected_mod->{'basename'} // '');
-                $action_form .= &ui_hidden('mod_version_id', $row->{'version_id'} // '');
-                $action_form .= &ui_hidden('mod_file_id', $row->{'file_id'} // '');
-                $action_form .= &ui_submit($text{'mc_mods_page_versions_install_btn'} || 'Install version',
-                    undef, undef, undef, 'btn-primary');
-                $action_form .= &ui_form_end();
+                if (_mods_source_has_dep_preview($source)) {
+                    my $preview_url = 'mods.cgi?' . _mods_install_preview_qs(
+                        instance_id   => $instance_id,
+                        mod_basename  => $selected_mod->{'basename'} // '',
+                        mod_version_id => $row->{'version_id'} // '',
+                        mod_file_id   => $row->{'file_id'} // '',
+                        q             => $q,
+                        status        => $status,
+                        sort          => $sort,
+                        dir           => $dir,
+                        page          => $page,
+                        mod_q         => $mod_q,
+                    );
+                    $action_form = _mods_inline_action_btn(
+                        "<a href=\"" . &html_escape($preview_url) . "\">"
+                        . &html_escape($text{'mc_mods_page_versions_install_btn'} || 'Install version')
+                        . "</a>"
+                    );
+                } else {
+                    $action_form = &ui_form_start('mods.cgi', 'post');
+                    $action_form .= &ui_hidden('instance_id', $safe_id);
+                    $action_form .= &ui_hidden('xnavigation', '1');
+                    $action_form .= _mods_hidden_list_state($q, $status, $sort, $dir, $page);
+                    $action_form .= _mods_hidden_mod_search_state($mod_q);
+                    $action_form .= &ui_hidden('action', 'mc_mod_install');
+                    $action_form .= &ui_hidden('mod_basename', $selected_mod->{'basename'} // '');
+                    $action_form .= &ui_hidden('mod_version_id', $row->{'version_id'} // '');
+                    $action_form .= &ui_hidden('mod_file_id', $row->{'file_id'} // '');
+                    $action_form .= &ui_submit($text{'mc_mods_page_versions_install_btn'} || 'Install version',
+                        undef, undef, undef, 'btn-primary');
+                    $action_form .= &ui_form_end();
+                }
             }
 
             push @rows, [
@@ -1308,22 +1562,46 @@ if ($action eq 'mod_search_versions') {
 
             my $action_form = &html_escape($text{'mc_mods_page_readonly_mod_hint'} || 'Read-only');
             unless (&user_is_readonly($instance_id)) {
-                $action_form = &ui_form_start('mods.cgi', 'post');
-                $action_form .= &ui_hidden('instance_id', $safe_id);
-                $action_form .= &ui_hidden('xnavigation', '1');
-                $action_form .= _mods_hidden_list_state($q, $status, $sort, $dir, $page);
-                $action_form .= _mods_hidden_mod_search_state($mod_q);
-                $action_form .= &ui_hidden('action', 'mc_mod_install');
-                $action_form .= &ui_hidden('mod_source', $source);
-                $action_form .= &ui_hidden('mod_project_id', $ids{'project_id'} // '');
-                $action_form .= &ui_hidden('mod_hangar_owner', $ids{'hangar_owner'} // '');
-                $action_form .= &ui_hidden('mod_hangar_slug', $ids{'hangar_slug'} // '');
-                $action_form .= &ui_hidden('mod_title', $ids{'title'} // '');
-                $action_form .= &ui_hidden('mod_version_id', $row->{'version_id'} // '');
-                $action_form .= &ui_hidden('mod_file_id', $row->{'file_id'} // '');
-                $action_form .= &ui_submit($text{'mc_mods_page_versions_install_btn'} || 'Install version',
-                    undef, undef, undef, 'btn-primary');
-                $action_form .= &ui_form_end();
+                if (_mods_source_has_dep_preview($source)) {
+                    my $preview_url = 'mods.cgi?' . _mods_install_preview_qs(
+                        instance_id    => $instance_id,
+                        mod_source     => $source,
+                        mod_project_id => $ids{'project_id'} // '',
+                        mod_hangar_owner => $ids{'hangar_owner'} // '',
+                        mod_hangar_slug  => $ids{'hangar_slug'} // '',
+                        mod_title      => $ids{'title'} // '',
+                        mod_version_id => $row->{'version_id'} // '',
+                        mod_file_id    => $row->{'file_id'} // '',
+                        q              => $q,
+                        status         => $status,
+                        sort           => $sort,
+                        dir            => $dir,
+                        page           => $page,
+                        mod_q          => $mod_q,
+                    );
+                    $action_form = _mods_inline_action_btn(
+                        "<a href=\"" . &html_escape($preview_url) . "\">"
+                        . &html_escape($text{'mc_mods_page_versions_install_btn'} || 'Install version')
+                        . "</a>"
+                    );
+                } else {
+                    $action_form = &ui_form_start('mods.cgi', 'post');
+                    $action_form .= &ui_hidden('instance_id', $safe_id);
+                    $action_form .= &ui_hidden('xnavigation', '1');
+                    $action_form .= _mods_hidden_list_state($q, $status, $sort, $dir, $page);
+                    $action_form .= _mods_hidden_mod_search_state($mod_q);
+                    $action_form .= &ui_hidden('action', 'mc_mod_install');
+                    $action_form .= &ui_hidden('mod_source', $source);
+                    $action_form .= &ui_hidden('mod_project_id', $ids{'project_id'} // '');
+                    $action_form .= &ui_hidden('mod_hangar_owner', $ids{'hangar_owner'} // '');
+                    $action_form .= &ui_hidden('mod_hangar_slug', $ids{'hangar_slug'} // '');
+                    $action_form .= &ui_hidden('mod_title', $ids{'title'} // '');
+                    $action_form .= &ui_hidden('mod_version_id', $row->{'version_id'} // '');
+                    $action_form .= &ui_hidden('mod_file_id', $row->{'file_id'} // '');
+                    $action_form .= &ui_submit($text{'mc_mods_page_versions_install_btn'} || 'Install version',
+                        undef, undef, undef, 'btn-primary');
+                    $action_form .= &ui_form_end();
+                }
             }
 
             push @rows, [
@@ -1357,6 +1635,21 @@ if ($action eq 'mod_search_versions') {
     exit;
 }
 
+if ($action eq 'poll_monitor') {
+    my $source = &instance_effective_source($inst);
+    my $payload = server_log_monitor_poll_payload(
+        server_dir  => $server_dir,
+        script_name => $script_name,
+        source      => $source,
+        minecraft   => 1,
+        log_file    => $in{'log_file'},
+    );
+    $main::headerprinted = 1;
+    print "Content-type: application/json; charset=utf-8\n\n";
+    print job_log_json_utf8($payload);
+    exit;
+}
+
 if ($action eq 'monitor') {
     my $source = &instance_effective_source($inst);
     my @log_candidates = grep { -f $_ } server_log_candidates(
@@ -1368,19 +1661,22 @@ if ($action eq 'monitor') {
     my $log_file = server_log_resolve_pick($in{'log_file'}, \@log_candidates);
     $log_file = $log_candidates[0] if $log_file eq '' && @log_candidates;
     my $log_base = $log_file ne '' ? basename($log_file) : '';
-    my $auto_refresh = (($in{'auto_refresh'} // '') eq '1' && ($in{'manual'} // '') eq '1') ? 1 : 0;
+    my $auto_refresh = 1;
+    if (defined $in{'auto_refresh'} && ($in{'auto_refresh'} // '') ne '1') {
+        $auto_refresh = 0;
+    }
 
     &header($text{'mc_mods_page_monitor_title'} || 'Server log (live)', '');
     print &job_log_view_page_css();
-    print &job_log_view_page_open();
+    print &job_log_view_page_open('fill');
+    print &job_log_live_page_js();
     print "<h3>" . &html_escape($text{'mc_mods_page_monitor_title'} || 'Server log (live)') . "</h3>\n";
     print &job_log_view_toolbar_open();
 
-    print &ui_form_start('mods.cgi', 'get');
+    print &ui_form_start('mods.cgi', 'get', undef, 'id="monitor_refresh_form"');
     print &ui_hidden('instance_id', &html_escape($instance_id));
     print &ui_hidden('action', 'monitor');
     print &ui_hidden('xnavigation', '1');
-    print &ui_hidden('manual', '1');
     if (@log_candidates > 1) {
         my (%seen_bn, @opts);
         for my $p (@log_candidates) {
@@ -1396,9 +1692,11 @@ if ($action eq 'monitor') {
     } elsif ($log_base ne '') {
         print &ui_hidden('log_file', &html_escape($log_base));
     }
-    print &ui_checkbox('auto_refresh', 1,
-        $text{'mc_mods_page_monitor_auto_label'} || 'Auto refresh (2s)', $auto_refresh);
-    print " ";
+    print '<label style="margin-right:8px"><input type="checkbox" name="auto_refresh"'
+        . ' id="monitor_auto_refresh" value="1"'
+        . ($auto_refresh ? ' checked' : '') . '> '
+        . &html_escape($text{'mc_mods_page_monitor_auto_label'} || 'Auto refresh (3s)')
+        . '</label> ';
     print &ui_submit($text{'mc_mods_page_monitor_refresh_btn'} || 'Refresh',
         undef, undef, undef, 'btn-default');
     print &ui_form_end();
@@ -1463,13 +1761,22 @@ if ($action eq 'monitor') {
                 print "<p>" . &html_escape($text{'mc_mods_page_monitor_log_binary_warn'}
                     || 'File looks binary.') . "</p>\n";
             }
-            my $refresh_url = "mods.cgi?instance_id=" . &html_escape($instance_id)
-                . "&action=monitor&xnavigation=1&auto_refresh=1&manual=1"
-                . ($log_base ne '' ? "&log_file=" . &urlize($log_base) : '');
-            if ($auto_refresh) {
-                print "<meta http-equiv=\"refresh\" content=\"2;url=$refresh_url\">\n";
-            }
-            print &job_log_view_block($tail, id => 'monitor_log');
+            print &job_log_view_block($tail, id => 'monitor_log', live => 1);
+            my $mn = $module_name // $main::module_name // 'linuxgsm-webcore';
+            $mn =~ s/[^a-zA-Z0-9_-]//g;
+            my $poll_path = "/$mn/mods.cgi?instance_id=" . &urlize($instance_id)
+                . "&action=poll_monitor";
+            print &server_monitor_poll_client_js(
+                poll_url_base  => $poll_path,
+                out_id         => 'monitor_log',
+                form_id        => 'monitor_refresh_form',
+                checkbox_id    => 'monitor_auto_refresh',
+                log_file       => $log_base,
+                wait_msg       => $text{'mc_mods_page_monitor_no_log'} || '',
+                poll_fail_msg  => $text{'mc_mods_page_monitor_no_log'} || '',
+                poll_interval  => 3000,
+                auto_start     => $auto_refresh,
+            );
         }
     }
 
@@ -1853,23 +2160,47 @@ if (length($mod_q) >= 2) {
 
             my $actions = &html_escape($text{'mc_mods_page_readonly_mod_hint'} || 'Read-only');
             unless (&user_is_readonly($instance_id)) {
-                my $install_form = &ui_form_start('mods.cgi', 'post');
-                $install_form .= &ui_hidden('instance_id', $safe_id);
-                $install_form .= &ui_hidden('action', 'mc_mod_install');
-                $install_form .= &ui_hidden('xnavigation', '1');
-                $install_form .= _mods_hidden_list_state($q, $status, $sort, $dir, $page);
-                $install_form .= _mods_hidden_mod_search_state($mod_q);
-                $install_form .= &ui_hidden('mod_source', $src);
-                $install_form .= &ui_hidden('mod_project_id', $r->{'project_id'} // '');
-                $install_form .= &ui_hidden('mod_version_id', $r->{'version_id'} // '');
-                $install_form .= &ui_hidden('mod_file_id', $r->{'file_id'} // '');
-                $install_form .= &ui_hidden('mod_hangar_owner', $r->{'hangar_owner'} // '');
-                $install_form .= &ui_hidden('mod_hangar_slug', $r->{'hangar_slug'} // '');
-                $install_form .= &ui_hidden('mod_title', $r->{'title'} // '');
-                $install_form .= &ui_submit($text{'mc_mods_install_btn'} || 'Install',
-                    undef, undef, undef, 'btn-primary');
-                $install_form .= &ui_form_end();
-                $actions = _mods_inline_action_btn($install_form);
+                if (_mods_source_has_dep_preview($src)) {
+                    my $preview_url = 'mods.cgi?' . _mods_install_preview_qs(
+                        instance_id    => $instance_id,
+                        mod_source     => $src,
+                        mod_project_id => $r->{'project_id'} // '',
+                        mod_version_id => $r->{'version_id'} // '',
+                        mod_file_id    => $r->{'file_id'} // '',
+                        mod_hangar_owner => $r->{'hangar_owner'} // '',
+                        mod_hangar_slug  => $r->{'hangar_slug'} // '',
+                        mod_title      => $r->{'title'} // '',
+                        q              => $q,
+                        status         => $status,
+                        sort           => $sort,
+                        dir            => $dir,
+                        page           => $page,
+                        mod_q          => $mod_q,
+                    );
+                    $actions = _mods_inline_action_btn(
+                        "<a href=\"" . &html_escape($preview_url) . "\">"
+                        . &html_escape($text{'mc_mods_install_btn'} || 'Install')
+                        . "</a>"
+                    );
+                } else {
+                    my $install_form = &ui_form_start('mods.cgi', 'post');
+                    $install_form .= &ui_hidden('instance_id', $safe_id);
+                    $install_form .= &ui_hidden('action', 'mc_mod_install');
+                    $install_form .= &ui_hidden('xnavigation', '1');
+                    $install_form .= _mods_hidden_list_state($q, $status, $sort, $dir, $page);
+                    $install_form .= _mods_hidden_mod_search_state($mod_q);
+                    $install_form .= &ui_hidden('mod_source', $src);
+                    $install_form .= &ui_hidden('mod_project_id', $r->{'project_id'} // '');
+                    $install_form .= &ui_hidden('mod_version_id', $r->{'version_id'} // '');
+                    $install_form .= &ui_hidden('mod_file_id', $r->{'file_id'} // '');
+                    $install_form .= &ui_hidden('mod_hangar_owner', $r->{'hangar_owner'} // '');
+                    $install_form .= &ui_hidden('mod_hangar_slug', $r->{'hangar_slug'} // '');
+                    $install_form .= &ui_hidden('mod_title', $r->{'title'} // '');
+                    $install_form .= &ui_submit($text{'mc_mods_install_btn'} || 'Install',
+                        undef, undef, undef, 'btn-primary');
+                    $install_form .= &ui_form_end();
+                    $actions = _mods_inline_action_btn($install_form);
+                }
 
                 my $version_url = "mods.cgi?instance_id=" . _mods_query_urlencode($instance_id)
                     . "&action=mod_search_versions&xnavigation=1"

@@ -346,6 +346,79 @@ sub modrinth_dep_mc_version {
     return undef;
 }
 
+# Modrinth dependency_type or CurseForge relationType → normalized type.
+sub normalize_mod_dependency_type {
+    my ($raw) = @_;
+    return '' unless defined $raw;
+    if ($raw =~ /^\d+$/) {
+        my %cf = (
+            1 => 'embedded',    # EmbeddedLibrary
+            2 => 'optional',
+            3 => 'required',
+            4 => 'optional',      # Tool — treat as optional hint
+            5 => 'incompatible',
+            6 => 'embedded',    # Include
+        );
+        return $cf{$raw} // 'unknown';
+    }
+    my $t = lc("$raw");
+    $t =~ s/[^a-z]//g;
+    return $t if $t =~ /^(?:required|optional|embedded|incompatible)$/;
+    return 'unknown';
+}
+
+sub mod_dependency_type_installable {
+    my ($type) = @_;
+    my $n = normalize_mod_dependency_type($type);
+    return 1 if $n eq 'required' || $n eq 'optional';
+    return 0;
+}
+
+# Extract Modrinth version.dependencies[] (required + optional only).
+sub modrinth_version_dependencies {
+    my ($ver) = @_;
+    return [] unless ref($ver) eq 'HASH';
+    my @out;
+    for my $d (@{ $ver->{'dependencies'} // [] }) {
+        next unless ref($d) eq 'HASH';
+        my $pid = $d->{'project_id'} // '';
+        $pid =~ s/[^a-zA-Z0-9_-]//g;
+        next unless $pid;
+        my $dtype = normalize_mod_dependency_type($d->{'dependency_type'} // '');
+        next unless mod_dependency_type_installable($dtype);
+        my $vid = $d->{'version_id'};
+        $vid = undef if defined $vid && $vid !~ /^[a-zA-Z0-9]+$/;
+        push @out, {
+            project_id       => $pid,
+            version_id       => $vid,
+            dependency_type  => $dtype,
+            source           => 'modrinth',
+        };
+    }
+    return \@out;
+}
+
+# Extract CurseForge file.dependencies[] (modId + relationType).
+sub curseforge_file_dependencies {
+    my ($file) = @_;
+    return [] unless ref($file) eq 'HASH';
+    my @out;
+    for my $d (@{ $file->{'dependencies'} // [] }) {
+        next unless ref($d) eq 'HASH';
+        my $mid = $d->{'modId'};
+        next unless defined $mid && "$mid" =~ /^\d+$/;
+        my $dtype = normalize_mod_dependency_type($d->{'relationType'} // '');
+        next unless mod_dependency_type_installable($dtype);
+        push @out, {
+            project_id       => "$mid",
+            version_id       => undef,
+            dependency_type  => $dtype,
+            source           => 'curseforge',
+        };
+    }
+    return \@out;
+}
+
 # Internal loader → Modrinth loader slug for search API
 sub mc_loader_modrinth_slug {
     my ($loader) = @_;
@@ -1332,6 +1405,141 @@ sub mc_mod_search {
     return { ok => 1, results => \@results, errors => \@errors };
 }
 
+# True when index lists the same Modrinth slug / CurseForge mod id.
+sub mod_index_has_project {
+    my ($server_dir, $source, $project_id, $profile) = @_;
+    return 0 unless defined $server_dir && $server_dir ne '';
+    return 0 unless defined $project_id && $project_id =~ /\S/;
+    $source =~ s/[^a-z]//g;
+    return 0 unless $source =~ /^(?:modrinth|curseforge)$/;
+
+    my $want = $project_id;
+    if ($source eq 'curseforge') {
+        $want =~ s/\D//g;
+        return 0 unless $want;
+    }
+
+    my $idx = read_mc_mods_index($server_dir);
+    for my $key (keys %$idx) {
+        my $rec = $idx->{$key};
+        next unless ref($rec) eq 'HASH';
+        next unless ($rec->{'source'} // '') eq $source;
+        if ($source eq 'modrinth') {
+            my $pid = $rec->{'modrinth_project'} // $rec->{'project_id'} // '';
+            next unless $pid =~ /\S/;
+            next unless lc($pid) eq lc($project_id);
+        } else {
+            my $pid = $rec->{'project_id'} // '';
+            $pid =~ s/\D//g;
+            next unless $pid && $pid eq $want;
+        }
+        my $mod_dir = $profile && ref($profile) eq 'HASH'
+            ? ($profile->{'mod_dir'} // 'mods') : 'mods';
+        my ($md, $base) = split m{/}, $key, 2;
+        $mod_dir = $md if defined $base && $base ne '';
+        if (defined $base && $base ne '') {
+            my ($active, $disabled) = mod_file_paths($server_dir, $mod_dir, $base);
+            return 1 if defined $active && (-f $active || -f $disabled);
+        }
+        return 1;
+    }
+    return 0;
+}
+
+# Classify direct mod dependencies against the server index.
+sub mod_dependency_status {
+    my ($server_dir, $profile, $deps) = @_;
+    my @missing;
+    my @satisfied;
+    my @optional;
+    return { missing => \@missing, satisfied => \@satisfied, optional => \@optional }
+        unless ref($deps) eq 'ARRAY';
+
+    for my $d (@$deps) {
+        next unless ref($d) eq 'HASH';
+        my $source = $d->{'source'} // 'modrinth';
+        my $pid = $d->{'project_id'} // '';
+        my $dtype = normalize_mod_dependency_type($d->{'dependency_type'} // 'required');
+        if (mod_index_has_project($server_dir, $source, $pid, $profile)) {
+            push @satisfied, { %$d, dependency_type => $dtype, status => 'satisfied' };
+        } elsif ($dtype eq 'optional') {
+            push @optional, { %$d, dependency_type => $dtype, status => 'optional' };
+        } else {
+            push @missing, { %$d, dependency_type => $dtype, status => 'missing' };
+        }
+    }
+    return { missing => \@missing, satisfied => \@satisfied, optional => \@optional };
+}
+
+sub _modrinth_version_deps_by_id {
+    my ($version_id) = @_;
+    return [] unless defined $version_id && $version_id =~ /^[a-zA-Z0-9]+$/;
+    my $ver = _mc_mods_http_get_json(
+        "https://api.modrinth.com/v2/version/$version_id",
+        { 'User-Agent' => modrinth_user_agent() },
+    );
+    return modrinth_version_dependencies($ver);
+}
+
+sub _curseforge_file_deps_by_id {
+    my ($project_id, $file_id) = @_;
+    $project_id =~ s/\D//g;
+    $file_id    =~ s/\D//g;
+    return [] unless $project_id && $file_id;
+    my $cf = curseforge_mod_file_meta($project_id, $file_id);
+    return curseforge_file_dependencies($cf);
+}
+
+sub _resolve_mod_dependency_meta {
+    my ($dep, $profile, $server_dir, $opts) = @_;
+    return (0, undef, 'invalid') unless ref($dep) eq 'HASH';
+    my $source = $dep->{'source'} // 'modrinth';
+    $source =~ s/[^a-z]//g;
+    return (0, undef, 'invalid_source') unless $source =~ /^(?:modrinth|curseforge)$/;
+    if ($source eq 'curseforge' && !_curseforge_api_headers()) {
+        return (0, undef, 'curseforge_key_missing');
+    }
+    my %ids = (
+        project_id => $dep->{'project_id'} // '',
+        title      => $dep->{'project_id'} // '',
+    );
+    $ids{'version_id'} = $dep->{'version_id'} if $dep->{'version_id'};
+    my ($ok, $meta, $err) = _prepare_mod_install_meta_core(
+        $source, \%ids, $profile, $server_dir, $opts);
+    return ($ok, $meta, $err);
+}
+
+# Primary mod + optional auto-install of missing required deps (cap 5).
+sub build_mod_install_plan {
+    my ($source, $ids, $profile, $server_dir, $opts) = @_;
+    $opts = {} unless ref($opts) eq 'HASH';
+    my ($ok, $primary, $err, $raw_deps) = _prepare_mod_install_meta_core(
+        $source, $ids, $profile, $server_dir, $opts);
+    return (0, undef, $err) unless $ok;
+
+    my $status = mod_dependency_status($server_dir, $profile, $raw_deps // []);
+    my @dep_metas;
+    if ($opts->{'install_deps'}) {
+        my @required_missing = grep {
+            normalize_mod_dependency_type($_->{'dependency_type'} // '') eq 'required'
+        } @{ $status->{'missing'} // [] };
+        return (0, undef, 'deps_too_many') if @required_missing > 5;
+
+        for my $dep (@required_missing) {
+            my ($dok, $dmeta, $derr) = _resolve_mod_dependency_meta(
+                $dep, $profile, $server_dir, $opts);
+            return (0, undef, $derr // 'dep_resolve_failed') unless $dok;
+            push @dep_metas, $dmeta;
+        }
+    }
+
+    return (1, {
+        primary      => $primary,
+        dependencies => \@dep_metas,
+        status       => $status,
+    }, undef);
+}
+
 sub mod_install_already_present {
     my ($server_dir, $mod_dir, $meta) = @_;
     return (0, undef) unless ref($meta) eq 'HASH';
@@ -1361,16 +1569,17 @@ sub mod_install_already_present {
     return (0, undef);
 }
 
-sub prepare_mod_install_meta {
+sub _prepare_mod_install_meta_core {
     my ($source, $ids, $profile, $server_dir, $opts) = @_;
-    return (0, undef, 'invalid') unless ref($ids) eq 'HASH' && ref($profile) eq 'HASH';
+    return (0, undef, 'invalid', []) unless ref($ids) eq 'HASH' && ref($profile) eq 'HASH';
     my $force_replace = ref($opts) eq 'HASH' && ($opts->{'force_replace'} // 0);
     $source =~ s/[^a-z]//g;
     my %meta;
+    my @raw_deps;
     if ($source eq 'modrinth') {
         my $pid = $ids->{'project_id'} // '';
         $pid =~ s/[^a-zA-Z0-9_-]//g;
-        return (0, undef, 'invalid_project') unless $pid;
+        return (0, undef, 'invalid_project', []) unless $pid;
         my $file = modrinth_resolve_version_file($pid, $profile);
         if ($ids->{'version_id'} && $ids->{'version_id'} =~ /^[a-zA-Z0-9]+$/) {
             my $vid = $ids->{'version_id'};
@@ -1379,29 +1588,33 @@ sub prepare_mod_install_meta {
                 'User-Agent' => modrinth_user_agent(),
             });
             if (ref($ver) eq 'HASH') {
+                my $allow = 1;
                 if (ref($ver->{'env'}) eq 'HASH') {
                     my $ven = normalize_mod_env($ver->{'env'});
-                    next unless mod_env_allowed($ven, 'import_server');
+                    $allow = mod_env_allowed($ven, 'import_server');
                 }
-                for my $f (@{ $ver->{'files'} // [] }) {
-                    next unless ref($f) eq 'HASH' && $f->{'primary'};
-                    my $dl = _modrinth_file_download_url($f);
-                    next unless $dl;
-                    my $fname = $f->{'filename'} // 'mod.jar';
-                    $fname =~ s/[^a-zA-Z0-9._-]//g;
-                    $file = {
-                        version_id   => $vid,
-                        filename     => $fname,
-                        download_url => $dl,
-                        hashes       => $f->{'hashes'} // {},
-                        env          => ref($ver->{'env'}) eq 'HASH'
-                            ? normalize_mod_env($ver->{'env'}) : 'unknown',
-                    };
-                    last;
+                if ($allow) {
+                    for my $f (@{ $ver->{'files'} // [] }) {
+                        next unless ref($f) eq 'HASH' && $f->{'primary'};
+                        my $dl = _modrinth_file_download_url($f);
+                        next unless $dl;
+                        my $fname = $f->{'filename'} // 'mod.jar';
+                        $fname =~ s/[^a-zA-Z0-9._-]//g;
+                        $file = {
+                            version_id   => $vid,
+                            filename     => $fname,
+                            download_url => $dl,
+                            hashes       => $f->{'hashes'} // {},
+                            env          => ref($ver->{'env'}) eq 'HASH'
+                                ? normalize_mod_env($ver->{'env'}) : 'unknown',
+                        };
+                        last;
+                    }
+                    @raw_deps = @{ modrinth_version_dependencies($ver) };
                 }
             }
         }
-        return (0, undef, 'resolve_failed') unless $file;
+        return (0, undef, 'resolve_failed', []) unless $file;
         %meta = (
             source       => 'modrinth',
             project_id   => $pid,
@@ -1414,19 +1627,23 @@ sub prepare_mod_install_meta {
             mod_dir      => $profile->{'mod_dir'} // 'mods',
             server_dir   => $server_dir,
         );
+        unless (@raw_deps) {
+            @raw_deps = @{ _modrinth_version_deps_by_id($meta{'version_id'}) };
+        }
     } elsif ($source eq 'curseforge') {
         my $pid = $ids->{'project_id'} // '';
         $pid =~ s/\D//g;
-        return (0, undef, 'invalid_project') unless $pid;
+        return (0, undef, 'invalid_project', []) unless $pid;
         my $file = curseforge_resolve_mod_file($pid, $profile);
+        my $cf_meta;
         if ($ids->{'file_id'} && $ids->{'file_id'} =~ /^\d+$/) {
             my $fid = $ids->{'file_id'};
-            my $cf = curseforge_mod_file_meta($pid, $fid);
+            $cf_meta = curseforge_mod_file_meta($pid, $fid);
             my $dl = curseforge_mod_file_download_url($pid, $fid);
-            if ($cf && $dl) {
-                my $fname = $cf->{'fileName'} // 'mod.jar';
+            if ($cf_meta && $dl) {
+                my $fname = $cf_meta->{'fileName'} // 'mod.jar';
                 $fname =~ s/[^a-zA-Z0-9._-]//g;
-                my $norm = curseforge_normalize_hashes($cf->{'hashes'});
+                my $norm = curseforge_normalize_hashes($cf_meta->{'hashes'});
                 my %hashes = ref($norm) eq 'HASH' ? %$norm : ();
                 $file = {
                     file_id      => $fid,
@@ -1437,8 +1654,8 @@ sub prepare_mod_install_meta {
                 };
             }
         }
-        return (0, undef, 'resolve_failed') unless $file;
-        return (0, undef, 'curseforge_key_missing') unless _curseforge_api_headers();
+        return (0, undef, 'resolve_failed', []) unless $file;
+        return (0, undef, 'curseforge_key_missing', []) unless _curseforge_api_headers();
         %meta = (
             source       => 'curseforge',
             project_id   => $pid,
@@ -1451,6 +1668,8 @@ sub prepare_mod_install_meta {
             mod_dir      => $profile->{'mod_dir'} // 'mods',
             server_dir   => $server_dir,
         );
+        $cf_meta //= curseforge_mod_file_meta($pid, $meta{'file_id'});
+        @raw_deps = @{ curseforge_file_dependencies($cf_meta) } if ref($cf_meta) eq 'HASH';
     } elsif ($source eq 'hangar') {
         my $owner = $ids->{'hangar_owner'} // '';
         my $slug  = $ids->{'hangar_slug'} // '';
@@ -1458,9 +1677,9 @@ sub prepare_mod_install_meta {
         $owner =~ s/[^a-zA-Z0-9_-]//g;
         $slug  =~ s/[^a-zA-Z0-9_-]//g;
         $vid   =~ s/[^a-zA-Z0-9._-]//g;
-        return (0, undef, 'invalid_project') unless $owner && $slug;
+        return (0, undef, 'invalid_project', []) unless $owner && $slug;
         my $file = hangar_resolve_plugin_file($owner, $slug, $profile, $vid);
-        return (0, undef, 'resolve_failed') unless $file;
+        return (0, undef, 'resolve_failed', []) unless $file;
         %meta = (
             source       => 'hangar',
             hangar_owner => $owner,
@@ -1475,17 +1694,24 @@ sub prepare_mod_install_meta {
             server_dir   => $server_dir,
         );
     } else {
-        return (0, undef, 'invalid_source');
+        return (0, undef, 'invalid_source', []);
     }
-    return (0, undef, 'url_not_allowed')
+    return (0, undef, 'url_not_allowed', \@raw_deps)
         unless mc_download_url_allowed($meta{'download_url'});
-    return (0, undef, 'client_only')
+    return (0, undef, 'client_only', \@raw_deps)
         unless mod_env_allowed($meta{'env'}, 'import_server');
     unless ($force_replace) {
         my ($dup, $dup_reason) = mod_install_already_present($server_dir, $meta{'mod_dir'}, \%meta);
-        return (0, undef, $dup_reason) if $dup;
+        return (0, undef, $dup_reason, \@raw_deps) if $dup;
     }
-    return (1, \%meta, undef);
+    return (1, \%meta, undef, \@raw_deps);
+}
+
+sub prepare_mod_install_meta {
+    my ($source, $ids, $profile, $server_dir, $opts) = @_;
+    my ($ok, $meta, $err) = _prepare_mod_install_meta_core(
+        $source, $ids, $profile, $server_dir, $opts);
+    return ($ok, $meta, $err);
 }
 
 sub write_mod_install_job_meta {
@@ -1497,6 +1723,39 @@ sub write_mod_install_job_meta {
     print $fh $json;
     close($fh);
     return 1;
+}
+
+# Write primary + dependency metas and mod_install_plan.json for the worker.
+sub write_mod_install_plan_job_meta {
+    my ($job_dir, $plan) = @_;
+    return 0 unless defined $job_dir && -d $job_dir;
+    return 0 unless ref($plan) eq 'HASH' && ref($plan->{'primary'}) eq 'HASH';
+    require JSON::PP;
+
+    my $primary = $plan->{'primary'};
+    my @deps = ref($plan->{'dependencies'}) eq 'ARRAY' ? @{ $plan->{'dependencies'} } : ();
+    my @order;
+    for my $i (0 .. $#deps) {
+        next unless ref($deps[$i]) eq 'HASH';
+        my $path = "dep_meta_$i.json";
+        push @order, $path;
+        my $json = JSON::PP::encode_json($deps[$i]);
+        open(my $fh, '>', "$job_dir/$path") or return 0;
+        print $fh $json;
+        close($fh);
+    }
+    push @order, 'mod_meta.json';
+
+    my %plan_out = (
+        primary       => $primary,
+        dependencies  => \@deps,
+        install_order => \@order,
+    );
+    open(my $pfh, '>', "$job_dir/mod_install_plan.json") or return 0;
+    print $pfh JSON::PP::encode_json(\%plan_out);
+    close($pfh);
+
+    return write_mod_install_job_meta($job_dir, $primary);
 }
 
 1;
