@@ -216,5 +216,117 @@ subtest 'needs java when java_home stale for target mc' => sub {
         'java step when profile java_home does not match target major');
 };
 
+subtest 'loader builds for mc version' => sub {
+    my @builds = mc_upgrade_loader_builds_for_mc('neoforge', '26.1.2',
+        { loader_versions => [ qw(26.1.2.80 26.1.2.95 26.1.1.10 25.0.0.1) ] });
+    is_deeply([ sort @builds ], [ qw(26.1.2.80 26.1.2.95) ],
+        'only builds of the requested mc line');
+    is_deeply([ mc_upgrade_loader_builds_for_mc('neoforge', '1.99.9',
+            { loader_versions => [ qw(26.1.2.80) ] }) ],
+        [], 'no builds for unrelated mc line');
+    is_deeply([ mc_upgrade_loader_builds_for_mc('vanilla', '26.1.2',
+            { loader_versions => [ qw(26.1.2.80) ] }) ],
+        [], 'unmodded loader has no builds');
+};
+
+subtest 'check chain: mc mode validates loader build before mods' => sub {
+    mc_upgrade_set_mc_versions_for_test(qw(1.20.4 1.21.1));
+
+    my $blocked = mc_upgrade_check_chain('/tmp/srv', $profile_mc,
+        { mode => 'mc', target_mc_version => '1.21.1' },
+        { loader_versions => [ qw(20.4.10 20.4.12) ] });
+    is($blocked->{'steps'}{'mc'}{'status'}, 'ok', 'mc target accepted first');
+    is($blocked->{'blocked_at'}, 'loader', 'blocked on missing loader build');
+    is($blocked->{'steps'}{'loader'}{'err'}, 'loader_no_build_for_mc', 'loader error token');
+    is($blocked->{'steps'}{'mods'}{'status'}, 'skipped', 'mods not checked when loader blocks');
+    ok(!$blocked->{'ok'}, 'chain not ok');
+
+    my $passed = mc_upgrade_check_chain('/tmp/srv', $profile_mc,
+        { mode => 'mc', target_mc_version => '1.21.1' },
+        { loader_versions => [ qw(21.1.5 21.1.9) ], skip_mods => 1 });
+    is($passed->{'steps'}{'loader'}{'status'}, 'ok', 'loader build found for target mc');
+    is($passed->{'target_loader_version'}, '21.1.5', 'first matching build picked');
+    is($passed->{'target_mc_version'}, '1.21.1', 'target mc carried into chain');
+    ok($passed->{'ok'}, 'chain ok when mods are skipped');
+
+    my $bad_mc = mc_upgrade_check_chain('/tmp/srv', $profile_mc,
+        { mode => 'mc', target_mc_version => '1.20.4' },
+        { loader_versions => [ qw(20.4.10) ] });
+    is($bad_mc->{'blocked_at'}, 'mc', 'same version blocks on the mc step');
+    is($bad_mc->{'steps'}{'loader'}{'status'}, 'skipped', 'loader not checked after mc failure');
+
+    mc_upgrade_clear_mc_versions_for_test();
+};
+
+subtest 'check chain: loader mode validates mc line before mods' => sub {
+    my @builds = qw(26.1.2.80 26.1.2.95);
+    my $mismatch = mc_upgrade_check_chain('/tmp/srv',
+        { %$profile, mc_version => '26.1.1' },
+        { mode => 'loader', target_loader_version => '26.1.2.95' },
+        { loader_versions => \@builds });
+    is($mismatch->{'blocked_at'}, 'mc', 'loader build from another mc line blocks');
+    is($mismatch->{'steps'}{'mc'}{'err'}, 'mc_line_mismatch', 'mc mismatch token');
+    is($mismatch->{'steps'}{'mods'}{'status'}, 'skipped', 'mods skipped on mismatch');
+
+    my $ok = mc_upgrade_check_chain('/tmp/srv', $profile,
+        { mode => 'loader', target_loader_version => '26.1.2.95' },
+        { loader_versions => \@builds, skip_mods => 1 });
+    is($ok->{'steps'}{'loader'}{'status'}, 'ok', 'loader pin accepted');
+    is($ok->{'steps'}{'mc'}{'status'}, 'unchanged', 'mc stays on the current line');
+    is($ok->{'target_mc_version'}, '26.1.2', 'mods would be checked on current mc');
+    ok($ok->{'ok'}, 'chain ok');
+
+    is_deeply($ok->{'order'}, [ 'mc', 'loader', 'mods' ], 'mc line is always the first gate');
+};
+
+subtest 'check chain rejects unmodded loader' => sub {
+    my $chain = mc_upgrade_check_chain('/tmp/srv',
+        { loader => 'vanilla', mc_version => '1.21.1' },
+        { mode => 'mc', target_mc_version => '1.21.4' }, {});
+    ok(!$chain->{'ok'}, 'vanilla cannot run the upgrade chain');
+    is($chain->{'steps'}{'mc'}{'err'}, 'loader_not_modded', 'loader_not_modded token');
+};
+
+subtest 'check chain reports mod issues without blocking earlier steps' => sub {
+    no warnings 'redefine';
+    local *list_installed_mods = sub {
+        return [
+            { source => 'modrinth', project_id => 'balm', title => 'Balm',
+              basename => 'balm.jar', has_update_meta => 1, enabled => 1 },
+            { source => 'modrinth', project_id => 'farming-for-blockheads',
+              title => 'Farming', basename => 'farming.jar',
+              has_update_meta => 1, enabled => 1 },
+        ];
+    };
+    mc_upgrade_set_mod_compat_for_test('modrinth', 'balm', 1);
+    mc_upgrade_set_mod_compat_for_test('modrinth', 'farming-for-blockheads', 0);
+    mc_upgrade_set_mc_versions_for_test(qw(1.20.4 1.21.1));
+
+    my $chain = mc_upgrade_check_chain('/tmp/srv', $profile_mc,
+        { mode => 'mc', target_mc_version => '1.21.1' },
+        { loader_versions => [ qw(21.1.5) ] });
+    is($chain->{'steps'}{'mods'}{'status'}, 'warn', 'mods step warns');
+    is($chain->{'steps'}{'mods'}{'issues'}, 1, 'one incompatible mod');
+    ok(!$chain->{'ok'}, 'chain not ok while a mod is incompatible');
+    is($chain->{'blocked_at'}, undef, 'mods do not hard-block the chain');
+
+    mc_upgrade_clear_mc_versions_for_test();
+    mc_upgrade_clear_mod_compat_for_test();
+};
+
+subtest 'compat cache stays out of the server dir' => sub {
+    require File::Temp;
+    my $srv = File::Temp::tempdir(CLEANUP => 1);
+    no warnings 'redefine';
+    local *list_installed_mods = sub {
+        return [ { source => 'modrinth', project_id => 'balm', title => 'Balm',
+                   basename => 'balm.jar', has_update_meta => 1, enabled => 1 } ];
+    };
+    mc_upgrade_set_mod_compat_for_test('modrinth', 'balm', 1);
+    mc_upgrade_mod_compat_report($srv, $profile_mc, '1.21.1');
+    ok(!-e "$srv/.webcore", 'no cache written into the server dir');
+    mc_upgrade_clear_mod_compat_for_test();
+};
+
 mc_upgrade_clear_loader_versions_for_test();
 done_testing();

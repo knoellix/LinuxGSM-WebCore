@@ -298,7 +298,12 @@ sub _manage_render_instance_jobs_table {
     return unless @inst_jobs;
     @inst_jobs = @inst_jobs[0 .. ($max_rows - 1)] if @inst_jobs > $max_rows;
 
-    print "<h3>" . &html_escape($text{'jobs_title'} || 'Jobs') . "</h3>\n";
+    my $running = grep { ($_->{'status'} // '') eq 'running' } @inst_jobs;
+    print &ui_collapsible_start($text{'jobs_title'} || 'Jobs',
+        id    => 'jobs',
+        force => ($running ? 1 : 0),
+        badge => &job_status_label($inst_jobs[0]{'status'}, \%text),
+    );
     my %job_action_labels = %{ &job_action_labels_hash(\%text) };
     my %status_icons = (
         running => '&#x23F3;',
@@ -350,6 +355,7 @@ sub _manage_render_instance_jobs_table {
         '100%',
         \@rows,
     );
+    print &ui_collapsible_end();
 }
 
 sub _manage_setup_action_running {
@@ -493,6 +499,17 @@ sub _manage_apply_firewall_ports {
     return 1;
 }
 
+# Return to the instance page and reopen/scroll to the section that was used.
+sub _manage_redirect_section {
+    my ($instance_id, $anchor) = @_;
+    $anchor //= '';
+    $anchor =~ s/[^a-z0-9_-]//g;
+    my $url = "manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1";
+    $url .= "#$anchor" if $anchor ne '';
+    &redirect($url);
+    exit;
+}
+
 sub _manage_mc_upgrade_error {
     my ($err, $mode) = @_;
     $mode //= '';
@@ -525,16 +542,98 @@ sub _manage_mc_upgrade_error {
     }
 }
 
+# Compact status line above the info table: runtime, monitor, MC profile, ports.
+sub _manage_render_status_badges {
+    my ($mc_info, $runtime_status, $mon_state, $ports_open) = @_;
+    my $mon_key = 'monitor_status_'
+        . (ref($mon_state) eq 'HASH' ? ($mon_state->{'status'} // 'running') : 'running');
+    my $profile_html = '';
+    if (ref($mc_info) eq 'HASH') {
+        my @prof = grep { defined && /\S/ } (
+            &mc_loader_label($mc_info->{'loader'}, $current_lang // 'de'),
+            $mc_info->{'mc_version'},
+            'Java ' . int($mc_info->{'java_major'} // 0),
+        );
+        $profile_html = &html_escape(join(' / ', @prof)) if @prof;
+    }
+    print &ui_instance_status_line(
+        &ui_instance_status_part($text{'manage_status'} || 'Status',
+            _runtime_status_badge_html($runtime_status)),
+        &ui_instance_status_part($text{'monitor_col'} || 'Monitor',
+            &html_escape($text{$mon_key} || '')),
+        &ui_instance_status_part($text{'mc_profile_loader'} || 'Loader', $profile_html),
+        &ui_instance_status_part($text{'manage_fw_status'} || 'Firewall',
+            &html_escape($ports_open
+                ? ($text{'manage_fw_ports_open'} || 'offen')
+                : ($text{'manage_fw_ports_closed'} || 'geschlossen'))),
+    );
+}
+
+# One-line update hint from cached version lists, linking to the upgrades section.
+sub _manage_render_upgrade_hint {
+    my ($mc_info, $ld_cand, $mc_cand) = @_;
+    return unless ref($mc_info) eq 'HASH';
+    return unless &mc_loader_is_modded($mc_info->{'loader'} // '');
+    my @parts;
+    push @parts, &text('manage_badge_loader_updates', scalar @$ld_cand)
+        if ref($ld_cand) eq 'ARRAY' && @$ld_cand;
+    push @parts, &text('manage_badge_mc_available', $mc_cand->[0])
+        if ref($mc_cand) eq 'ARRAY' && @$mc_cand;
+    return unless @parts;
+    print "<p><b>" . &html_escape($text{'manage_updates_label'} || 'Updates') . ":</b> "
+        . &html_escape(join(' · ', @parts))
+        . " <a href=\"#upgrades\">"
+        . &html_escape($text{'manage_updates_jump'} || 'zu den Upgrades')
+        . "</a></p>\n";
+}
+
+# Upgrade candidates from the version cache only — opening the manage page must
+# not hit Mojang/Maven (the lists are refreshed by the "load versions" action).
+sub _manage_upgrade_candidates {
+    my ($mc_prof) = @_;
+    return ([], [], 0) unless ref($mc_prof) eq 'HASH';
+    my $loader = $mc_prof->{'loader'} // '';
+    return ([], [], 0) unless &mc_loader_is_modded($loader);
+    my $mc = $mc_prof->{'mc_version'} // '';
+    my @ld_avail = &mc_upgrade_cached_loader_versions($loader, $mc, { no_fetch => 1 });
+    my @mc_avail = &mc_upgrade_cached_mc_versions({ no_fetch => 1 });
+    my @ld_cand = @ld_avail ? &mc_upgrade_loader_upgrade_candidates($mc_prof, \@ld_avail) : ();
+    my @mc_cand = @mc_avail ? &mc_upgrade_mc_upgrade_candidates($mc_prof, \@mc_avail) : ();
+    return (\@ld_cand, \@mc_cand, ((@ld_avail || @mc_avail) ? 1 : 0));
+}
+
+sub _manage_upgrade_badge_text {
+    my ($ld_cand, $mc_cand, $lists_loaded) = @_;
+    return $text{'manage_badge_versions_unloaded'} || '' unless $lists_loaded;
+    my @parts;
+    push @parts, &text('manage_badge_loader_updates', scalar @$ld_cand) if @$ld_cand;
+    push @parts, &text('manage_badge_mc_available', $mc_cand->[0]) if @$mc_cand;
+    return @parts ? join(' · ', @parts) : ($text{'manage_badge_no_updates'} || '');
+}
+
+sub _manage_render_upgrade_versions_form {
+    my ($instance_id, $lists_loaded) = @_;
+    my $form = &ui_form_start('manage.cgi', 'post');
+    $form .= &ui_hidden('instance_id', &html_escape($instance_id));
+    $form .= &ui_hidden('action', 'upgrade_versions');
+    $form .= &ui_submit(
+        $lists_loaded
+            ? ($text{'mc_upgrade_versions_reload_btn'} || 'Reload versions')
+            : ($text{'mc_upgrade_versions_load_btn'} || 'Load versions'),
+        undef, undef, undef, 'btn-default');
+    $form .= &ui_form_end();
+    return &_manage_inline_action_btn($form);
+}
+
 sub _manage_render_mc_loader_upgrade_block {
-    my ($instance_id, $mc_prof, $server_dir, $runtime_status) = @_;
+    my ($instance_id, $mc_prof, $server_dir, $runtime_status, $candidates_ref) = @_;
     return unless ref($mc_prof) eq 'HASH';
     return unless &mc_loader_is_modded($mc_prof->{'loader'} // '');
     return unless &mc_mod_ui_ready($mc_prof, $server_dir);
     return if &user_is_readonly($instance_id);
     return unless &user_can_operate($instance_id);
 
-    my @avail = &mc_fetch_loader_versions($mc_prof->{'loader'}, $mc_prof->{'mc_version'} // '');
-    my @candidates = &mc_upgrade_loader_upgrade_candidates($mc_prof, \@avail);
+    my @candidates = ref($candidates_ref) eq 'ARRAY' ? @$candidates_ref : ();
     return unless @candidates;
 
     my $current = $mc_prof->{'loader_version'} // '';
@@ -600,15 +699,14 @@ sub _manage_launch_mc_upgrade_job {
 }
 
 sub _manage_render_mc_version_upgrade_block {
-    my ($instance_id, $mc_prof, $server_dir, $runtime_status) = @_;
+    my ($instance_id, $mc_prof, $server_dir, $runtime_status, $candidates_ref) = @_;
     return unless ref($mc_prof) eq 'HASH';
     return unless &mc_loader_is_modded($mc_prof->{'loader'} // '');
     return unless &mc_mod_ui_ready($mc_prof, $server_dir);
     return if &user_is_readonly($instance_id);
     return unless &user_can_operate($instance_id);
 
-    my @avail = &mc_list_mc_versions();
-    my @candidates = &mc_upgrade_mc_upgrade_candidates($mc_prof, \@avail);
+    my @candidates = ref($candidates_ref) eq 'ARRAY' ? @$candidates_ref : ();
     return unless @candidates;
 
     my $current_mc = $mc_prof->{'mc_version'} // '';
@@ -653,7 +751,8 @@ sub _manage_render_mc_version_upgrade_block {
     }
     print &ui_table_end();
     my $compat_url = 'mods.cgi?instance_id=' . &urlize($instance_id)
-        . '&compat_mc=' . &urlize($compat_target) . '&xnavigation=1';
+        . '&check_mode=mc&compat_mc=' . &urlize($compat_target)
+        . '&xnavigation=1#upgrade-check';
     print "<p><small><a href=\"" . &html_escape($compat_url) . "\">"
         . &html_escape($text{'mc_upgrade_mc_compat_mods_link'}
             || 'Check mod compatibility for the target MC version on the mods page.')
@@ -1337,16 +1436,14 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|monitor)$/) {
         my %cfg_fw = $sn_fw && $sd_fw ? &_parse_lgsm_config($sd_fw, $sn_fw) : ();
         my $ports = _collect_instance_ports($sn_fw, \%cfg_fw);
         &_manage_apply_firewall_ports($ports, 'open');
-        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
-        exit;
+        &_manage_redirect_section($instance_id, 'controls');
     }
     elsif ($action eq 'fw_close') {
         my (undef, $sn_fw, $sd_fw) = _parse_script_info($inst);
         my %cfg_fw = $sn_fw && $sd_fw ? &_parse_lgsm_config($sd_fw, $sn_fw) : ();
         my $ports = _collect_instance_ports($sn_fw, \%cfg_fw);
         &_manage_apply_firewall_ports($ports, 'close');
-        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
-        exit;
+        &_manage_redirect_section($instance_id, 'controls');
     }
     elsif ($action eq 'fix_config') {
         my $script_name = (split('/', $inst->{'script'}))[-1];
@@ -1428,8 +1525,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|monitor)$/) {
         &_write_file_as_user($config_file, $cfg_content, $unix_user,
             mkdir => "$script_dir/lgsm/config-lgsm/$script_name");
         &_manage_config_save_ok($instance_id, 'fix', $config_file);
-        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
-        exit;
+        &_manage_redirect_section($instance_id, 'config');
     }
     elsif ($action eq 'migrate_config') {
         my $script_name = (split('/', $inst->{'script'}))[-1];
@@ -1472,8 +1568,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|monitor)$/) {
         }
 
         &_manage_config_save_ok($instance_id, 'migrate', $script_path);
-        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
-        exit;
+        &_manage_redirect_section($instance_id, 'config');
     }
     elsif ($action eq 'save_config') {
         my $script_name = (split('/', $inst->{'script'}))[-1];
@@ -1581,7 +1676,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|monitor)$/) {
         &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) .
                   "&config_file=" . &html_escape($cfg_file_key) .
                   "&config_view=" . &html_escape($cfg_view_key) .
-                  "&xnavigation=1");
+                  "&xnavigation=1#config-editor");
         exit;
     }
     elsif ($action eq 'delete_instance') {
@@ -1676,8 +1771,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|monitor)$/) {
             sftp_user => $ftp_user,
         }) or &error($text{'ftp_register_failed'} || $text{'wizard_register_failed'});
         &save_ftp_password($config_directory, $instance_id, $ftp_pass);
-        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
-        exit;
+        &_manage_redirect_section($instance_id, 'access');
     }
     elsif ($action eq 'delete_instance_ftp_user') {
         &can_manage_ftp() or &error($text{'err_acl_admin_only'} || 'Access denied');
@@ -1696,8 +1790,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|monitor)$/) {
         &error($text{'ftp_register_failed'} || 'FTP registry update failed.')
             if $reg && ($reg->{'sftp_user'} // '') ne '';
         &delete_ftp_password($config_directory, $instance_id);
-        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
-        exit;
+        &_manage_redirect_section($instance_id, 'access');
     }
     elsif ($action eq 'save_steam_account') {
         my $sa = $in{'steam_account'} // '';
@@ -1706,8 +1799,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|monitor)$/) {
         &register_instance($instance_id, $unix_user, $inst->{'script'}, {
             steam_account => $sa,
         }) or &error($text{'wizard_register_failed'});
-        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
-        exit;
+        &_manage_redirect_section($instance_id, 'access');
     }
     elsif ($action eq 'provision_deps') {
         &_manage_redirect_if_job_running($instance_id, 'provision_deps');
@@ -1840,6 +1932,15 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|monitor)$/) {
             { instance_id => $instance_id, runtime_status => $runtime },
         );
         _manage_mc_upgrade_error($pf->{'err'}, 'mc') unless $pf->{'ok'};
+        # The wizard MC list says nothing about loader builds — verify one exists
+        # for the target line before the worker fails on the loader install step.
+        my $chain = &mc_upgrade_check_chain($server_dir, $profile,
+            { mode => 'mc', target_mc_version => $target_raw }, { skip_mods => 1 });
+        if ((my $blocked = $chain->{'blocked_at'} // '') ne '') {
+            my $bstate = ref($chain->{'steps'}) eq 'HASH'
+                ? ($chain->{'steps'}{$blocked} // {}) : {};
+            &error(&mc_upgrade_chain_error_text($blocked, $bstate->{'err'}, 'mc'));
+        }
         my ($ok, $plan, $err) = &mc_upgrade_mc_plan($profile, $target_raw);
         _manage_mc_upgrade_error($err, 'mc') unless $ok;
         _manage_launch_mc_upgrade_job($instance_id, $inst, $unix_user, 'mc_upgrade_mc', $plan);
@@ -2092,15 +2193,27 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|monitor)$/) {
         my (undef, undef, $server_dir) = _parse_script_info($inst);
         &set_monitor_running($server_dir, $config_directory, $instance_id);
         &_rebuild_monitor_cron();
-        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
-        exit;
+        &_manage_redirect_section($instance_id, 'monitoring');
     }
     elsif ($action eq 'monitor_disable') {
         my (undef, undef, $server_dir) = _parse_script_info($inst);
         &set_monitor_disabled($server_dir, $config_directory, $instance_id);
         &_rebuild_monitor_cron();
-        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
-        exit;
+        &_manage_redirect_section($instance_id, 'monitoring');
+    }
+    elsif ($action eq 'upgrade_versions') {
+        my (undef, undef, $server_dir) = _parse_script_info($inst);
+        my $profile = $server_dir ? &read_mc_profile($server_dir) : undef;
+        my $loader = ref($profile) eq 'HASH' ? ($profile->{'loader'} // '') : '';
+        my $mc     = ref($profile) eq 'HASH' ? ($profile->{'mc_version'} // '') : '';
+        &mc_upgrade_cache_forget(&mc_upgrade_version_cache_names($loader, $mc));
+        my @mc_list = &mc_upgrade_cached_mc_versions({ refresh => 1 });
+        my @ld_list = &mc_upgrade_cached_loader_versions($loader, $mc, { refresh => 1 });
+        unless (@mc_list || @ld_list) {
+            &error($text{'mc_upgrade_versions_load_failed'}
+                || 'Could not load version lists — check network access to Mojang/Maven.');
+        }
+        &_manage_redirect_section($instance_id, 'upgrades');
     }
     elsif ($action eq 'save_schedule') {
         my (undef, undef, $server_dir) = _parse_script_info($inst);
@@ -2128,8 +2241,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|monitor)$/) {
             or &error($text{'schedule_cron_rebuild_failed'} || $text{'schedule_save_failed'});
         &module_config_flash_mark("schedule_save_$instance_id")
             or &error($text{'schedule_save_failed'} || 'Schedule could not be saved.');
-        &redirect("manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1");
-        exit;
+        &_manage_redirect_section($instance_id, 'monitoring');
     }
     else {
         my $script_name = (split('/', $inst->{'script'}))[-1];
@@ -2607,13 +2719,33 @@ my %cfg = &_parse_lgsm_config($script_dir_for_cfg, $script_name_for_cfg);
 my $source_for_status = $effective_source;
 my $runtime_status = _manage_runtime_status($inst, $source_for_status, light => 1);
 
+my (undef, undef, $server_dir_info) = _parse_script_info($inst);
+my $mc_info = $server_dir_info ? &read_mc_profile($server_dir_info) : undef;
+
+# Ports and firewall state up front — the status line needs both, and the
+# firewall section below reuses them instead of probing twice.
+my $info_ports = _collect_instance_ports($script_name_for_cfg, \%cfg);
+my $all_open = 1;
+for my $p (@$info_ports) {
+    $all_open = 0 unless &firewall_status($p->{port});
+}
+
+# Game fields misplaced in common.cfg — needed for the warning block below.
+my $common_cfg_path = "$script_dir_for_cfg/lgsm/config-lgsm/common.cfg";
+my ($common_chk, undef, undef) = &read_config_file($common_cfg_path);
+my %gkeys_chk = map { $_->{'key'} => 1 } &get_game_fields($script_name_for_cfg);
+my $has_misplaced = scalar grep { $gkeys_chk{$_} } keys %$common_chk;
+
+my ($upgrade_ld_cand, $upgrade_mc_cand, $upgrade_lists_loaded) =
+    _manage_upgrade_candidates($mc_info);
+
+_manage_render_status_badges($mc_info, $runtime_status, $mon_state, $all_open);
+_manage_render_upgrade_hint($mc_info, $upgrade_ld_cand, $upgrade_mc_cand);
+
 # Server-Info table
 print &ui_table_start($text{'manage_title'}, "width=100%", 2);
 print &ui_table_row($text{'manage_game'},   &html_escape($inst->{'game'}));
-my (undef, undef, $server_dir_info) = _parse_script_info($inst);
-my $mc_info;
-if ($server_dir_info) {
-    $mc_info = &read_mc_profile($server_dir_info);
+{
     if ($mc_info) {
         print &ui_table_row($text{'mc_profile_loader'},
             &html_escape(&mc_loader_label($mc_info->{'loader'}, $current_lang // 'de')));
@@ -2630,7 +2762,6 @@ if ($server_dir_info) {
 }
 # Show every port-typed field so the user sees the full game/query/beacon set
 # for multi-port games (UE5). Single-port games still render as one row.
-my $info_ports = _collect_instance_ports($script_name_for_cfg, \%cfg);
 if (@$info_ports == 1) {
     print &ui_table_row($text{'manage_port'}, $info_ports->[0]{port});
 } else {
@@ -2683,7 +2814,6 @@ if ($runtime_status eq 'online' || $runtime_status eq 'running') {
         }
     }
 }
-print &ui_table_row($text{'manage_script'}, &html_escape($inst->{'script'}));
 print &ui_table_end();
 
 # Minecraft setup continuation (also when instance_status=installed but files missing)
@@ -2738,22 +2868,38 @@ print &ui_table_end();
     }
 }
 
+# Warnings stay outside the collapsibles: they must not be hideable.
+my @warnings = @{$inst->{'warnings'} || []};
+if (!$cfg{_has_instance_config}) {
+    push @warnings, $text{'manage_fix_config_warn'};
+}
+if ($has_misplaced) {
+    push @warnings, $text{'manage_migrate_warn'};
+}
+if (@warnings) {
+    print "<h3>&#x26A0; $text{'health_warn_header'}</h3>\n";
+    print "<ul>\n";
+    for my $w (@warnings) {
+        print "<li>" . &html_escape($w) . "</li>\n";
+    }
+    print "</ul>\n";
+}
+
+print &ui_collapsible_start($text{'manage_section_controls'} || 'Controls',
+    id => 'controls', open => 1);
+
 # Firewall section — show open/closed status per port. Use AND semantics:
 # the toggle button reflects "are *all* ports open?" so a single click can re-open
 # a partially closed set.
-my $all_open = 1;
-for my $p (@$info_ports) {
-    $all_open = 0 unless &firewall_status($p->{port});
-}
 my $fw_open = $all_open;
 my $port = $info_ports->[0]{port}; # legacy compat for downstream code paths
 my ($fw_status_icon, $fw_btn_action, $fw_btn_label);
 if ($fw_open) {
-    $fw_status_icon = "&#x2705; offen";
+    $fw_status_icon = '&#x2705; ' . &html_escape($text{'manage_fw_ports_open'} || 'offen');
     $fw_btn_action  = 'fw_close';
     $fw_btn_label   = $text{'fw_close_btn'};
 } else {
-    $fw_status_icon = "&#x274C; geschlossen";
+    $fw_status_icon = '&#x274C; ' . &html_escape($text{'manage_fw_ports_closed'} || 'geschlossen');
     $fw_btn_action  = 'fw_open';
     $fw_btn_label   = $text{'fw_open_btn'};
 }
@@ -2769,7 +2915,29 @@ if ($effective_source eq 'steamcmd' && $script_name_for_cfg eq 'windrose') {
     print "<p><small>" . &html_escape($text{'manage_fw_windrose_ephemeral_hint'}) . "</small></p>\n";
 }
 
+# Control buttons — server group + maintenance row
+print "<h4>" . &html_escape($text{'manage_controls_server'}) . "</h4>\n";
+print "<div style='margin:4px 0 12px 0'>\n";
+foreach my $action (qw(start stop restart)) {
+    my $btn_class = ($action eq 'start') ? 'btn-success'
+                  : ($action eq 'stop')  ? 'btn-default'
+                  :                        'btn-warning';
+    my $form = &ui_form_start('manage.cgi', 'post');
+    $form .= &ui_hidden('instance_id', $safe_id);
+    $form .= &ui_hidden('action', $action);
+    $form .= &ui_submit($text{"manage_$action"}, undef, undef, undef, $btn_class);
+    $form .= &ui_form_end();
+    print &_manage_inline_action_btn($form);
+}
+print "</div>\n";
+
+# Mods page link (below server controls)
+&_manage_render_mods_page_link($inst, $instance_id);
+print &ui_collapsible_end();
+
 if (&user_can_operate($instance_id)) {
+    print &ui_collapsible_start($text{'manage_section_monitoring'} || 'Monitoring and schedule',
+        id => 'monitoring');
     my $mon_s = $mon_state->{'status'} // 'running';
     if ($mon_s eq 'failed' || $mon_s eq 'paused') {
         print &ui_form_start('manage.cgi', 'post');
@@ -2826,23 +2994,14 @@ if (&user_can_operate($instance_id)) {
     print "<p><small>" . &html_escape($text{'schedule_skip_hint'}
         || 'Neustart nur wenn der Server online ist; sonst wird übersprungen und protokolliert.')
         . "</small></p>\n";
+    print &ui_collapsible_end();
 }
 
-# Control buttons — server group + maintenance row
-print "<h4>" . &html_escape($text{'manage_controls_server'}) . "</h4>\n";
-print "<div style='margin:4px 0 12px 0'>\n";
-foreach my $action (qw(start stop restart)) {
-    my $btn_class = ($action eq 'start') ? 'btn-success'
-                  : ($action eq 'stop')  ? 'btn-default'
-                  :                        'btn-warning';
-    my $form = &ui_form_start('manage.cgi', 'post');
-    $form .= &ui_hidden('instance_id', $safe_id);
-    $form .= &ui_hidden('action', $action);
-    $form .= &ui_submit($text{"manage_$action"}, undef, undef, undef, $btn_class);
-    $form .= &ui_form_end();
-    print &_manage_inline_action_btn($form);
-}
-print "</div>\n";
+print &ui_collapsible_start($text{'manage_section_upgrades'} || 'Upgrades and maintenance',
+    id    => 'upgrades',
+    badge => _manage_upgrade_badge_text(
+        $upgrade_ld_cand, $upgrade_mc_cand, $upgrade_lists_loaded),
+);
 
 print "<h4>" . &html_escape($text{'manage_controls_maintenance'}) . "</h4>\n";
 print "<div style='margin:4px 0 12px 0'>\n";
@@ -2884,19 +3043,25 @@ print &_manage_inline_action_btn($monitor_link);
 }
 print "</div>\n";
 
-# Mods page link (below server controls)
-&_manage_render_mods_page_link($inst, $instance_id);
-
-if (&is_admin()) {
-    print "<p>\n";
-    print &ui_form_start("manage.cgi", "post", undef,
-        "onsubmit=\"return confirm('" . &html_escape($text{'manage_delete_confirm'} || 'Instanz wirklich unwiderruflich löschen?') . "')\"");
-    print &ui_hidden("instance_id", $safe_id);
-    print &ui_hidden("action", "delete_instance");
-    print &ui_submit($text{'manage_delete_btn'}, undef, 0, undef, 'btn-danger');
-    print &ui_form_end();
-    print "</p>\n";
+if ($server_dir_info && $mc_info) {
+    _manage_render_mc_loader_upgrade_block(
+        $instance_id, $mc_info, $server_dir_info, $runtime_status, $upgrade_ld_cand);
+    _manage_render_mc_version_upgrade_block(
+        $instance_id, $mc_info, $server_dir_info, $runtime_status, $upgrade_mc_cand);
+    if (&mc_loader_is_modded($mc_info->{'loader'} // '')
+        && !&user_is_readonly($instance_id) && &user_can_operate($instance_id)) {
+        unless ($upgrade_lists_loaded) {
+            print "<p>" . &html_escape($text{'mc_upgrade_versions_unloaded_hint'}
+                || 'Version lists are not cached yet — load them to see upgrade options.')
+                . "</p>\n";
+        }
+        print _manage_render_upgrade_versions_form($instance_id, $upgrade_lists_loaded);
+    }
 }
+print &ui_collapsible_end();
+
+print &ui_collapsible_start($text{'manage_section_access'} || 'Access',
+    id => 'access');
 
 # FTP section
 {
@@ -2970,30 +3135,10 @@ if (&is_admin()) {
         print &ui_form_end();
     }
 }
+print &ui_collapsible_end();
 
-# Detect if common.cfg contains misplaced instance-specific fields
-my $common_cfg_path = "$script_dir_for_cfg/lgsm/config-lgsm/common.cfg";
-my ($common_chk, undef, undef) = &read_config_file($common_cfg_path);
-my %gkeys_chk = map { $_->{'key'} => 1 } &get_game_fields($script_name_for_cfg);
-my $has_misplaced = scalar grep { $gkeys_chk{$_} } keys %$common_chk;
-
-# Warnings section
-my @warnings = @{$inst->{'warnings'} || []};
-if (!$cfg{_has_instance_config}) {
-    push @warnings, $text{'manage_fix_config_warn'};
-}
-if ($has_misplaced) {
-    push @warnings, $text{'manage_migrate_warn'};
-}
-
-if (@warnings) {
-    print "<h3>&#x26A0; $text{'health_warn_header'}</h3>\n";
-    print "<ul>\n";
-    for my $w (@warnings) {
-        print "<li>" . &html_escape($w) . "</li>\n";
-    }
-    print "</ul>\n";
-}
+print &ui_collapsible_start($text{'manage_section_config'} || 'Configuration and diagnostics',
+    id => 'config');
 
 # Migrate-Config form (if game fields are misplaced in common.cfg)
 if ($has_misplaced) {
@@ -3103,16 +3248,20 @@ if (!$cfg{_has_instance_config}) {
     my $lang = $current_lang // 'en';
     my $game_tab_label = &get_game_config_label($script_name_for_cfg, $lang);
     $game_tab_label = $text{'config_editor_game_btn'} unless $game_tab_label ne '';
-    # Open the <details> block when the user navigated to the editor
-    my $open_attr = defined($in{'config_file'}) ? ' open' : '';
-
-    print "<details$open_attr>\n";
-    print "<summary><b>$text{'config_editor_title'}</b></summary>\n";
+    # Open the editor when the user navigated to it (deep link / after save)
+    print &ui_collapsible_start($text{'config_editor_title'},
+        id   => 'config-editor',
+        open => (defined($in{'config_file'}) ? 1 : 0),
+    );
     print "<p>" . &html_escape($text{'config_editor_profile'}) . " <b>" .
           &html_escape($profile_name) . "</b> " .
           &html_escape($text{'config_editor_profile_source'}) .
           " <code>src/lib/games_meta.json</code></p>\n";
-    print "<p><b>" . &html_escape($text{'config_editor_common_path'}) . "</b> <code>" .
+    print &ui_collapsible_start($text{'manage_section_paths'} || 'Paths and details',
+        id => 'paths');
+    print "<p><b>" . &html_escape($text{'manage_script'}) . "</b> <code>" .
+          &html_escape($inst->{'script'}) . "</code><br>\n";
+    print "<b>" . &html_escape($text{'config_editor_common_path'}) . "</b> <code>" .
           &html_escape($common_path) . "</code><br>\n";
     print "<b>" . &html_escape($text{'config_editor_instance_path'}) . "</b> <code>" .
           &html_escape($instance_path) . "</code><br>\n";
@@ -3122,6 +3271,7 @@ if (!$cfg{_has_instance_config}) {
           &html_escape($server_root_path) . "</code> &nbsp;" .
           "<a href='" . &html_escape($fileman_url) . "'>" .
           &html_escape($text{'config_editor_open_fileman'}) . "</a></p>\n";
+    print &ui_collapsible_end();
 
     print <<'JS';
 <script>
@@ -3346,19 +3496,28 @@ JS
 
     print "<script>lgsmShowConfigView('" . &html_escape($cfg_view_key) . "');</script>\n";
 
-    print "</details>\n";
+    print &ui_collapsible_end();
 }
-
-if ($server_dir_info && $mc_info) {
-    _manage_render_mc_loader_upgrade_block(
-        $instance_id, $mc_info, $server_dir_info, $runtime_status);
-    _manage_render_mc_version_upgrade_block(
-        $instance_id, $mc_info, $server_dir_info, $runtime_status);
-}
+print &ui_collapsible_end();
 
 # Per-instance job list (operators and admins only)
 unless (&user_is_readonly($instance_id)) {
     &_manage_render_instance_jobs_table($instance_id, 5);
 }
+
+if (&is_admin()) {
+    print &ui_collapsible_start($text{'manage_section_danger'} || 'Remove instance',
+        id => 'danger');
+    print &ui_form_start("manage.cgi", "post", undef,
+        "onsubmit=\"return confirm('" . &html_escape($text{'manage_delete_confirm'}
+            || 'Instanz wirklich unwiderruflich löschen?') . "')\"");
+    print &ui_hidden("instance_id", $safe_id);
+    print &ui_hidden("action", "delete_instance");
+    print &ui_submit($text{'manage_delete_btn'}, undef, 0, undef, 'btn-danger');
+    print &ui_form_end();
+    print &ui_collapsible_end();
+}
+
+print &ui_collapsible_state_script();
 
 &footer('index.cgi', $text{'index_title'});

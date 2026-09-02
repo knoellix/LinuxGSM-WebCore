@@ -5,6 +5,27 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.3] - 2026-09-02
+
+### Added
+
+- **Collapsible sections** on `manage.cgi` and `mods.cgi`: every block is a `<details>` section with a badge summary; open/closed state is remembered per section in `localStorage`, deep links (`#section`) open their section automatically
+- **Upgrade check (MC / loader / mods)** on `mods.cgi`: ordered preflight that validates the target version first, then the opposite side, and only spends mod API calls when both hold. An MC upgrade is blocked when no loader build exists for the target MC version; a loader build bump is blocked when it does not belong to the profile's MC line
+- Instance status line shared by `manage.cgi` and `mods.cgi` (runtime, monitor, loader/MC/Java, firewall)
+- Update hint at the top of `manage.cgi` linking into the upgrades section
+
+### Changed
+
+- `manage.cgi` grouped into Controls, Monitoring and schedule, Upgrades and maintenance, Access, Configuration and diagnostics, and Remove instance
+- `mods.cgi` reordered: jobs, upgrade check, modpack import, mod search, installed mods. Modpack search, browser upload, and own file (FTP/SFTP) are nested collapsibles
+- Loader and MC version lists are fetched on demand and cached instead of on every page load; the upgrade blocks render from cache
+- Mod compatibility is scanned from the mods page on request, no longer during `manage.cgi` rendering
+
+### Fixed
+
+- Upgrade caches moved from `$SERVER_DIR/.webcore/` to the module config directory — no more root writes into game data
+- MC upgrade preflight verifies loader build availability, so an upgrade can no longer fail late inside the worker
+
 ## [0.2.2] - 2026-09-01
 
 ### Added

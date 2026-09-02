@@ -26,6 +26,7 @@ require './lib/server_log.pl';
 
 our (%text, %config, %in, %gconfig);
 our ($module_root, $module_root_directory, $module_name, $config_directory);
+our $current_lang;
 $module_root ||= $module_root_directory;
 $module_root ||= do { (my $d = __FILE__) =~ s{/[^/]+$}{}; $d };
 $main::gconfig{'charset'} = 'utf-8';
@@ -667,7 +668,12 @@ sub _mods_render_instance_jobs_table {
     return unless @inst_jobs;
     @inst_jobs = @inst_jobs[0 .. ($max_rows - 1)] if @inst_jobs > $max_rows;
 
-    print "<h4>" . &html_escape($text{'jobs_title'} || 'Jobs') . "</h4>\n";
+    my $running = grep { ($_->{'status'} // '') eq 'running' } @inst_jobs;
+    print &ui_collapsible_start($text{'jobs_title'} || 'Jobs',
+        id    => 'jobs',
+        force => ($running ? 1 : 0),
+        badge => &job_status_label($inst_jobs[0]{'status'}, \%text),
+    );
     my $labels = &job_action_labels_hash(\%text);
     my %status_icons = (
         running => '&#x23F3;',
@@ -717,6 +723,7 @@ sub _mods_render_instance_jobs_table {
         '100%',
         \@rows,
     );
+    print &ui_collapsible_end();
 }
 
 sub _mods_steamcmd_worker_cmd {
@@ -930,48 +937,127 @@ sub _mods_launch_mod_install {
     return $job_id;
 }
 
-sub _mods_render_mc_upgrade_compat_section {
-    my ($instance_id, $server_dir, $profile, $compat_report, $selected_mc) = @_;
+sub _mods_pick_selected {
+    my ($wanted, $candidates) = @_;
+    return '' unless ref($candidates) eq 'ARRAY' && @$candidates;
+    $wanted //= '';
+    $wanted =~ s/[^0-9.]//g;
+    return $wanted if $wanted =~ /^[0-9.]+$/ && grep { $_ eq $wanted } @$candidates;
+    return $candidates->[0];
+}
+
+sub _mods_upgrade_check_form {
+    my ($instance_id, $mode, $field, $selected, $candidates, $btn_label, $label) = @_;
+    my $out = &ui_form_start('mods.cgi', 'post');
+    $out .= &ui_hidden('instance_id', &html_escape($instance_id));
+    $out .= &ui_hidden('action', 'upgrade_check');
+    $out .= &ui_hidden('check_mode', $mode);
+    $out .= &ui_hidden('xnavigation', '1');
+    $out .= &ui_table_start('', undef, 2);
+    $out .= &ui_table_row($label,
+        &ui_select($field, $selected, [ map { [ $_, $_ ] } @$candidates ]));
+    $out .= &ui_table_end();
+    $out .= &ui_submit($btn_label, undef, undef, undef, 'btn-default');
+    $out .= &ui_form_end();
+    return $out;
+}
+
+# Ordered upgrade check: chosen dimension → opposite dimension → mods.
+# Version lists come from cache only, so opening the page stays offline.
+sub _mods_render_upgrade_check_section {
+    my ($instance_id, $server_dir, $profile, $chain, $sel) = @_;
     return unless ref($profile) eq 'HASH';
     return unless &mc_loader_is_modded($profile->{'loader'} // '');
     return if &user_is_readonly($instance_id);
     return unless &user_can_operate($instance_id);
+    $sel = {} unless ref($sel) eq 'HASH';
 
-    my @avail = &mc_list_mc_versions();
-    my @candidates = &mc_upgrade_mc_upgrade_candidates($profile, \@avail);
-    return unless @candidates;
+    my $loader = $profile->{'loader'} // '';
+    my $cur_mc = $profile->{'mc_version'} // '';
+    my @mc_avail = &mc_upgrade_cached_mc_versions({ no_fetch => 1 });
+    my @mc_cand = @mc_avail
+        ? &mc_upgrade_mc_upgrade_candidates($profile, \@mc_avail) : ();
+    my @ld_avail = &mc_upgrade_cached_loader_versions($loader, $cur_mc, { no_fetch => 1 });
+    my @ld_cand = @ld_avail
+        ? &mc_upgrade_loader_upgrade_candidates($profile, \@ld_avail) : ();
+    my $lists_loaded = (@mc_avail || @ld_avail) ? 1 : 0;
 
-    $selected_mc //= $candidates[0];
-    $selected_mc =~ s/[^0-9.]//g;
-    if ($selected_mc !~ /^[0-9.]+$/ || !grep { $_ eq $selected_mc } @candidates) {
-        $selected_mc = $candidates[0];
+    my $has_chain = ref($chain) eq 'HASH' ? 1 : 0;
+    my $badge = '';
+    if ($has_chain) {
+        my $mods_step = ref($chain->{'steps'}) eq 'HASH'
+            ? ($chain->{'steps'}{'mods'} // {}) : {};
+        my $issues = $mods_step->{'issues'} // 0;
+        $badge = $issues > 0
+            ? &text('mods_badge_compat_issues', $issues)
+            : ($text{'mods_badge_compat_clean'} || '');
+    } elsif (!$lists_loaded) {
+        $badge = $text{'mods_badge_versions_unloaded'} || '';
+    } elsif (@mc_cand || @ld_cand) {
+        my @parts;
+        push @parts, &text('mods_badge_mc_available', $mc_cand[0]) if @mc_cand;
+        push @parts, &text('mods_badge_loader_builds', scalar @ld_cand) if @ld_cand;
+        $badge = join(' · ', @parts);
+    } else {
+        $badge = $text{'mods_badge_no_updates'} || '';
     }
 
-    my $safe_id = &html_escape($instance_id);
-    print "<h4>" . &html_escape($text{'mc_mods_compat_section_title'}
-        || 'Mod compatibility (MC upgrade)') . "</h4>\n";
-    print "<p>" . &html_escape($text{'mc_mods_compat_hint'}
-        || 'Pick a target Minecraft version and run the check. Only indexed Modrinth/CurseForge mods are scanned; this may take a few seconds.')
-        . "</p>\n";
-    print &ui_form_start('mods.cgi', 'post');
-    print &ui_hidden('instance_id', $safe_id);
-    print &ui_hidden('action', 'mod_compat_scan');
-    print &ui_hidden('xnavigation', '1');
-    print &ui_table_start('', undef, 2);
-    my @opts = map { [ $_, $_ ] } @candidates;
-    print &ui_table_row(
-        $text{'mc_mods_compat_target'} || 'Target Minecraft version',
-        &ui_select('compat_mc', $selected_mc, \@opts),
+    print &ui_collapsible_start(
+        $text{'mc_upgrade_check_title'} || 'Upgrade check',
+        id    => 'upgrade-check',
+        force => $has_chain,
+        badge => $badge,
+        hint  => ($text{'mc_upgrade_check_hint'} || ''),
     );
-    print &ui_table_end();
-    print &ui_submit($text{'mc_mods_compat_scan_btn'} || 'Check compatibility',
-        undef, undef, undef, 'btn-default');
-    print &ui_form_end();
 
-    if (ref($compat_report) eq 'HASH' && ($compat_report->{'total'} // 0) > 0) {
-        my $html = &mc_upgrade_render_mod_compat_report_html($compat_report);
+    if (@mc_cand) {
+        print _mods_upgrade_check_form(
+            $instance_id, 'mc', 'compat_mc',
+            _mods_pick_selected($sel->{'mc'}, \@mc_cand), \@mc_cand,
+            $text{'mc_upgrade_check_btn_mc'} || 'Check Minecraft version',
+            $text{'mc_mods_compat_target'} || 'Target Minecraft version',
+        );
+    }
+    if (@ld_cand) {
+        print _mods_upgrade_check_form(
+            $instance_id, 'loader', 'compat_loader',
+            _mods_pick_selected($sel->{'loader'}, \@ld_cand), \@ld_cand,
+            $text{'mc_upgrade_check_btn_loader'} || 'Check loader build',
+            $text{'mc_upgrade_check_loader_target'} || 'Target loader build',
+        );
+    }
+    if (@mc_cand || @ld_cand) {
+        my $rec = &ui_form_start('mods.cgi', 'post');
+        $rec .= &ui_hidden('instance_id', &html_escape($instance_id));
+        $rec .= &ui_hidden('action', 'upgrade_check');
+        $rec .= &ui_hidden('check_mode', 'recommended');
+        $rec .= &ui_hidden('xnavigation', '1');
+        $rec .= &ui_submit($text{'mc_upgrade_check_btn_recommended'} || 'Check recommended upgrade',
+            undef, undef, undef, 'btn-default');
+        $rec .= &ui_form_end();
+        print _mods_inline_action_btn($rec);
+    } elsif ($lists_loaded) {
+        print "<p>" . &html_escape($text{'mc_upgrade_check_no_candidates'}
+            || 'No newer Minecraft version or loader build available.') . "</p>\n";
+    }
+
+    my $reload = &ui_form_start('mods.cgi', 'post');
+    $reload .= &ui_hidden('instance_id', &html_escape($instance_id));
+    $reload .= &ui_hidden('action', 'upgrade_versions');
+    $reload .= &ui_hidden('xnavigation', '1');
+    $reload .= &ui_submit(
+        $lists_loaded
+            ? ($text{'mc_upgrade_versions_reload_btn'} || 'Reload versions')
+            : ($text{'mc_upgrade_versions_load_btn'} || 'Load versions'),
+        undef, undef, undef, 'btn-default');
+    $reload .= &ui_form_end();
+    print _mods_inline_action_btn($reload);
+
+    if ($has_chain) {
+        my $html = &mc_upgrade_render_check_chain_html($chain);
         print $html if defined $html && $html ne '';
     }
+    print &ui_collapsible_end();
 }
 
 my $instance_id = &sanitize_input($in{'instance_id'} || $in{'user'} || '');
@@ -997,14 +1083,16 @@ $page = ($page =~ /^\d+$/ && $page > 0) ? int($page) : 1;
 my $mod_q = _mods_mod_search_query($in{'mod_q'} // '');
 my $pack_q = _mods_pack_search_query($in{'pack_q'} // '');
 
-my $mods_compat_report;
+my $mods_upgrade_chain;
 my $mods_compat_mc = $in{'compat_mc'} // '';
 $mods_compat_mc =~ s/[^0-9.]//g;
+my $mods_compat_loader = $in{'compat_loader'} // '';
+$mods_compat_loader =~ s/[^0-9.]//g;
 
 &user_can_manage($instance_id)
     or &error($text{'err_acl_admin_only'} || 'Access denied');
 
-if ($action ne '' && $action !~ /^(?:monitor|poll_monitor|monitor_disable|monitor_reset|start|stop|mod_enable|mod_disable|mod_delete|mod_versions|mod_search_versions|mod_install_preview|mc_mod_install|modpack_import|modpack_import_path|modpack_import_remote|modpack_import_resume|mod_compat_scan)$/) {
+if ($action ne '' && $action !~ /^(?:monitor|poll_monitor|monitor_disable|monitor_reset|start|stop|mod_enable|mod_disable|mod_delete|mod_versions|mod_search_versions|mod_install_preview|mc_mod_install|modpack_import|modpack_import_path|modpack_import_remote|modpack_import_resume|mod_compat_scan|upgrade_check|upgrade_versions)$/) {
     &error($text{'err_invalid_action'} || 'Invalid action');
 }
 if ($action ne '' && $action !~ /^(?:monitor|poll_monitor)$/ && &user_is_readonly($instance_id)) {
@@ -1423,7 +1511,8 @@ if ($action eq 'modpack_import_resume') {
     _mods_redirect_job_live($job_id, $instance_id, return_target => $return_target);
 }
 
-if ($action eq 'mod_compat_scan') {
+# `mod_compat_scan` is the 0.2.2 name and stays as an alias for old links.
+if ($action eq 'upgrade_check' || $action eq 'mod_compat_scan') {
     $ENV{'REQUEST_METHOD'} eq 'POST'
         or &error($text{'err_invalid_action'} || 'Invalid action');
     &user_can_operate($instance_id)
@@ -1431,16 +1520,52 @@ if ($action eq 'mod_compat_scan') {
     &mc_mod_ui_ready($profile, $server_dir)
         or &error($text{'mc_mods_page_gate_not_ready'}
             || 'Mods page is available after Minecraft Java and loader setup is complete.');
-    my $target = $in{'compat_mc'} // '';
-    $target =~ s/[^0-9.]//g;
-    my $verr = &mc_upgrade_validate_mc_target($profile, $target);
-    if ($verr) {
-        my $key = "mc_upgrade_mc_$verr";
-        &error($text{$key} || $text{'mc_upgrade_mc_invalid_target'}
-            || 'Invalid Minecraft version for this loader profile.');
+    my $check_mode = $in{'check_mode'} // '';
+    $check_mode =~ s/[^a-z]//g;
+    $check_mode = 'mc' unless $check_mode =~ /^(?:mc|loader|recommended)$/;
+
+    if ($check_mode eq 'recommended') {
+        my @ld_avail = &mc_upgrade_cached_loader_versions(
+            $profile->{'loader'} // '', $profile->{'mc_version'} // '', {});
+        my @ld_cand = &mc_upgrade_loader_upgrade_candidates($profile, \@ld_avail);
+        if (@ld_cand) {
+            $check_mode = 'loader';
+            $mods_compat_loader = $ld_cand[0];
+        } else {
+            my @mc_avail = &mc_upgrade_cached_mc_versions({});
+            my @mc_cand = &mc_upgrade_mc_upgrade_candidates($profile, \@mc_avail);
+            &error($text{'mc_upgrade_check_no_candidates'}
+                || 'No newer Minecraft version or loader build available.') unless @mc_cand;
+            $check_mode = 'mc';
+            $mods_compat_mc = $mc_cand[0];
+        }
     }
-    $mods_compat_mc = $target;
-    $mods_compat_report = &mc_upgrade_mod_compat_report($server_dir, $profile, $target);
+
+    $mods_upgrade_chain = &mc_upgrade_check_chain($server_dir, $profile, {
+        mode                  => $check_mode,
+        target_mc_version     => $mods_compat_mc,
+        target_loader_version => $mods_compat_loader,
+    }, {});
+}
+
+if ($action eq 'upgrade_versions') {
+    $ENV{'REQUEST_METHOD'} eq 'POST'
+        or &error($text{'err_invalid_action'} || 'Invalid action');
+    &user_can_operate($instance_id)
+        or &error($text{'err_acl_admin_only'} || 'Access denied');
+    my $loader = $profile && ref($profile) eq 'HASH' ? ($profile->{'loader'} // '') : '';
+    my $mc     = $profile && ref($profile) eq 'HASH' ? ($profile->{'mc_version'} // '') : '';
+    &mc_upgrade_cache_forget(&mc_upgrade_version_cache_names($loader, $mc));
+    my @mc_list = &mc_upgrade_cached_mc_versions({ refresh => 1 });
+    my @ld_list = &mc_upgrade_cached_loader_versions($loader, $mc, { refresh => 1 });
+    unless (@mc_list || @ld_list) {
+        &error($text{'mc_upgrade_versions_load_failed'}
+            || 'Could not load version lists — check network access to Mojang/Maven.');
+    }
+    my $url = _mods_page_return_target(
+        $instance_id, $q, $status, $sort, $dir, $page, $mod_q, $pack_q);
+    &redirect("$url#upgrade-check");
+    exit;
 }
 
 if ($action eq 'mod_versions') {
@@ -1845,26 +1970,35 @@ if (($in{'monitor_enabled'} // '') eq '1' && &module_config_flash_consume('monit
 }
 
 print "<h3>" . &html_escape($text{'mc_mods_page_header'} || 'Minecraft mods') . "</h3>\n";
-print "<p><strong>" . &html_escape($text{'mc_mods_page_instance_label'} || 'Instance')
-    . ":</strong> $safe_id<br>\n";
-print "<strong>" . &html_escape($text{'mc_mods_page_status_label'} || 'Status')
-    . ":</strong> " . _mods_status_badge_html($runtime_status) . "</p>\n";
 
 &sync_monitor_job_pointers();
 my $mon_state = &read_monitor_state($server_dir, $config_directory, $instance_id);
 {
     my $mon_status_key = 'monitor_status_' . ($mon_state->{'status'} // 'disabled');
     my $mon_label = $text{$mon_status_key} || ($mon_state->{'status'} // 'disabled');
-    print "<p><strong>" . &html_escape($text{'monitor_col'} || 'Monitor')
-        . ":</strong> " . &html_escape($mon_label);
+    my $profile_html = '';
+    if (ref($profile) eq 'HASH') {
+        my @prof = grep { defined && /\S/ } (
+            &mc_loader_label($profile->{'loader'}, $current_lang // 'de'),
+            $profile->{'mc_version'},
+            'Java ' . int($profile->{'java_major'} // 0),
+        );
+        $profile_html = &html_escape(join(' / ', @prof)) if @prof;
+    }
+    print &ui_instance_status_line(
+        &ui_instance_status_part($text{'mc_mods_page_instance_label'} || 'Instance', $safe_id),
+        &ui_instance_status_part($text{'mc_mods_page_status_label'} || 'Status',
+            _mods_status_badge_html($runtime_status)),
+        &ui_instance_status_part($text{'monitor_col'} || 'Monitor', &html_escape($mon_label)),
+        &ui_instance_status_part($text{'mc_profile_loader'} || 'Loader', $profile_html),
+    );
     if (($mon_state->{'last_restart_at'} // 0) > 0) {
         my $lr_html = _mods_last_run_row_html(
             $mon_state->{'last_restart_at'}, 'monitor_last_restart',
             $mon_state->{'last_restart_job'}, $instance_id);
-        print "<br><strong>" . &html_escape($text{'monitor_last_restart_col'} || 'Last auto-restart')
-            . ":</strong> " . $lr_html;
+        print "<p><strong>" . &html_escape($text{'monitor_last_restart_col'} || 'Last auto-restart')
+            . ":</strong> " . $lr_html . "</p>\n";
     }
-    print "</p>\n";
     if (&user_can_operate($instance_id) && !&user_is_readonly($instance_id)) {
         my $mon_s = $mon_state->{'status'} // 'disabled';
         print "<div style='margin:0 0 12px 0'>\n";
@@ -1940,11 +2074,21 @@ print "</div>\n";
 
 _mods_render_instance_jobs_table($instance_id, 8);
 
-print "<h4>" . &html_escape($text{'mc_modpack_section'} || 'Import modpack') . "</h4>\n";
-print "<p>" . &html_escape($text{'mc_modpack_section_desc'}
-    || 'Search modpacks online or import an existing pack file from server path.')
-    . "</p>\n";
+_mods_render_upgrade_check_section(
+    $instance_id, $server_dir, $profile, $mods_upgrade_chain,
+    { mc => $mods_compat_mc, loader => $mods_compat_loader });
+
+my ($resume_job_id, $resume_prog) =
+    _mods_find_resumable_modpack_job($instance_id, $server_dir);
+
 &module_config_sync_in();
+print &ui_collapsible_start($text{'mc_modpack_section'} || 'Import modpack',
+    id    => 'modpack',
+    force => ($resume_job_id ? 1 : 0),
+    open  => (length($pack_q) >= 2 ? 1 : 0),
+    badge => ($resume_job_id ? ($text{'mods_badge_modpack_resumable'} || '') : ''),
+    hint  => ($text{'mc_modpack_section_desc'} || ''),
+);
 if (&modpack_cf_auto_resume_enabled()) {
     print "<p><em>" . &html_escape($text{'mc_modpack_auto_resume_active'}
         || 'Auto-resume enabled: jobs continue after rate-limit pauses.')
@@ -1955,7 +2099,10 @@ if (&modpack_cf_auto_resume_enabled()) {
         . "</i></small></p>\n";
 }
 
-print "<h4>" . &html_escape($text{'mc_modpack_search_section'} || 'Modpack search') . "</h4>\n";
+print &ui_collapsible_start($text{'mc_modpack_search_section'} || 'Modpack search',
+    id   => 'modpack-search',
+    open => (length($pack_q) >= 2 ? 1 : 0),
+);
 print &ui_form_start('mods.cgi', 'get');
 print &ui_hidden('instance_id', $safe_id);
 print &ui_hidden('xnavigation', '1');
@@ -2055,10 +2202,12 @@ if (length($pack_q) >= 2) {
     }
 }
 
-print "<h4>" . &html_escape($text{'mc_modpack_upload_section'} || 'Browser upload') . "</h4>\n";
-print "<p>" . &html_escape($text{'mc_modpack_upload_hint'}
-    || 'Small packs can be uploaded here. If the upload fails, use FTP/SFTP and the path form below.')
-    . "</p>\n";
+print &ui_collapsible_end();
+
+print &ui_collapsible_start($text{'mc_modpack_upload_section'} || 'Browser upload',
+    id   => 'modpack-upload',
+    hint => ($text{'mc_modpack_upload_hint'} || ''),
+);
 unless (&user_is_readonly($instance_id)) {
     print &ui_form_start('mods.cgi', 'form-data');
     print &ui_hidden('instance_id', $safe_id);
@@ -2079,10 +2228,12 @@ unless (&user_is_readonly($instance_id)) {
     print &ui_form_end();
 }
 
-print "<h4>" . &html_escape($text{'mc_modpack_path_section'} || 'Own file (FTP/SFTP)') . "</h4>\n";
-print "<p>" . &html_escape($text{'mc_modpack_server_limit_hint'}
-    || 'Server-side import supports large packs via path or search.')
-    . "</p>\n";
+print &ui_collapsible_end();
+
+print &ui_collapsible_start($text{'mc_modpack_path_section'} || 'Own file (FTP/SFTP)',
+    id   => 'modpack-path',
+    hint => ($text{'mc_modpack_server_limit_hint'} || ''),
+);
 my $filemin_html = '';
 if ($server_dir && -d $server_dir) {
     my $enc = &server_log_filemin_path_urlencode($server_dir);
@@ -2112,15 +2263,23 @@ print &ui_submit($text{'mc_modpack_import_path_btn'} || 'Import',
     undef, undef, undef, 'btn-primary');
 print &ui_form_end();
 
-_mods_render_modpack_resume_ui(
-    $instance_id, $server_dir, undef, undef,
-    $pack_q, $q, $status, $sort, $dir, $page, $mod_q
-);
+print &ui_collapsible_end();
 
-print "<h4>" . &html_escape($text{'mc_mods_section'} || 'Mods / plugins') . "</h4>\n";
-print "<p>" . &html_escape($text{'mc_mods_section_desc'}
-    || 'Search and install mods or Paper plugins. Only server-compatible entries are shown; loader and MC version must match the profile.')
-    . "</p>\n";
+if ($resume_job_id) {
+    print "<a id=\"modpack-resume\"></a>\n";
+    _mods_render_modpack_resume_ui(
+        $instance_id, $server_dir, $resume_job_id, $resume_prog,
+        $pack_q, $q, $status, $sort, $dir, $page, $mod_q
+    );
+}
+
+print &ui_collapsible_end();
+
+print &ui_collapsible_start($text{'mc_mods_section'} || 'Mods / plugins',
+    id   => 'mod-search',
+    open => (length($mod_q) >= 2 ? 1 : 0),
+    hint => ($text{'mc_mods_section_desc'} || ''),
+);
 print &ui_form_start('mods.cgi', 'get');
 print &ui_hidden('instance_id', $safe_id);
 print &ui_hidden('xnavigation', '1');
@@ -2243,6 +2402,8 @@ if (length($mod_q) >= 2) {
     }
 }
 
+print &ui_collapsible_end();
+
 my $all_mods = &list_installed_mods($server_dir, $profile);
 my $filtered_mods = &filter_installed_mods($all_mods, {
     q      => $q,
@@ -2254,10 +2415,11 @@ $total_mods ||= 0;
 $total_pages ||= 1;
 $page = $total_pages if $page > $total_pages;
 
-_mods_render_mc_upgrade_compat_section(
-    $instance_id, $server_dir, $profile, $mods_compat_report, $mods_compat_mc);
-
-print "<h4>" . &html_escape($text{'mc_mods_page_installed_title'} || 'Installed mods') . "</h4>\n";
+print &ui_collapsible_start($text{'mc_mods_page_installed_title'} || 'Installed mods',
+    id    => 'installed-mods',
+    open  => 1,
+    badge => &text('mods_badge_installed_count', $total_mods),
+);
 
 print &ui_form_start('mods.cgi', 'get');
 print &ui_hidden('instance_id', $safe_id);
@@ -2422,5 +2584,8 @@ if ($total_mods == 0) {
 print "<p><small>" . &html_escape($text{'mc_mods_page_restart_hint'}
     || 'Hint: restart the server after enable/disable so the loader picks up changes.')
     . "</small></p>\n";
+print &ui_collapsible_end();
+
+print &ui_collapsible_state_script();
 
 &footer('', '');

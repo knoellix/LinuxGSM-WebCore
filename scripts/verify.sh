@@ -81,6 +81,8 @@ critical_tests=(
   "t/test_mc_mods.pl"
   "t/test_mc_mod_deps.pl"
   "t/test_mc_upgrade.pl"
+  "t/test_ui_collapsible.pl"
+  "t/test_page_layout.pl"
   "t/test_mc_modpack.pl"
   "t/test_jobs.pl"
   "t/test_live_log.pl"

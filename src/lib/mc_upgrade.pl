@@ -6,6 +6,140 @@ our @MC_UPGRADE_TEST_LOADER_VERSIONS;
 our @MC_UPGRADE_TEST_MC_VERSIONS;
 our $MC_UPGRADE_TEST_MC_VERSIONS_OVERRIDE;
 our $MC_UPGRADE_TEST_LOADER_VERSIONS_OVERRIDE;
+our ($module_config_directory, $config_directory);
+our %text;
+
+use constant MC_UPGRADE_VERSION_CACHE_TTL => 3600;
+use constant MC_UPGRADE_COMPAT_CACHE_TTL  => 300;
+
+# Cache root for version lists and compat reports. Lives in the module config
+# directory on purpose: the CGI runs as root and must not create root-owned
+# files inside $SERVER_DIR (see security-isolation.mdc).
+sub _mc_upgrade_cache_root {
+    my $base = $module_config_directory || '';
+    $base = $config_directory || '' unless $base =~ m{^/};
+    return undef unless $base =~ m{^/} && -d $base;
+    my $dir = "$base/upgrade_cache";
+    return $dir if -d $dir;
+    mkdir($dir, 0700) or return undef;
+    return -d $dir ? $dir : undef;
+}
+
+sub _mc_upgrade_cache_file {
+    my ($name) = @_;
+    $name //= '';
+    $name =~ s/[^a-zA-Z0-9._-]+/_/g;
+    return undef unless $name =~ /\S/;
+    my $root = _mc_upgrade_cache_root();
+    return undef unless $root;
+    return "$root/$name.json";
+}
+
+sub _mc_upgrade_cache_read {
+    my ($name, $ttl) = @_;
+    my $path = _mc_upgrade_cache_file($name);
+    return undef unless $path && -f $path;
+    my $age = time() - (stat($path))[9];
+    return undef if $age < 0 || $age >= ($ttl // 0);
+    open(my $fh, '<', $path) or return undef;
+    local $/;
+    my $raw = <$fh>;
+    close($fh);
+    return undef unless defined $raw && $raw =~ /\S/;
+    require JSON::PP;
+    my $data = eval { JSON::PP::decode_json($raw) };
+    return ref($data) eq 'HASH' ? $data : undef;
+}
+
+sub _mc_upgrade_cache_write {
+    my ($name, $data) = @_;
+    return 0 unless ref($data) eq 'HASH';
+    my $path = _mc_upgrade_cache_file($name);
+    return 0 unless $path;
+    require JSON::PP;
+    my $json = eval { JSON::PP::encode_json($data) };
+    return 0 unless defined $json;
+    open(my $fh, '>', $path) or return 0;
+    print $fh $json;
+    close($fh) or return 0;
+    chmod(0600, $path);
+    return 1;
+}
+
+sub mc_upgrade_cache_forget {
+    my (@names) = @_;
+    my $removed = 0;
+    for my $name (@names) {
+        my $path = _mc_upgrade_cache_file($name);
+        next unless $path && -f $path;
+        $removed++ if unlink($path);
+    }
+    return $removed;
+}
+
+# Cached loader build list for an MC version.
+#   refresh  => 1  discard cache and fetch
+#   no_fetch => 1  cache-only (page render path, keeps the overview offline)
+sub mc_upgrade_cached_loader_versions {
+    my ($loader, $mc, $opts) = @_;
+    $opts = {} unless ref($opts) eq 'HASH';
+    return () unless mc_loader_is_modded($loader // '');
+    $mc //= '';
+    $mc =~ s/[^0-9.]//g;
+    return () unless $mc =~ /^[0-9.]+$/;
+    my $name = "loader_${loader}_${mc}";
+    if (!$opts->{'refresh'}) {
+        my $hit = _mc_upgrade_cache_read($name, MC_UPGRADE_VERSION_CACHE_TTL);
+        if (ref($hit) eq 'HASH' && ref($hit->{'versions'}) eq 'ARRAY') {
+            return @{ $hit->{'versions'} };
+        }
+        return () if $opts->{'no_fetch'};
+    }
+    my @list = _mc_upgrade_avail_loader_versions($loader, $mc);
+    _mc_upgrade_cache_write($name, { versions => \@list, loader => $loader, mc_version => $mc })
+        if @list;
+    return @list;
+}
+
+sub mc_upgrade_cached_mc_versions {
+    my ($opts) = @_;
+    $opts = {} unless ref($opts) eq 'HASH';
+    if (!$opts->{'refresh'}) {
+        my $hit = _mc_upgrade_cache_read('mc_versions', MC_UPGRADE_VERSION_CACHE_TTL);
+        if (ref($hit) eq 'HASH' && ref($hit->{'versions'}) eq 'ARRAY') {
+            return @{ $hit->{'versions'} };
+        }
+        return () if $opts->{'no_fetch'};
+    }
+    my @list = _mc_upgrade_avail_mc_versions();
+    _mc_upgrade_cache_write('mc_versions', { versions => \@list }) if @list;
+    return @list;
+}
+
+sub mc_upgrade_version_cache_names {
+    my ($loader, $mc) = @_;
+    my @names = ('mc_versions');
+    $mc //= '';
+    $mc =~ s/[^0-9.]//g;
+    push @names, "loader_${loader}_${mc}"
+        if mc_loader_is_modded($loader // '') && $mc =~ /^[0-9.]+$/;
+    return @names;
+}
+
+# Loader builds that actually belong to an MC line — the missing precondition
+# for an MC upgrade (the wizard MC list alone says nothing about loader builds).
+sub mc_upgrade_loader_builds_for_mc {
+    my ($loader, $mc, $opts) = @_;
+    $opts = {} unless ref($opts) eq 'HASH';
+    return () unless mc_loader_is_modded($loader // '');
+    $mc //= '';
+    $mc =~ s/[^0-9.]//g;
+    return () unless $mc =~ /^[0-9.]+$/;
+    my @avail = ref($opts->{'loader_versions'}) eq 'ARRAY'
+        ? @{ $opts->{'loader_versions'} }
+        : mc_upgrade_cached_loader_versions($loader, $mc, $opts);
+    return grep { mc_loader_version_matches_mc($loader, $mc, $_) } @avail;
+}
 
 sub mc_upgrade_set_loader_versions_for_test {
     @MC_UPGRADE_TEST_LOADER_VERSIONS = @_;
@@ -259,20 +393,43 @@ sub mc_upgrade_collect_index_mods {
 }
 
 # Read-only compat scan for an MC upgrade target (no mod auto-update).
-sub _mc_upgrade_compat_cache_path {
-    my ($server_dir, $target_mc) = @_;
+# The cache key carries the loader family because mod availability is scoped to
+# (loader family, MC version) on both Modrinth and CurseForge.
+sub _mc_upgrade_compat_cache_name {
+    my ($server_dir, $loader, $target_mc) = @_;
     return undef unless defined $server_dir && $server_dir ne '';
+    $loader //= '';
+    $loader =~ s/[^a-z]//g;
+    return undef unless $loader =~ /\S/;
+    $target_mc //= '';
     $target_mc =~ s/[^0-9.]//g;
     return undef unless $target_mc =~ /^[0-9.]+$/;
-    my $safe = $target_mc;
-    $safe =~ s/[^0-9.]/_/g;
-    return "$server_dir/.webcore/mc_compat_$safe.json";
+    my $key = $server_dir;
+    $key =~ s{^/+}{};
+    $key =~ s/[^a-zA-Z0-9]+/_/g;
+    $key = substr($key, 0, 60);
+    my $safe_mc = $target_mc;
+    $safe_mc =~ s/\./_/g;
+    return "compat_${key}_${loader}_${safe_mc}";
+}
+
+# Remove root-owned caches written into $SERVER_DIR by module versions <= 0.2.2.
+sub _mc_upgrade_drop_legacy_compat_cache {
+    my ($server_dir) = @_;
+    return 0 unless defined $server_dir && $server_dir =~ m{^/} && -d "$server_dir/.webcore";
+    my $removed = 0;
+    for my $path (glob("$server_dir/.webcore/mc_compat_*.json")) {
+        next unless -f $path;
+        $removed++ if unlink($path);
+    }
+    return $removed;
 }
 
 sub mc_upgrade_mod_compat_report {
     my ($server_dir, $profile, $target_mc_version) = @_;
     my $empty = {
         target_mc_version    => '',
+        loader               => '',
         total                => 0,
         compatible           => [],
         incompatible         => [],
@@ -285,22 +442,19 @@ sub mc_upgrade_mod_compat_report {
     $clean_mc =~ s/[^0-9.]//g;
     return $empty unless $clean_mc =~ /^[0-9.]+$/;
 
-    my $cache_path = _mc_upgrade_compat_cache_path($server_dir, $clean_mc);
-    if ($cache_path && -f $cache_path) {
-        my $age = time() - (stat($cache_path))[9];
-        if ($age >= 0 && $age < 300) {
-            require JSON::PP;
-            open(my $cfh, '<', $cache_path) or undef $cache_path;
-            if ($cfh) {
-                local $/;
-                my $cached = eval { JSON::PP::decode_json(<$cfh>) };
-                close($cfh);
-                if (ref($cached) eq 'HASH'
-                    && ($cached->{'target_mc_version'} // '') eq $clean_mc
-                    && ref($cached->{'compatible'}) eq 'ARRAY') {
-                    return $cached;
-                }
-            }
+    my $loader = $profile->{'loader'} // '';
+    $loader =~ s/[^a-z]//g;
+
+    _mc_upgrade_drop_legacy_compat_cache($server_dir);
+
+    my $cache_name = _mc_upgrade_compat_cache_name($server_dir, $loader, $clean_mc);
+    if ($cache_name) {
+        my $cached = _mc_upgrade_cache_read($cache_name, MC_UPGRADE_COMPAT_CACHE_TTL);
+        if (ref($cached) eq 'HASH'
+            && ($cached->{'target_mc_version'} // '') eq $clean_mc
+            && ($cached->{'loader'} // '') eq $loader
+            && ref($cached->{'compatible'}) eq 'ARRAY') {
+            return $cached;
         }
     }
 
@@ -331,6 +485,7 @@ sub mc_upgrade_mod_compat_report {
 
     my $report = {
         target_mc_version    => $clean_mc,
+        loader               => $loader,
         total                => scalar @$projects,
         compatible           => \@compatible,
         incompatible         => \@incompatible,
@@ -338,20 +493,227 @@ sub mc_upgrade_mod_compat_report {
         unchecked_curseforge => \@unchecked_cf,
     };
 
-    if ($cache_path) {
-        my $cache_dir = $cache_path;
-        $cache_dir =~ s|/[^/]+$||;
-        if (-d $cache_dir || mkdir($cache_dir, 0755)) {
-            require JSON::PP;
-            my $json = JSON::PP::encode_json($report);
-            if (open(my $wfh, '>', $cache_path)) {
-                print $wfh $json;
-                close($wfh);
-            }
-        }
-    }
+    _mc_upgrade_cache_write($cache_name, $report) if $cache_name;
 
     return $report;
+}
+
+# Ordered upgrade check. The chosen dimension is validated first, then the
+# opposite dimension, and only when both hold do we spend API calls on mods.
+#   $target = { mode => 'mc',     target_mc_version     => '26.2' }
+#           | { mode => 'loader', target_loader_version => '26.1.2.99' }
+#   $opts   = { skip_mods => 1, loader_versions => [...], mc_versions => [...],
+#               refresh => 1, no_fetch => 1 }
+sub mc_upgrade_check_chain {
+    my ($server_dir, $profile, $target, $opts) = @_;
+    $target = {} unless ref($target) eq 'HASH';
+    $opts   = {} unless ref($opts) eq 'HASH';
+    my $mode = ($target->{'mode'} // '') eq 'loader' ? 'loader' : 'mc';
+
+    my %chain = (
+        mode       => $mode,
+        order      => [ 'mc', 'loader', 'mods' ],
+        ok         => 0,
+        blocked_at => undef,
+        steps      => {
+            mc     => { status => 'skipped' },
+            loader => { status => 'skipped' },
+            mods   => { status => 'skipped' },
+        },
+    );
+
+    unless (ref($profile) eq 'HASH' && mc_loader_is_modded($profile->{'loader'} // '')) {
+        $chain{'blocked_at'} = $mode;
+        $chain{'steps'}{$mode} = { status => 'fail', err => 'loader_not_modded' };
+        return \%chain;
+    }
+
+    my $loader = $profile->{'loader'} // '';
+    my $cur_mc = $profile->{'mc_version'} // '';
+    $cur_mc =~ s/[^0-9.]//g;
+    my $cur_pin = $profile->{'loader_version'} // '';
+
+    if ($mode eq 'mc') {
+        my $target_mc = $target->{'target_mc_version'} // '';
+        $target_mc =~ s/[^0-9.]//g;
+        my $verr = mc_upgrade_validate_mc_target($profile, $target_mc, $opts->{'mc_versions'});
+        if ($verr) {
+            $chain{'steps'}{'mc'} = { status => 'fail', err => $verr, value => $target_mc };
+            $chain{'blocked_at'} = 'mc';
+            return \%chain;
+        }
+        $chain{'steps'}{'mc'} = { status => 'ok', value => $target_mc, from => $cur_mc };
+
+        my @builds = mc_upgrade_loader_builds_for_mc($loader, $target_mc, $opts);
+        if (!@builds) {
+            $chain{'steps'}{'loader'} = {
+                status => 'fail',
+                err    => 'loader_no_build_for_mc',
+                value  => $target_mc,
+                from   => $cur_pin,
+            };
+            $chain{'blocked_at'} = 'loader';
+            return \%chain;
+        }
+        $chain{'steps'}{'loader'} = {
+            status     => 'ok',
+            value      => $builds[0],
+            from       => $cur_pin,
+            candidates => \@builds,
+            java_major => int(resolve_java_major($target_mc)),
+            needs_java => mc_upgrade_mc_needs_java($profile, $target_mc) ? 1 : 0,
+        };
+        $chain{'target_mc_version'}     = $target_mc;
+        $chain{'target_loader_version'} = $builds[0];
+    } else {
+        my $pin = $target->{'target_loader_version'} // '';
+        my $clean = mc_sanitize_loader_version_pin($loader, $pin);
+        if (!defined $clean) {
+            $chain{'steps'}{'loader'} = { status => 'fail', err => 'invalid_target', value => $pin };
+            $chain{'blocked_at'} = 'loader';
+            return \%chain;
+        }
+        # The MC line gates everything: a build from another line can never apply.
+        unless ($cur_mc =~ /^[0-9.]+$/
+            && mc_loader_version_matches_mc($loader, $cur_mc, $clean)) {
+            $chain{'steps'}{'mc'} = {
+                status => 'fail',
+                err    => 'mc_line_mismatch',
+                value  => $cur_mc,
+            };
+            $chain{'blocked_at'} = 'mc';
+            return \%chain;
+        }
+        # A loader build bump keeps the MC version — mods are checked on that line.
+        $chain{'steps'}{'mc'} = { status => 'unchanged', value => $cur_mc };
+
+        my $verr = mc_upgrade_validate_loader_target($profile, $pin, $opts->{'loader_versions'});
+        if ($verr) {
+            $chain{'steps'}{'loader'} = { status => 'fail', err => $verr, value => $pin };
+            $chain{'blocked_at'} = 'loader';
+            return \%chain;
+        }
+        $chain{'steps'}{'loader'} = { status => 'ok', value => $clean, from => $cur_pin };
+        $chain{'target_mc_version'}     = $cur_mc;
+        $chain{'target_loader_version'} = $clean;
+    }
+
+    if ($opts->{'skip_mods'}) {
+        $chain{'ok'} = 1;
+        return \%chain;
+    }
+
+    my $report = mc_upgrade_mod_compat_report($server_dir, $profile, $chain{'target_mc_version'});
+    my $bad = ref($report) eq 'HASH' ? ($report->{'incompatible'} // []) : [];
+    my $cf  = ref($report) eq 'HASH' ? ($report->{'unchecked_curseforge'} // []) : [];
+    $chain{'steps'}{'mods'} = {
+        status => ((@$bad || @$cf) ? 'warn' : 'ok'),
+        report => $report,
+        issues => scalar(@$bad),
+        total  => ref($report) eq 'HASH' ? ($report->{'total'} // 0) : 0,
+    };
+    $chain{'ok'} = @$bad ? 0 : 1;
+    return \%chain;
+}
+
+sub mc_upgrade_chain_error_text {
+    my ($step, $err, $mode) = @_;
+    $err  //= '';
+    $step //= '';
+    $mode //= '';
+    return '' unless $err =~ /\S/;
+    my @keys;
+    push @keys, 'mc_upgrade_check_blocked_loader_no_build' if $err eq 'loader_no_build_for_mc';
+    push @keys, 'mc_upgrade_check_blocked_mc_mismatch'     if $err eq 'mc_line_mismatch';
+    push @keys, "mc_upgrade_${step}_$err";
+    push @keys, "mc_upgrade_mc_$err" if $mode eq 'mc';
+    push @keys, "mc_upgrade_$err";
+    for my $key (@keys) {
+        return $text{$key} if defined $text{$key} && $text{$key} =~ /\S/;
+    }
+    return $err;
+}
+
+sub _mc_upgrade_chain_step_detail {
+    my ($step, $state, $chain) = @_;
+    $state = {} unless ref($state) eq 'HASH';
+    my $status = $state->{'status'} // 'skipped';
+    if ($status eq 'fail') {
+        return &html_escape(mc_upgrade_chain_error_text($step, $state->{'err'}, $chain->{'mode'}));
+    }
+    if ($step eq 'mods') {
+        return &html_escape($text{'mc_upgrade_check_mods_skipped'}
+            || 'Not checked — earlier step failed.') if $status eq 'skipped';
+        return &html_escape(&text('mc_upgrade_check_mods_detail',
+            ($state->{'issues'} // 0), ($state->{'total'} // 0)));
+    }
+    my $from = $state->{'from'} // '';
+    my $to   = $state->{'value'} // '';
+    my $detail = '';
+    if ($status eq 'unchanged') {
+        $detail = &html_escape(&text('mc_upgrade_check_detail_unchanged', $to));
+    } elsif ($from =~ /\S/ && $from ne $to) {
+        $detail = &html_escape("$from \x{2192} $to");
+    } else {
+        $detail = &html_escape($to);
+    }
+    if ($step eq 'loader' && $state->{'needs_java'} && ($state->{'java_major'} // 0) > 0) {
+        $detail .= "<br><small>"
+            . &html_escape(&text('mc_upgrade_mc_java_change', $state->{'java_major'}))
+            . "</small>";
+    }
+    return $detail;
+}
+
+# HTML for mc_upgrade_check_chain (Webmin CGI context).
+sub mc_upgrade_render_check_chain_html {
+    my ($chain) = @_;
+    return '' unless ref($chain) eq 'HASH';
+    my $steps = ref($chain->{'steps'}) eq 'HASH' ? $chain->{'steps'} : {};
+    my @order = ref($chain->{'order'}) eq 'ARRAY' ? @{ $chain->{'order'} } : qw(mc loader mods);
+
+    my @rows;
+    for my $step (@order) {
+        my $state = $steps->{$step} // {};
+        my $status = $state->{'status'} // 'skipped';
+        push @rows, [
+            &html_escape($text{"mc_upgrade_check_step_$step"} || $step),
+            &html_escape($text{"mc_upgrade_check_status_$status"} || $status),
+            _mc_upgrade_chain_step_detail($step, $state, $chain),
+        ];
+    }
+
+    my $out = &ui_columns_table(
+        [
+            $text{'mc_upgrade_check_col_step'}   || 'Step',
+            $text{'mc_upgrade_check_col_status'} || 'Result',
+            $text{'mc_upgrade_check_col_detail'} || 'Detail',
+        ],
+        '100%',
+        \@rows,
+    );
+
+    my $blocked = $chain->{'blocked_at'} // '';
+    if ($blocked =~ /\S/) {
+        my $state = $steps->{$blocked} // {};
+        $out .= "<div class=\"alert alert-warning\">"
+            . &html_escape(mc_upgrade_chain_error_text($blocked, $state->{'err'}, $chain->{'mode'}))
+            . "</div>\n";
+        return $out;
+    }
+
+    if (($chain->{'mode'} // '') eq 'loader') {
+        $out .= "<p><small>" . &html_escape($text{'mc_upgrade_check_loader_build_note'}
+            || 'Mod sources only know the loader family and the MC version, not the build number.')
+            . "</small></p>\n";
+    }
+
+    my $mods = $steps->{'mods'} // {};
+    if (ref($mods->{'report'}) eq 'HASH') {
+        my $html = mc_upgrade_render_mod_compat_report_html($mods->{'report'});
+        $out .= $html if defined $html && $html ne '';
+    }
+    return $out;
 }
 
 sub mc_upgrade_preflight {
