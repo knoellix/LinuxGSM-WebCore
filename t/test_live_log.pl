@@ -111,4 +111,16 @@ ok(@apt >= 2, 'apt package list defined');
     like($mon_js, qr/\b3000\b/, 'monitor poll interval is 3s');
 }
 
+{
+    my $card_js = job_log_card_client_js(
+        fetch_url_template => 'instance_id=mc1&action=job_log_card&job=__JOB__',
+        loading            => 'Loading…',
+        load_failed        => 'Could not load log.',
+    );
+    like($card_js, qr/fetchQuery/, 'card fetch config uses query string');
+    like($card_js, qr/window\.location\.pathname/, 'card fetch uses current CGI path');
+    like($card_js, qr/r\.json\(\)/, 'card fetch expects JSON payload');
+    unlike($card_js, qr/xnavigation/, 'card fetch must not use xnavigation');
+}
+
 done_testing();

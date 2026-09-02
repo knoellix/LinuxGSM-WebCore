@@ -356,8 +356,182 @@ html.lgsm-job-log-lock body {
 #job_terminal .xterm-decoration-top {
   display: none !important;
 }
+  .lgsm-job-log-view {
+    max-height: min(60vh, 520px);
+    min-height: 180px;
+  }
+  .lgsm-job-log-card {
+    border: 1px solid color-mix(in srgb, currentColor 28%, transparent);
+    border-radius: 4px;
+    margin: 12px 0 0 0;
+    background: color-mix(in srgb, currentColor 4%, transparent);
+    overflow: hidden;
+  }
+  .lgsm-job-log-card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 12px;
+    border-bottom: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+  }
+  .lgsm-job-log-card-head strong {
+    font-weight: 600;
+  }
+  .lgsm-job-log-card-head .lgsm-job-log-card-close {
+    flex-shrink: 0;
+  }
+  .lgsm-job-log-card-body {
+    padding: 10px 12px 12px 12px;
+  }
+  .lgsm-job-log-card-body .lgsm-job-log-view {
+    max-height: min(55vh, 480px);
+    margin: 0;
+  }
 </style>
 CSS
+}
+
+# Inline job log card on manage.cgi / mods.cgi (loaded via fetch, closed in-page).
+sub job_log_inline_card_html {
+    my (%opts) = @_;
+    my $title     = &job_log_utf8_decode($opts{'title'} // '');
+    my $output    = $opts{'output'} // '';
+    my $close_lbl = &job_log_utf8_decode($opts{'close_label'} // 'Close');
+    my $empty_lbl = &job_log_utf8_decode($opts{'empty_label'} // 'No output.');
+    my $card_id   = $opts{'id'} // 'job-log-card';
+    $card_id =~ s/[^a-zA-Z0-9_-]//g;
+    $card_id = 'job-log-card' unless $card_id =~ /\S/;
+
+    my $out = "<div class=\"lgsm-job-log-card\" id=\"" . &html_escape($card_id) . "\">\n";
+    $out .= "<div class=\"lgsm-job-log-card-head\"><strong>"
+        . &html_escape($title) . "</strong>";
+    if ($opts{'close_button'}) {
+        $out .= "<button type=\"button\" class=\"lgsm-job-log-card-close btn btn-default\">"
+            . &html_escape($close_lbl) . "</button>";
+    } elsif (($opts{'close_url'} // '') =~ /\S/) {
+        $out .= "<a href=\"" . &html_escape($opts{'close_url'}) . "\">"
+            . &html_escape($close_lbl) . "</a>";
+    }
+    $out .= "</div>\n<div class=\"lgsm-job-log-card-body\">\n";
+    if (defined $output && $output ne '') {
+        $out .= &job_log_view_block($output, id => 'job_log_card_out');
+    } else {
+        $out .= "<p><i>" . &html_escape($empty_lbl) . "</i></p>\n";
+    }
+    $out .= "</div></div>\n";
+    return $out;
+}
+
+# Log link that opens the inline card (no full page navigation).
+sub job_log_open_link_html {
+    my ($job_id, $label) = @_;
+    $job_id =~ s/[^0-9a-f]//g;
+    $job_id = substr($job_id, 0, 16);
+    return '—' unless length($job_id) == 16;
+    $label = &job_log_utf8_decode($label // 'Log');
+    return "<a href=\"#\" class=\"lgsm-job-log-open\" data-job-id=\""
+        . &html_escape($job_id) . "\">"
+        . &html_escape($label) . "</a>";
+}
+
+# Fetch + open/close for the instance job log card (manage.cgi / mods.cgi).
+sub job_log_card_client_js {
+    my (%opts) = @_;
+    my $fetch_q = $opts{'fetch_url_template'} // '';
+    $fetch_q =~ s/\\/\\\\/g;
+    $fetch_q =~ s/'/\\'/g;
+    my $cfg = &job_log_json_for_script({
+        fetchQuery       => $fetch_q,
+        loading          => &job_log_utf8_decode($opts{'loading'}     // 'Loading…'),
+        loadFailed       => &job_log_utf8_decode($opts{'load_failed'} // 'Could not load log.'),
+        slotId           => 'job-log-card-slot',
+        jobsSectionId    => 'jobs',
+        cardId           => 'job-log-card',
+    });
+    return <<"JS";
+<script>
+(function () {
+  var cfg = $cfg;
+  function slotEl() {
+    return document.getElementById(cfg.slotId);
+  }
+  function ensureSlot() {
+    var jobs = document.getElementById(cfg.jobsSectionId);
+    if (!jobs) return null;
+    var slot = slotEl();
+    if (!slot) {
+      slot = document.createElement("div");
+      slot.id = cfg.slotId;
+      jobs.appendChild(slot);
+    }
+    return slot;
+  }
+  function fetchUrl(jobId) {
+    var q = cfg.fetchQuery.replace("__JOB__", encodeURIComponent(jobId));
+    return window.location.pathname + "?" + q;
+  }
+  function setSlotMessage(slot, msg) {
+    slot.replaceChildren();
+    var p = document.createElement("p");
+    var em = document.createElement("i");
+    em.textContent = msg;
+    p.appendChild(em);
+    slot.appendChild(p);
+  }
+  function setSlotFragment(slot, html) {
+    slot.replaceChildren();
+    var doc = new DOMParser().parseFromString(html, "text/html");
+    var body = doc.body;
+    while (body.firstChild) {
+      slot.appendChild(body.firstChild);
+    }
+  }
+  function openCard(jobId) {
+    if (!jobId) return;
+    var jobs = document.getElementById(cfg.jobsSectionId);
+    if (jobs && jobs.tagName === "DETAILS") { jobs.open = true; }
+    var slot = ensureSlot();
+    if (!slot) return;
+    setSlotMessage(slot, cfg.loading);
+    fetch(fetchUrl(jobId), { credentials: "same-origin", cache: "no-store" })
+      .then(function (r) {
+        if (!r.ok) { throw new Error("http " + r.status); }
+        return r.json();
+      })
+      .then(function (data) {
+        if (!data || !data.ok || !data.html) {
+          throw new Error("invalid payload");
+        }
+        setSlotFragment(slot, data.html);
+        var card = document.getElementById(cfg.cardId);
+        if (card && card.scrollIntoView) {
+          card.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        }
+      })
+      .catch(function () {
+        setSlotMessage(slot, cfg.loadFailed);
+      });
+  }
+  function closeCard() {
+    var slot = slotEl();
+    if (slot) { slot.replaceChildren(); }
+  }
+  document.addEventListener("click", function (ev) {
+    var open = ev.target.closest(".lgsm-job-log-open");
+    if (open) {
+      ev.preventDefault();
+      openCard(open.getAttribute("data-job-id") || "");
+      return;
+    }
+    if (ev.target.closest(".lgsm-job-log-card-close")) {
+      ev.preventDefault();
+      closeCard();
+    }
+  });
+})();
+</script>
+JS
 }
 
 sub job_log_view_page_open {

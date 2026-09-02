@@ -72,16 +72,18 @@ subtest 'mods.cgi modpack sources are nested collapsibles' => sub {
 subtest 'manage.cgi section groups' => sub {
     my $text = $page{'manage'};
     my %at;
-    for my $key (qw(controls monitoring upgrades access config danger)) {
+    for my $key (qw(controls monitoring upgrades access config)) {
         my $pos = id_pos($text, $key);
         cmp_ok($pos, '>', -1, "section $key exists");
         $at{$key} = $pos;
     }
+    like($text, qr/lgsm-danger-zone.*id=\\"danger\\"/s, 'danger zone marker exists');
+    cmp_ok(index($text, 'lgsm-danger-zone'), '>', index($text, "id => 'config'"),
+        'destructive actions last');
     cmp_ok($at{'controls'}, '<', $at{'monitoring'}, 'controls first');
     cmp_ok($at{'monitoring'}, '<', $at{'upgrades'}, 'monitoring before upgrades');
     cmp_ok($at{'upgrades'}, '<', $at{'access'}, 'upgrades before access');
     cmp_ok($at{'access'}, '<', $at{'config'}, 'access before configuration');
-    cmp_ok($at{'config'}, '<', $at{'danger'}, 'destructive actions last');
 };
 
 subtest 'upgrade blocks render from cache, not from a page-load fetch' => sub {
@@ -90,6 +92,24 @@ subtest 'upgrade blocks render from cache, not from a page-load fetch' => sub {
         'no unbounded loader fetch during page render');
     like($text, qr/no_fetch\s*=>\s*1/, 'render path asks the cache only');
     like($page{'mods'}, qr/no_fetch\s*=>\s*1/, 'mods page render path asks the cache only');
+};
+
+subtest 'manage.cgi job_log_card bypasses LGSM action dispatch' => sub {
+    my $text = $page{'manage'};
+    like($text, qr{!\~\s*/\^\(\?:poll_job\|poll_monitor\|monitor\|job_log_card\)\$},
+        'job_log_card is exempt from the catch-all action block');
+    like($text, qr/job_log_card_json_emit/,
+        'job_log_card returns JSON for fetch');
+};
+
+subtest 'job log card fetch query avoids xnavigation' => sub {
+    require "$src/lib/jobs.pl";
+    no warnings qw(redefine once);
+    *main::urlize = sub { my ($s) = @_; return $s; };
+    my $q = job_log_card_fetch_template('manage.cgi', 'test-server');
+    like($q, qr/action=job_log_card/, 'fetch query includes action');
+    unlike($q, qr/xnavigation/, 'fetch query must not use xnavigation');
+    unlike($q, qr{^/}, 'fetch query is relative (client adds pathname)');
 };
 
 done_testing();

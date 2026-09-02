@@ -837,4 +837,55 @@ sub job_next_instance_status {
     return $map{$action // ''} // '';
 }
 
+# Card shown below the instance jobs table — fetched via action=job_log_card.
+sub job_render_instance_log_card {
+    my ($job_id, $instance_id, $text_ref) = @_;
+    return '' unless defined &job_log_inline_card_html;
+    $text_ref = \%main::text unless ref($text_ref) eq 'HASH';
+    $job_id =~ s/[^0-9a-f]//g;
+    $job_id = substr($job_id, 0, 16);
+    return '' unless length($job_id) == 16;
+    return '' unless &validate_job_for_instance($job_id, $instance_id);
+
+    my $meta = &get_job_meta($job_id) // {};
+    my $labels = &job_action_labels_hash($text_ref);
+    my $act = $labels->{ $meta->{'action'} // '' } // $meta->{'action'} // '';
+    my $st_lbl = &job_status_label(&get_job_status($job_id), $text_ref);
+    $act    = &job_log_utf8_decode($act)    if $act =~ /\S/ && defined &job_log_utf8_decode;
+    $st_lbl = &job_log_utf8_decode($st_lbl) if $st_lbl =~ /\S/ && defined &job_log_utf8_decode;
+    my $title = $act;
+    $title .= ' — ' . $st_lbl if $st_lbl =~ /\S/;
+
+    return &job_log_inline_card_html(
+        title         => $title,
+        output        => &get_job_output_display($job_id),
+        close_button  => 1,
+        close_label   => $text_ref->{'job_log_card_close'} // 'Close',
+        empty_label   => $text_ref->{'jobs_no_output'}     // 'No output.',
+    );
+}
+
+# JSON payload for action=job_log_card (fetch from manage.cgi / mods.cgi).
+sub job_log_card_json_emit {
+    my ($job_id, $instance_id, $text_ref) = @_;
+    $text_ref = \%main::text unless ref($text_ref) eq 'HASH';
+    $main::headerprinted = 1;
+    print "Content-type: application/json; charset=utf-8\n\n";
+    my $html = &job_render_instance_log_card($job_id, $instance_id, $text_ref);
+    my $ok = defined($html) && $html =~ /lgsm-job-log-card/;
+    print &job_log_json_utf8({ ok => $ok ? 1 : 0, html => ($html // '') });
+    exit;
+}
+
+sub job_log_card_fetch_template {
+    my ($cgi, $instance_id) = @_;
+    $instance_id //= '';
+    $instance_id =~ s/[^A-Za-z0-9_.-]//g;
+    return '' unless $instance_id =~ /\S/;
+    # Query only — client prepends window.location.pathname (no xnavigation; that
+    # forces Webmin to return a full framed page instead of a JSON fragment).
+    return "instance_id=" . &urlize($instance_id)
+        . "&action=job_log_card&job=__JOB__";
+}
+
 1;

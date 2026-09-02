@@ -299,6 +299,7 @@ sub _manage_render_instance_jobs_table {
     @inst_jobs = @inst_jobs[0 .. ($max_rows - 1)] if @inst_jobs > $max_rows;
 
     my $running = grep { ($_->{'status'} // '') eq 'running' } @inst_jobs;
+    print &job_log_view_page_css();
     print &ui_collapsible_start($text{'jobs_title'} || 'Jobs',
         id    => 'jobs',
         force => ($running ? 1 : 0),
@@ -329,9 +330,7 @@ sub _manage_render_instance_jobs_table {
             $out_cell = "<a href='$live_url'>"
                 . &html_escape($text{'manage_job_open_live'}) . "</a>";
         } elsif ($status eq 'ok' || $status eq 'failed' || $status eq 'aborted') {
-            $out_cell = "<a href='jobs.cgi?action=view_output&amp;job_id="
-                . &html_escape($jid) . "'>"
-                . &html_escape($text{'jobs_view_log'} || 'Log') . "</a>";
+            $out_cell = &job_log_open_link_html($jid, $text{'jobs_view_log'} || 'Log');
         }
         my $act_label = $job_action_labels{$act} // $act // '—';
         my $act_cell = ($act eq 'monitor_restart' || $act eq 'scheduled_restart')
@@ -345,16 +344,19 @@ sub _manage_render_instance_jobs_table {
             $out_cell,
         ];
     }
-    print &ui_columns_table(
-        [
-            $text{'jobs_col_action'}  || 'Aktion',
-            $text{'jobs_col_started'} || 'Gestartet',
-            $text{'jobs_col_status'}  || 'Status',
-            $text{'jobs_col_output'}  || 'Ausgabe',
-        ],
-        '100%',
-        \@rows,
-    );
+    if (@rows) {
+        print &ui_columns_table(
+            [
+                $text{'jobs_col_action'}  || 'Aktion',
+                $text{'jobs_col_started'} || 'Gestartet',
+                $text{'jobs_col_status'}  || 'Status',
+                $text{'jobs_col_output'}  || 'Ausgabe',
+            ],
+            '100%',
+            \@rows,
+        );
+    }
+    print "<div id=\"job-log-card-slot\"></div>\n";
     print &ui_collapsible_end();
 }
 
@@ -1188,6 +1190,12 @@ sub _manage_poll_job_json {
     exit;
 }
 
+# Minimal JSON for inline job log card (no Webmin header/footer).
+sub _manage_job_log_card_partial {
+    my ($instance_id, $job_id) = @_;
+    &job_log_card_json_emit($job_id, $instance_id, \%text);
+}
+
 # Minimal HTML fragment for in-page job polling (no Webmin header/footer).
 sub _manage_poll_job_partial {
     my ($status, $all_out) = @_;
@@ -1424,7 +1432,19 @@ my $is_fresh  = ($inst->{'instance_status'} // 'installed') ne 'installed';
 &user_can_manage($instance_id)
     or &error($text{'err_acl_admin_only'} || 'Access denied');
 
-if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|monitor)$/) {
+# GET: job_log_card — HTML fragment for the inline log card (no full page).
+if (($in{'action'} // '') eq 'job_log_card') {
+    &user_is_readonly($instance_id)
+        and &error($text{'err_readonly'} || 'Read-only');
+    my $job_id = $in{'job'} // '';
+    $job_id =~ s/[^0-9a-f]//g;
+    $job_id = substr($job_id, 0, 16);
+    &validate_job_for_instance($job_id, $instance_id)
+        or &error($text{'err_not_found'});
+    &_manage_job_log_card_partial($instance_id, $job_id);
+}
+
+if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|monitor|job_log_card)$/) {
     my $action = &sanitize_input($in{'action'});
     &log_debug("action=$action instance=$instance_id");
     if (&user_is_readonly($instance_id)) {
@@ -2614,6 +2634,7 @@ if ($is_fresh) {
 }
 
 my $safe_id = &html_escape($instance_id);
+
 &header("$text{'manage_title'}: $safe_id", '');
 
 my $script_dir_for_cfg = $inst->{'script'};
@@ -2668,10 +2689,7 @@ if ($job_aborted_id ne ''
         my $lr_job = $mon_flash->{'last_restart_job'} // '';
         $lr_job =~ s/[^0-9a-f]//g;
         if (length($lr_job) == 16) {
-            my $log_url = "jobs.cgi?action=view_output&amp;job_id="
-                . &html_escape($lr_job);
-            $banner_html .= ' <a href="' . $log_url . '">'
-                . &html_escape($text{'jobs_view_log'} || 'Log') . '</a>';
+            $banner_html .= ' ' . &job_log_open_link_html($lr_job, $text{'jobs_view_log'} || 'Log');
         }
         print "<div class='alert alert-success'>" . $banner_html . "</div>\n";
     }
@@ -2929,6 +2947,9 @@ foreach my $action (qw(start stop restart)) {
     $form .= &ui_form_end();
     print &_manage_inline_action_btn($form);
 }
+my $monitor_link = "<a href=\"manage.cgi?instance_id=$safe_id&amp;action=monitor&amp;xnavigation=1\""
+    . " class=\"btn btn-default\">" . &html_escape($text{'manage_monitor_btn'}) . "</a>";
+print &_manage_inline_action_btn($monitor_link);
 print "</div>\n";
 
 # Mods page link (below server controls)
@@ -3021,9 +3042,6 @@ print "<div style='margin:4px 0 12px 0'>\n";
     $form .= &ui_form_end();
     print &_manage_inline_action_btn($form);
 }
-my $monitor_link = "<a href=\"manage.cgi?instance_id=$safe_id&amp;action=monitor&amp;xnavigation=1\""
-    . " class=\"btn btn-default\">" . &html_escape($text{'manage_monitor_btn'}) . "</a>";
-print &_manage_inline_action_btn($monitor_link);
 {
     my ($re_prof) = _manage_read_mc_profile($inst);
     my $re_confirm = $text{'manage_reinstall_confirm'};
@@ -3138,7 +3156,10 @@ print &ui_collapsible_start($text{'manage_section_access'} || 'Access',
 print &ui_collapsible_end();
 
 print &ui_collapsible_start($text{'manage_section_config'} || 'Configuration and diagnostics',
-    id => 'config');
+    id   => 'config',
+    open => (defined($in{'config_file'}) ? 1 : 0),
+    hint => ($text{'manage_section_config_hint'} || ''),
+);
 
 # Migrate-Config form (if game fields are misplaced in common.cfg)
 if ($has_misplaced) {
@@ -3248,11 +3269,8 @@ if (!$cfg{_has_instance_config}) {
     my $lang = $current_lang // 'en';
     my $game_tab_label = &get_game_config_label($script_name_for_cfg, $lang);
     $game_tab_label = $text{'config_editor_game_btn'} unless $game_tab_label ne '';
-    # Open the editor when the user navigated to it (deep link / after save)
-    print &ui_collapsible_start($text{'config_editor_title'},
-        id   => 'config-editor',
-        open => (defined($in{'config_file'}) ? 1 : 0),
-    );
+    # Config editor (opened via deep link when config_file is set)
+    print "<h4 id=\"config-editor\">" . &html_escape($text{'config_editor_title'}) . "</h4>\n";
     print "<p>" . &html_escape($text{'config_editor_profile'}) . " <b>" .
           &html_escape($profile_name) . "</b> " .
           &html_escape($text{'config_editor_profile_source'}) .
@@ -3495,8 +3513,6 @@ JS
     print "</div>\n";
 
     print "<script>lgsmShowConfigView('" . &html_escape($cfg_view_key) . "');</script>\n";
-
-    print &ui_collapsible_end();
 }
 print &ui_collapsible_end();
 
@@ -3506,8 +3522,8 @@ unless (&user_is_readonly($instance_id)) {
 }
 
 if (&is_admin()) {
-    print &ui_collapsible_start($text{'manage_section_danger'} || 'Remove instance',
-        id => 'danger');
+    print "<div class=\"lgsm-danger-zone\" id=\"danger\">\n";
+    print "<h4>" . &html_escape($text{'manage_section_danger'} || 'Remove instance') . "</h4>\n";
     print &ui_form_start("manage.cgi", "post", undef,
         "onsubmit=\"return confirm('" . &html_escape($text{'manage_delete_confirm'}
             || 'Instanz wirklich unwiderruflich löschen?') . "')\"");
@@ -3515,9 +3531,16 @@ if (&is_admin()) {
     print &ui_hidden("action", "delete_instance");
     print &ui_submit($text{'manage_delete_btn'}, undef, 0, undef, 'btn-danger');
     print &ui_form_end();
-    print &ui_collapsible_end();
+    print "</div>\n";
 }
 
 print &ui_collapsible_state_script();
+unless (&user_is_readonly($instance_id)) {
+    print &job_log_card_client_js(
+        fetch_url_template => &job_log_card_fetch_template('manage.cgi', $instance_id),
+        loading            => $text{'job_log_card_loading'} || 'Loading…',
+        load_failed        => $text{'job_log_card_failed'}  || 'Could not load log.',
+    );
+}
 
 &footer('index.cgi', $text{'index_title'});

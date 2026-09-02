@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Collapsible sections** on `manage.cgi` and `mods.cgi`: every block is a `<details>` section with a badge summary; open/closed state is remembered per section in `localStorage`, deep links (`#section`) open their section automatically
+- Collapsible section styling: border, chevron (▶/▼), and a dedicated danger-zone frame for **Remove instance**
+- **Inline job log card** on `manage.cgi` and `mods.cgi`: finished jobs open their output in-page (JSON fetch, no full reload); close with **Schließen** / **Close**
 - **Upgrade check (MC / loader / mods)** on `mods.cgi`: ordered preflight that validates the target version first, then the opposite side, and only spends mod API calls when both hold. An MC upgrade is blocked when no loader build exists for the target MC version; a loader build bump is blocked when it does not belong to the profile's MC line
 - Instance status line shared by `manage.cgi` and `mods.cgi` (runtime, monitor, loader/MC/Java, firewall)
 - Update hint at the top of `manage.cgi` linking into the upgrades section
@@ -17,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `manage.cgi` grouped into Controls, Monitoring and schedule, Upgrades and maintenance, Access, Configuration and diagnostics, and Remove instance
+- **Live-Log** (server log tail) button moved to **Controls → Server controls** next to Start/Stop/Restart
+- Configuration block on `manage.cgi` flattened — no nested collapsible inside *Configuration and diagnostics*
+- **Remove instance** stays always visible (not collapsible)
 - `mods.cgi` reordered: jobs, upgrade check, modpack import, mod search, installed mods. Modpack search, browser upload, and own file (FTP/SFTP) are nested collapsibles
 - Loader and MC version lists are fetched on demand and cached instead of on every page load; the upgrade blocks render from cache
 - Mod compatibility is scanned from the mods page on request, no longer during `manage.cgi` rendering
@@ -25,6 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Upgrade caches moved from `$SERVER_DIR/.webcore/` to the module config directory — no more root writes into game data
 - MC upgrade preflight verifies loader build availability, so an upgrade can no longer fail late inside the worker
+- `action=job_log_card` no longer falls through to LGSM server dispatch on `manage.cgi`
+- Job log card fetch uses JSON (like `poll_job`) without `xnavigation=1`, so Webmin no longer returns a framed noscript page
 
 ## [0.2.2] - 2026-09-01
 

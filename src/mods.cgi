@@ -651,10 +651,8 @@ sub _mods_last_run_row_html {
     $job_id = '' unless defined $job_id;
     $job_id =~ s/[^0-9a-f]//g;
     if (length($job_id) == 16 && defined $instance_id && $instance_id =~ /\S/) {
-        my $job_url = "jobs.cgi?action=view_output&amp;job_id=" . &html_escape($job_id);
-        $lr_html .= ' — <a href="' . $job_url . '">'
-            . &html_escape($text{'jobs_view_log'} || $text{'monitor_job_link'} || 'Log')
-            . '</a>';
+        $lr_html .= ' — ' . &job_log_open_link_html($job_id,
+            $text{'jobs_view_log'} || $text{'monitor_job_link'} || 'Log');
     }
     return $lr_html;
 }
@@ -669,6 +667,7 @@ sub _mods_render_instance_jobs_table {
     @inst_jobs = @inst_jobs[0 .. ($max_rows - 1)] if @inst_jobs > $max_rows;
 
     my $running = grep { ($_->{'status'} // '') eq 'running' } @inst_jobs;
+    print &job_log_view_page_css();
     print &ui_collapsible_start($text{'jobs_title'} || 'Jobs',
         id    => 'jobs',
         force => ($running ? 1 : 0),
@@ -697,9 +696,7 @@ sub _mods_render_instance_jobs_table {
             $out_cell = "<a href='$live_url'>"
                 . &html_escape($text{'manage_job_open_live'} || 'Live log') . "</a>";
         } elsif ($status eq 'ok' || $status eq 'failed' || $status eq 'aborted') {
-            $out_cell = "<a href='jobs.cgi?action=view_output&amp;job_id="
-                . &html_escape($jid) . "'>"
-                . &html_escape($text{'jobs_view_log'} || 'Log') . "</a>";
+            $out_cell = &job_log_open_link_html($jid, $text{'jobs_view_log'} || 'Log');
         }
         my $act_label = $labels->{$act} // $act // '—';
         my $act_cell = ($act eq 'monitor_restart' || $act eq 'scheduled_restart')
@@ -713,16 +710,19 @@ sub _mods_render_instance_jobs_table {
             $out_cell,
         ];
     }
-    print &ui_columns_table(
-        [
-            $text{'jobs_col_action'}  || 'Aktion',
-            $text{'jobs_col_started'} || 'Gestartet',
-            $text{'jobs_col_status'}  || 'Status',
-            $text{'jobs_col_output'}  || 'Ausgabe',
-        ],
-        '100%',
-        \@rows,
-    );
+    if (@rows) {
+        print &ui_columns_table(
+            [
+                $text{'jobs_col_action'}  || 'Aktion',
+                $text{'jobs_col_started'} || 'Gestartet',
+                $text{'jobs_col_status'}  || 'Status',
+                $text{'jobs_col_output'}  || 'Ausgabe',
+            ],
+            '100%',
+            \@rows,
+        );
+    }
+    print "<div id=\"job-log-card-slot\"></div>\n";
     print &ui_collapsible_end();
 }
 
@@ -1092,10 +1092,10 @@ $mods_compat_loader =~ s/[^0-9.]//g;
 &user_can_manage($instance_id)
     or &error($text{'err_acl_admin_only'} || 'Access denied');
 
-if ($action ne '' && $action !~ /^(?:monitor|poll_monitor|monitor_disable|monitor_reset|start|stop|mod_enable|mod_disable|mod_delete|mod_versions|mod_search_versions|mod_install_preview|mc_mod_install|modpack_import|modpack_import_path|modpack_import_remote|modpack_import_resume|mod_compat_scan|upgrade_check|upgrade_versions)$/) {
+if ($action ne '' && $action !~ /^(?:monitor|poll_monitor|job_log_card|monitor_disable|monitor_reset|start|stop|mod_enable|mod_disable|mod_delete|mod_versions|mod_search_versions|mod_install_preview|mc_mod_install|modpack_import|modpack_import_path|modpack_import_remote|modpack_import_resume|mod_compat_scan|upgrade_check|upgrade_versions)$/) {
     &error($text{'err_invalid_action'} || 'Invalid action');
 }
-if ($action ne '' && $action !~ /^(?:monitor|poll_monitor)$/ && &user_is_readonly($instance_id)) {
+if ($action ne '' && $action !~ /^(?:monitor|poll_monitor|job_log_card)$/ && &user_is_readonly($instance_id)) {
     &error($text{'err_readonly'} || 'This server is read-only for your account');
 }
 
@@ -1858,6 +1858,15 @@ if ($action eq 'mod_search_versions') {
     exit;
 }
 
+if ($action eq 'job_log_card') {
+    my $job_id = $in{'job'} // '';
+    $job_id =~ s/[^0-9a-f]//g;
+    $job_id = substr($job_id, 0, 16);
+    &validate_job_for_instance($job_id, $instance_id)
+        or &error($text{'err_not_found'});
+    &job_log_card_json_emit($job_id, $instance_id, \%text);
+}
+
 if ($action eq 'poll_monitor') {
     my $source = &instance_effective_source($inst);
     my $payload = server_log_monitor_poll_payload(
@@ -1913,6 +1922,7 @@ if ($action eq 'monitor') {
 }
 
 my $safe_id = &html_escape($instance_id);
+
 &header($text{'mc_mods_page_title'} || 'Mods', '');
 
 unless (&mc_mod_ui_ready($profile, $server_dir)) {
@@ -1961,9 +1971,7 @@ if (($in{'monitor_enabled'} // '') eq '1' && &module_config_flash_consume('monit
         my $lr_job = $mon_flash->{'last_restart_job'} // '';
         $lr_job =~ s/[^0-9a-f]//g;
         if (length($lr_job) == 16) {
-            $banner_html .= ' <a href="jobs.cgi?action=view_output&amp;job_id='
-                . &html_escape($lr_job) . '">'
-                . &html_escape($text{'jobs_view_log'} || 'Log') . '</a>';
+            $banner_html .= ' ' . &job_log_open_link_html($lr_job, $text{'jobs_view_log'} || 'Log');
         }
         print "<div class='alert alert-warning'>" . $banner_html . "</div>\n";
     }
@@ -2587,5 +2595,10 @@ print "<p><small>" . &html_escape($text{'mc_mods_page_restart_hint'}
 print &ui_collapsible_end();
 
 print &ui_collapsible_state_script();
+print &job_log_card_client_js(
+    fetch_url_template => &job_log_card_fetch_template('mods.cgi', $instance_id),
+    loading            => $text{'job_log_card_loading'} || 'Loading…',
+    load_failed        => $text{'job_log_card_failed'}  || 'Could not load log.',
+);
 
 &footer('', '');

@@ -44,10 +44,12 @@ sub ui_collapsible_start {
     $attrs .= " id=\"$id\"" if $id ne '';
     $attrs .= ' data-lgsm-force="1"' if $opts{'force'};
     $attrs .= ' open' if $open;
-    my $out = "<details$attrs>\n<summary><b>" . &html_escape($title // '') . "</b>";
+    my $out = "<details$attrs>\n<summary>"
+        . "<span class=\"lgsm-section-chevron\" aria-hidden=\"true\"></span>"
+        . "<span class=\"lgsm-section-title\"><b>" . &html_escape($title // '') . "</b>";
     my $badge = $opts{'badge'} // '';
     $out .= " <small>(" . &html_escape($badge) . ")</small>" if $badge =~ /\S/;
-    $out .= "</summary>\n";
+    $out .= "</span></summary>\n";
     my $hint = $opts{'hint'} // '';
     $out .= "<p>" . &html_escape($hint) . "</p>\n" if $hint =~ /\S/;
     return $out;
@@ -72,10 +74,76 @@ sub ui_instance_status_line {
     return "<p>" . join(' &nbsp;&middot;&nbsp; ', @parts) . "</p>\n";
 }
 
+# Visual frame + chevron for collapsible sections (theme-neutral: currentColor only).
+sub ui_collapsible_styles {
+    return <<'CSS';
+<style>
+details.lgsm-section {
+    border: 1px solid color-mix(in srgb, currentColor 28%, transparent);
+    border-radius: 4px;
+    margin: 0 0 10px 0;
+    background: color-mix(in srgb, currentColor 5%, transparent);
+}
+details.lgsm-section details.lgsm-section {
+    margin-top: 8px;
+}
+details.lgsm-section > summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    cursor: pointer;
+    user-select: none;
+    list-style: none;
+}
+details.lgsm-section > summary::-webkit-details-marker {
+    display: none;
+}
+details.lgsm-section[open] > summary {
+    border-bottom: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+}
+details.lgsm-section > :not(summary) {
+    margin: 0 12px 12px 12px;
+}
+details.lgsm-section > summary + :not(summary) {
+    margin-top: 12px;
+}
+.lgsm-section-chevron {
+    display: inline-block;
+    width: 0.85em;
+    flex-shrink: 0;
+    line-height: 1;
+    opacity: 0.8;
+    font-size: 0.85em;
+}
+.lgsm-section-chevron::before {
+    content: '\25B6';
+}
+details.lgsm-section[open] > summary .lgsm-section-chevron::before {
+    content: '\25BC';
+}
+.lgsm-section-title {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+.lgsm-danger-zone {
+    border: 1px solid color-mix(in srgb, currentColor 28%, transparent);
+    border-radius: 4px;
+    margin: 16px 0 10px 0;
+    padding: 12px;
+    background: color-mix(in srgb, currentColor 4%, transparent);
+}
+.lgsm-danger-zone h4 {
+    margin: 0 0 10px 0;
+}
+</style>
+CSS
+}
+
 # Remembers open/closed state per section id in localStorage. Without JS the
 # server-side default from ui_collapsible_start() stays in effect.
 sub ui_collapsible_state_script {
-    return <<'JS';
+    return &ui_collapsible_styles() . <<'JS';
 <script>
 (function() {
     var KEY = 'lgsmWebcoreSections';

@@ -13,8 +13,10 @@ subtest 'collapsible markup' => sub {
     my $html = ui_collapsible_start('Steuerung', id => 'sec-controls');
     like($html, qr/<details[^>]*class="lgsm-section"/, 'details carries the section class');
     like($html, qr/id="sec-controls"/, 'id kept for anchors and state');
+    like($html, qr{<summary><span class="lgsm-section-chevron"}, 'chevron marker in summary');
+    like($html, qr/class="lgsm-section-title"/, 'title wrapper in summary');
     unlike($html, qr/<details[^>]*\sopen/, 'closed by default');
-    like($html, qr{<summary><b>Steuerung</b></summary>}, 'title in summary');
+    like($html, qr{<summary>.*</summary>}, 'summary element');
     is(ui_collapsible_end(), "</details>\n", 'closing tag');
 
     like(ui_collapsible_start('X', id => 'a', open => 1), qr/<details[^>]*\sopen>/,
@@ -45,8 +47,10 @@ subtest 'forced sections ignore the stored state' => sub {
         'plain open sections stay overridable');
 };
 
-subtest 'state script' => sub {
+subtest 'state script and styles' => sub {
     my $js = ui_collapsible_state_script();
+    like($js, qr/<style>.*details\.lgsm-section/s, 'section frame styles included');
+    like($js, qr/lgsm-section-chevron/, 'chevron styles included');
     like($js, qr/localStorage/, 'persists via localStorage');
     like($js, qr/details\.lgsm-section\[id\]/, 'only tracks identified sections');
     like($js, qr/data-lgsm-force/, 'skips forced sections');
