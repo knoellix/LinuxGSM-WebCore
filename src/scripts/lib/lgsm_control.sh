@@ -287,6 +287,62 @@ lgsm_mc_log_has_done_after() {
         | grep -Eq 'Done \([0-9.]+s\)!'
 }
 
+# True if bytes after offset match ERE $3 (grep -E).
+lgsm_log_has_ready_after() {
+    local log="$1" offset="${2:-0}" regex="${3:-}"
+    [[ -f "$log" && -n "$regex" ]] || return 1
+    local size
+    size=$(wc -c <"$log" 2>/dev/null | tr -d ' ') || return 1
+    [[ "$size" -gt "$offset" ]] || return 1
+    tail -c +"$((offset + 1))" "$log" 2>/dev/null | grep -Eq -- "$regex"
+}
+
+# Resolve console log path (LGSM).
+lgsm_console_log() {
+    local server_dir="$1" script_name="$2"
+    local f="$server_dir/log/console/${script_name}-console.log"
+    [[ -f "$f" ]] || return 1
+    printf '%s\n' "$f"
+    return 0
+}
+
+# After session is up: poll log until regex or timeout. Session die → fail.
+# Timeout + session up → warn + return 0.
+lgsm_start_wait_ready_marker() {
+    local server_dir="$1" script_name="$2" log="$3" offset="${4:-0}"
+    local regex="$5" ready_secs="${6:-900}"
+    local elapsed=0 last_report=0
+    script_name="${script_name//[^a-zA-Z0-9_-]/}"
+    [[ -n "$regex" ]] || return 0
+    echo "Waiting for ready marker (≤${ready_secs}s): $regex"
+    while (( elapsed < ready_secs )); do
+        if ! lgsm_is_started "$server_dir" "$script_name"; then
+            echo "ERROR: session died before ready marker" >&2
+            return 1
+        fi
+        if [[ -n "$log" ]] && lgsm_log_has_ready_after "$log" "$offset" "$regex"; then
+            echo "Ready: marker seen after ${elapsed}s"
+            return 0
+        fi
+        if [[ -z "$log" ]]; then
+            log=$(lgsm_console_log "$server_dir" "$script_name" || true)
+            offset=0
+        fi
+        if (( elapsed - last_report >= 30 )); then
+            echo "Still starting… ${elapsed}s / ${ready_secs}s"
+            last_report=$elapsed
+        fi
+        sleep 3
+        elapsed=$((elapsed + 3))
+    done
+    if lgsm_is_started "$server_dir" "$script_name"; then
+        echo "WARNING: no ready marker within ${ready_secs}s — session still up"
+        return 0
+    fi
+    echo "ERROR: failed to become ready" >&2
+    return 1
+}
+
 # Minecraft: spawn via timed LGSM CLI, then wait for session + optional "Done" (large modpacks).
 # Env:
 #   WEBCORE_MC_START_CLI_SECS   — LGSM start command timeout (default 90)
@@ -370,11 +426,13 @@ lgsm_start_minecraft() {
     return 1
 }
 
-# Public start: MC uses spawn+Done wait; others timed LGSM CLI + session check.
+# Public start: MC uses spawn+Done wait; PZ session + SERVER STARTED; others session only.
 lgsm_start_reliable() {
     local server_dir="$1" script_name="$2"
     local wait_secs="${3:-90}"
     script_name="${script_name//[^a-zA-Z0-9_-]/}"
+    local is_pz=0
+    local pz_log="" pz_offset=0
 
     if lgsm_is_minecraft_instance "$server_dir" "$script_name"; then
         lgsm_start_minecraft "$server_dir" "$script_name"
@@ -382,6 +440,7 @@ lgsm_start_reliable() {
     fi
 
     if lgsm_is_project_zomboid_instance "$server_dir" "$script_name"; then
+        is_pz=1
         local _pz_sync="${MODULE_ROOT:-}/scripts/pz_sync_lgsm_cfg.pl"
         if [[ -n "${MODULE_ROOT:-}" && -f "$_pz_sync" ]]; then
             echo "PZ: syncing LGSM startparameters (adminpassword) before start"
@@ -392,6 +451,16 @@ lgsm_start_reliable() {
     if lgsm_is_started "$server_dir" "$script_name"; then
         echo "Already online"
         return 0
+    fi
+
+    # Capture console byte offset before start so prior boots do not false-match.
+    if [[ "$is_pz" -eq 1 ]]; then
+        if pz_log=$(lgsm_console_log "$server_dir" "$script_name"); then
+            pz_offset=$(wc -c <"$pz_log" 2>/dev/null | tr -d ' ') || pz_offset=0
+        else
+            pz_log=""
+            pz_offset=0
+        fi
     fi
 
     echo "Start path: LGSM CLI (timeout ${wait_secs}s)"
@@ -405,6 +474,13 @@ lgsm_start_reliable() {
     for ((i = 1; i <= 30; i++)); do
         if lgsm_is_started "$server_dir" "$script_name"; then
             echo "Started (session/status up)"
+            if [[ "$is_pz" -eq 1 ]]; then
+                lgsm_start_wait_ready_marker "$server_dir" "$script_name" \
+                    "$pz_log" "$pz_offset" \
+                    '\*\*\* SERVER STARTED \*\*\*\*' \
+                    "${WEBCORE_PZ_START_READY_SECS:-900}"
+                return $?
+            fi
             return 0
         fi
         sleep 2

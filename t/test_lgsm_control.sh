@@ -86,4 +86,40 @@ unset WEBCORE_MC_START_CLI_SECS WEBCORE_MC_START_SPAWN_SECS WEBCORE_MC_START_REA
 pids="$(lgsm_java_pids_for_server "$TMP/mc-a" || true)"
 [[ -z "$pids" ]] || { echo "fail: unexpected java pids: $pids"; exit 1; }
 
+# --- generic ready-after-offset + console log path ---
+mkdir -p "$TMP/pz/log/console"
+printf 'old *** SERVER STARTED ****\n' >"$TMP/pz/log/console/pzserver-console.log"
+clog="$(lgsm_console_log "$TMP/pz" pzserver)"
+[[ "$clog" == "$TMP/pz/log/console/pzserver-console.log" ]] || { echo "fail: console log path: $clog"; exit 1; }
+coff=$(wc -c <"$clog" | tr -d ' ')
+if lgsm_log_has_ready_after "$clog" "$coff" '\*\*\* SERVER STARTED \*\*\*\*'; then
+    echo "fail: ready should not match only-old content"
+    exit 1
+fi
+printf 'LOG  : General     , *** SERVER STARTED ****\n' >>"$clog"
+lgsm_log_has_ready_after "$clog" "$coff" '\*\*\* SERVER STARTED \*\*\*\*' \
+    || { echo "fail: ready after offset"; exit 1; }
+
+# --- PZ start waits for SERVER STARTED (mocked spawn + short ready timeout) ---
+unset -f lgsm_is_started lgsm_run_timeout 2>/dev/null || true
+_pz_started=0
+lgsm_is_started() {
+    [[ "$_pz_started" -eq 1 ]] && return 0
+    return 1
+}
+lgsm_run_timeout() {
+    _pz_started=1
+    return 0
+}
+: >"$TMP/pz/log/console/pzserver-console.log"
+(
+    sleep 1
+    printf 'LOG  : General     , *** SERVER STARTED ****\n' \
+        >>"$TMP/pz/log/console/pzserver-console.log"
+) &
+export WEBCORE_PZ_START_READY_SECS=10
+out="$(lgsm_start_reliable "$TMP/pz" pzserver 5 2>&1)"
+echo "$out" | grep -qi 'Ready: marker seen' || { echo "fail: expected PZ Ready marker: $out"; exit 1; }
+unset WEBCORE_PZ_START_READY_SECS
+
 echo "ok test_lgsm_control.sh"
