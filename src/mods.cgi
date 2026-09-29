@@ -23,6 +23,7 @@ require './lib/mc_modpack.pl';
 require './lib/mc_upgrade.pl';
 require './lib/live_log.pl';
 require './lib/server_log.pl';
+require './lib/server_control_bar.pl';
 
 our (%text, %config, %in, %gconfig);
 our ($module_root, $module_root_directory, $module_name, $config_directory);
@@ -1103,7 +1104,7 @@ $mods_compat_loader =~ s/[^0-9.]//g;
 &user_can_manage($instance_id)
     or &error($text{'err_acl_admin_only'} || 'Access denied');
 
-if ($action ne '' && $action !~ /^(?:monitor|poll_monitor|job_log_card|monitor_disable|monitor_reset|start|stop|mod_enable|mod_disable|mod_delete|mod_versions|mod_search_versions|mod_install_preview|mc_mod_install|modpack_import|modpack_import_path|modpack_import_remote|modpack_import_resume|mod_compat_scan|upgrade_check|upgrade_versions)$/) {
+if ($action ne '' && $action !~ /^(?:monitor|poll_monitor|job_log_card|monitor_disable|monitor_reset|start|stop|restart|mod_enable|mod_disable|mod_delete|mod_versions|mod_search_versions|mod_install_preview|mc_mod_install|modpack_import|modpack_import_path|modpack_import_remote|modpack_import_resume|mod_compat_scan|upgrade_check|upgrade_versions)$/) {
     &error($text{'err_invalid_action'} || 'Invalid action');
 }
 if ($action ne '' && $action !~ /^(?:monitor|poll_monitor|job_log_card)$/ && &user_is_readonly($instance_id)) {
@@ -1133,7 +1134,7 @@ if ($action eq 'monitor_reset') {
     exit;
 }
 
-if ($action eq 'start' || $action eq 'stop') {
+if ($action eq 'start' || $action eq 'stop' || $action eq 'restart') {
     _mods_redirect_if_job_running($instance_id, $action);
 
     if ($action eq 'start' && &is_minecraft_game($script_name)) {
@@ -1999,6 +2000,7 @@ print "<h3>" . &html_escape($text{'mc_mods_page_header'} || 'Minecraft mods') . 
 
 &sync_monitor_job_pointers();
 my $mon_state = &read_monitor_state($server_dir, $config_directory, $instance_id);
+my $after_status = '';
 {
     my $mon_status_key = 'monitor_status_' . ($mon_state->{'status'} // 'disabled');
     my $mon_label = $text{$mon_status_key} || ($mon_state->{'status'} // 'disabled');
@@ -2011,10 +2013,7 @@ my $mon_state = &read_monitor_state($server_dir, $config_directory, $instance_id
         );
         $profile_html = &html_escape(join(' / ', @prof)) if @prof;
     }
-    print &ui_instance_status_line(
-        &ui_instance_status_part($text{'mc_mods_page_instance_label'} || 'Instance', $safe_id),
-        &ui_instance_status_part($text{'mc_mods_page_status_label'} || 'Status',
-            _mods_status_badge_html($runtime_status)),
+    my @extra_parts = (
         &ui_instance_status_part($text{'monitor_col'} || 'Monitor', &html_escape($mon_label)),
         &ui_instance_status_part($text{'mc_profile_loader'} || 'Loader', $profile_html),
     );
@@ -2022,12 +2021,12 @@ my $mon_state = &read_monitor_state($server_dir, $config_directory, $instance_id
         my $lr_html = _mods_last_run_row_html(
             $mon_state->{'last_restart_at'}, 'monitor_last_restart',
             $mon_state->{'last_restart_job'}, $instance_id);
-        print "<p><strong>" . &html_escape($text{'monitor_last_restart_col'} || 'Last auto-restart')
+        $after_status .= "<p><strong>" . &html_escape($text{'monitor_last_restart_col'} || 'Last auto-restart')
             . ":</strong> " . $lr_html . "</p>\n";
     }
     if (&user_can_operate($instance_id) && !&user_is_readonly($instance_id)) {
         my $mon_s = $mon_state->{'status'} // 'disabled';
-        print "<div style='margin:0 0 12px 0'>\n";
+        $after_status .= "<div style='margin:0 0 12px 0'>\n";
         if ($mon_s eq 'failed' || $mon_s eq 'paused' || $mon_s eq 'disabled') {
             my $en = &ui_form_start('mods.cgi', 'post');
             $en .= &ui_hidden('instance_id', $safe_id);
@@ -2036,7 +2035,7 @@ my $mon_state = &read_monitor_state($server_dir, $config_directory, $instance_id
             $en .= &ui_submit($text{'monitor_reset_btn'} || 'Enable monitoring',
                 undef, undef, undef, 'btn-success');
             $en .= &ui_form_end();
-            print _mods_inline_action_btn($en);
+            $after_status .= _mods_inline_action_btn($en);
         }
         if ($mon_s ne 'disabled') {
             my $dis = &ui_form_start('mods.cgi', 'post');
@@ -2046,57 +2045,20 @@ my $mon_state = &read_monitor_state($server_dir, $config_directory, $instance_id
             $dis .= &ui_submit($text{'monitor_disable_btn'} || 'Disable monitoring',
                 undef, undef, undef, 'btn-default');
             $dis .= &ui_form_end();
-            print _mods_inline_action_btn($dis);
+            $after_status .= _mods_inline_action_btn($dis);
         }
-        print "</div>\n";
+        $after_status .= "</div>\n";
     }
+    print &server_control_bar_html(
+        cgi                 => 'mods.cgi',
+        instance_id         => $instance_id,
+        readonly            => (&user_is_readonly($instance_id) ? 1 : 0),
+        runtime_status_html => _mods_status_badge_html($runtime_status),
+        extra_status_parts  => \@extra_parts,
+        after_status_html   => $after_status,
+        back_cgi            => 'manage.cgi',
+    );
 }
-
-print "<div style='margin:4px 0 12px 0'>\n";
-if (&user_is_readonly($instance_id)) {
-    print "<p>" . &html_escape($text{'mc_mods_page_readonly_hint'}
-        || 'Read-only mode: Start/Stop actions are disabled.')
-        . "</p>\n";
-} else {
-    my $start_form = &ui_form_start('mods.cgi', 'post');
-    $start_form .= &ui_hidden('instance_id', $safe_id);
-    $start_form .= &ui_hidden('xnavigation', '1');
-    $start_form .= &ui_hidden('action', 'start');
-    $start_form .= &ui_submit($text{'mc_mods_page_start_btn'} || 'Start',
-        undef, undef, undef, 'btn-success');
-    $start_form .= &ui_form_end();
-    print _mods_inline_action_btn($start_form);
-
-    my $stop_form = &ui_form_start('mods.cgi', 'post');
-    $stop_form .= &ui_hidden('instance_id', $safe_id);
-    $stop_form .= &ui_hidden('xnavigation', '1');
-    $stop_form .= &ui_hidden('action', 'stop');
-    $stop_form .= &ui_submit($text{'mc_mods_page_stop_btn'} || 'Stop',
-        undef, undef, undef, 'btn-default');
-    $stop_form .= &ui_form_end();
-    print _mods_inline_action_btn($stop_form);
-}
-
-{
-    my $log_form = &ui_form_start('mods.cgi', 'get');
-    $log_form .= &ui_hidden('instance_id', $safe_id);
-    $log_form .= &ui_hidden('action', 'monitor');
-    $log_form .= &ui_hidden('xnavigation', '1');
-    $log_form .= &ui_submit($text{'mc_mods_page_log_btn'} || 'Log',
-        undef, undef, undef, 'btn-default');
-    $log_form .= &ui_form_end();
-    print _mods_inline_action_btn($log_form);
-}
-{
-    my $back_form = &ui_form_start('manage.cgi', 'get');
-    $back_form .= &ui_hidden('instance_id', $safe_id);
-    $back_form .= &ui_hidden('xnavigation', '1');
-    $back_form .= &ui_submit($text{'mc_mods_page_back_manage'} || 'Back to manage',
-        undef, undef, undef, 'btn-default');
-    $back_form .= &ui_form_end();
-    print _mods_inline_action_btn($back_form);
-}
-print "</div>\n";
 
 _mods_render_instance_jobs_table($instance_id, 8);
 

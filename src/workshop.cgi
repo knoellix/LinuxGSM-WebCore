@@ -14,6 +14,10 @@ require './lib/jobs.pl';
 require './lib/logging.pl';
 require './lib/games_meta.pl';
 require './lib/module_config.pl';
+require './lib/monitor.pl';
+require './lib/live_log.pl';
+require './lib/server_log.pl';
+require './lib/server_control_bar.pl';
 require './lib/pz_workshop.pl';
 
 our (%text, %config, %in, %gconfig);
@@ -111,6 +115,73 @@ sub _ws_launch_subscribe {
 
 sub _ws_action_failed {
     &error($text{'workshop_action_failed'} || 'Workshop action could not be completed.');
+}
+
+sub _ws_rebuild_monitor_cron {
+    return unless defined &rebuild_monitor_cron;
+    &rebuild_monitor_cron($module_root, $config_directory);
+}
+
+sub _ws_redirect_job_live {
+    my ($job_id, $instance_id, %opts) = @_;
+    $job_id or _ws_launch_failed();
+    my $ret = $opts{'return'} // _ws_page_url($instance_id);
+    my $url = "job_live.cgi?instance_id=" . &urlize($instance_id)
+        . "&job=" . &urlize($job_id)
+        . "&return=" . &urlize($ret)
+        . "&xnavigation=1";
+    $url .= "&next_status=" . &urlize($opts{'next_status'}) if $opts{'next_status'};
+    &redirect($url);
+    exit;
+}
+
+sub _ws_redirect_if_job_running {
+    my ($instance_id, $action) = @_;
+    my $job_id = &find_running_job_for_instance($instance_id, $action);
+    $job_id ||= &find_running_job_for_instance($instance_id);
+    return 0 unless $job_id;
+    _ws_redirect_job_live($job_id, $instance_id);
+}
+
+sub _ws_launch_background_job {
+    my ($instance_id, $action, $unix_user, $launch_cmd) = @_;
+    my $job_id = &create_job($unix_user);
+    &write_job_meta($job_id, $instance_id, $action, $unix_user)
+        or do { &job_mark_launch_failed($job_id); return undef; };
+    &log_action('job_started', $job_id, { instance_id => $instance_id, action => $action });
+    my $cmd = ref($launch_cmd) eq 'CODE' ? $launch_cmd->($job_id) : $launch_cmd;
+    my $rc = &system_logged($cmd);
+    if ($rc != 0 || !&job_dispatch_verified($job_id)) {
+        &job_mark_launch_failed($job_id);
+        return undef;
+    }
+    return $job_id;
+}
+
+sub _ws_steamcmd_worker_cmd {
+    my ($action, $job_dir, $unix_user, $server_dir) = @_;
+    return &user_worker_launch_cmd(
+        unix_user   => $unix_user,
+        module_root => $module_root,
+        worker      => "$module_root/scripts/steamcmd_control_user.sh",
+        args        => [ $action, $job_dir, $unix_user, $server_dir ],
+    );
+}
+
+sub _ws_runtime_badge_html {
+    my ($status) = @_;
+    my %map = (
+        online     => $text{'mc_mods_page_status_online'}  || 'Online',
+        running    => $text{'mc_mods_page_status_online'}  || 'Online',
+        offline    => $text{'mc_mods_page_status_offline'} || 'Offline',
+        stopped    => $text{'mc_mods_page_status_offline'} || 'Offline',
+        fresh      => $text{'mc_mods_page_status_fresh'}   || 'Provisioning pending',
+        lgsm_ready => $text{'mc_mods_page_status_lgsm'}    || 'Installation pending',
+        mc_ready   => $text{'mc_mods_page_status_mc'}      || 'Minecraft prepared',
+        unknown    => $text{'mc_mods_page_status_unknown'} || 'Unknown',
+    );
+    my $label = $map{$status} || ($text{'mc_mods_page_status_unknown'} || 'Unknown');
+    return &html_escape($label);
 }
 
 sub _ws_redirect_with_flash {
@@ -335,11 +406,119 @@ my (undef, $script_name, $server_dir) = _ws_parse_script_info($inst);
 my $action = $in{'action'} // '';
 $action =~ s/[^a-z_]//g;
 
-if ($action ne '' && $action !~ /^(?:search|subscribe|enable|disable|delete|enable_mod|disable_mod)$/) {
+if ($action ne '' && $action !~ /^(?:search|subscribe|enable|disable|delete|enable_mod|disable_mod|start|stop|restart|monitor|poll_monitor)$/) {
     &error($text{'err_invalid_action'} || 'Invalid action');
 }
-if ($action ne '' && $action ne 'search' && &user_is_readonly($instance_id)) {
+if ($action ne '' && $action !~ /^(?:search|monitor|poll_monitor)$/ && &user_is_readonly($instance_id)) {
     &error($text{'err_readonly'} || 'This server is read-only for your account');
+}
+
+if ($action eq 'start' || $action eq 'stop' || $action eq 'restart') {
+    &user_can_operate($instance_id)
+        or &error($text{'err_acl_admin_only'} || 'Access denied');
+    _ws_redirect_if_job_running($instance_id, $action);
+
+    my ($script_path, $sn, $sdir) = _ws_parse_script_info($inst);
+    $script_name = $sn if $sn ne '';
+    $server_dir = $sdir if $sdir ne '';
+
+    if ($action ne 'stop') {
+        my $mon = &read_monitor_state($server_dir, $config_directory, $instance_id);
+        unless (($mon->{status} // '') eq 'disabled') {
+            my $ready = &get_start_ready_config($script_name);
+            my $secs = ($ready->{secs} && $ready->{regex}) ? $ready->{secs} : 180;
+            &set_monitor_starting($server_dir, $config_directory, $instance_id, &monitor_starting_until($secs));
+        }
+    }
+
+    my $source = &instance_effective_source($inst);
+    my $job_id;
+    if ($source eq 'steamcmd') {
+        $job_id = _ws_launch_background_job(
+            $instance_id, $action, $unix_user,
+            sub {
+                my ($jid) = @_;
+                my $job_dir = _shell_safe_job_dir($jid);
+                return _ws_steamcmd_worker_cmd($action, $job_dir, $unix_user, $server_dir);
+            },
+        );
+    } else {
+        my $exec_script = &instance_executable_script($server_dir, $script_path);
+        $job_id = _ws_launch_background_job(
+            $instance_id, $action, $unix_user,
+            sub {
+                my ($jid) = @_;
+                my $job_dir = _shell_safe_job_dir($jid);
+                return &user_worker_launch_cmd(
+                    unix_user   => $unix_user,
+                    module_root => $module_root,
+                    worker      => "$module_root/scripts/game_action_user.sh",
+                    args        => [ $job_dir, $unix_user, $server_dir, $exec_script, $action ],
+                );
+            },
+        );
+    }
+    $job_id or _ws_launch_failed();
+    if ($action eq 'stop') {
+        &set_monitor_paused($server_dir, $config_directory, $instance_id);
+    }
+    _ws_rebuild_monitor_cron();
+    my $next_status = &job_next_instance_status($action);
+    _ws_redirect_job_live($job_id, $instance_id, next_status => $next_status);
+}
+
+if ($action eq 'poll_monitor') {
+    my $source = &instance_effective_source($inst);
+    my $payload = server_log_monitor_poll_payload(
+        server_dir  => $server_dir,
+        script_name => $script_name,
+        source      => $source,
+        minecraft   => 0,
+        log_file    => $in{'log_file'},
+    );
+    $main::headerprinted = 1;
+    print "Content-type: application/json; charset=utf-8\n\n";
+    print job_log_json_utf8($payload);
+    exit;
+}
+
+if ($action eq 'monitor') {
+    my $source = &instance_effective_source($inst);
+    my $mn = $module_name // $main::module_name // 'linuxgsm-webcore';
+    $mn =~ s/[^a-zA-Z0-9_-]//g;
+
+    &header($text{'manage_monitor_title'} || 'Server log (live)', '');
+    print &job_log_view_page_css();
+    print &job_log_view_page_open('fill');
+    print &job_log_live_page_js();
+    &server_log_render_monitor_page(
+        form_cgi       => 'workshop.cgi',
+        instance_id    => $instance_id,
+        server_dir     => $server_dir,
+        script_name    => $script_name,
+        source         => $source,
+        minecraft      => 0,
+        log_file_pick  => $in{'log_file'},
+        auto_refresh   => $in{'auto_refresh'},
+        poll_url_base  => "/$mn/workshop.cgi?instance_id=" . &urlize($instance_id)
+            . '&action=poll_monitor',
+        text_keys      => server_log_monitor_text_keys_manage(),
+        back_forms     => [
+            {
+                cgi        => 'workshop.cgi',
+                label_keys => ['workshop_monitor_back_btn'],
+                default    => 'Back to workshop',
+            },
+            {
+                cgi        => 'manage.cgi',
+                label_keys => ['manage_monitor_back_btn'],
+                default    => 'Back to instance',
+            },
+        ],
+    );
+    print &job_log_view_page_close();
+    &footer('', '');
+    exit;
 }
 
 if ($action eq 'subscribe') {
@@ -442,9 +621,26 @@ if (($action eq 'search' || length($q) >= 2) && length($q) >= 2) {
 }
 
 &header($text{'workshop_title'} || 'Steam Workshop', '');
-print "<p><a href=\"manage.cgi?instance_id=" . &html_escape($instance_id)
-    . "&xnavigation=1\">&larr; " . &html_escape($text{'workshop_back_manage'} || 'Back to instance')
-    . "</a></p>\n";
+
+my $runtime_status = &instance_runtime_status($inst);
+my @ws_extra;
+{
+    &sync_monitor_job_pointers();
+    my $mon_state = &read_monitor_state($server_dir, $config_directory, $instance_id);
+    my $mon_status_key = 'monitor_status_' . ($mon_state->{'status'} // 'disabled');
+    my $mon_label = $text{$mon_status_key} || ($mon_state->{'status'} // 'disabled');
+    push @ws_extra, &ui_instance_status_part($text{'monitor_col'} || 'Monitor',
+        &html_escape($mon_label));
+}
+print &server_control_bar_html(
+    cgi                 => 'workshop.cgi',
+    instance_id         => $instance_id,
+    readonly            => (&user_is_readonly($instance_id) ? 1 : 0),
+    runtime_status_html => _ws_runtime_badge_html($runtime_status),
+    extra_status_parts  => \@ws_extra,
+    back_cgi            => 'manage.cgi',
+    back_label          => ($text{'workshop_back_manage'} || 'Back to instance'),
+);
 
 print "<h2>" . &html_escape($text{'workshop_title'} || 'Steam Workshop') . "</h2>\n";
 print "<p>" . &html_escape($inst->{'name'} // $script_name) . " &middot; "

@@ -870,6 +870,7 @@ mc_upgrade_versions_load_failed=Could not load the version lists.
 jobs_action_pz_workshop_subscribe=Subscribe workshop item
 workshop_title=Steam Workshop
 workshop_back_manage=Back to instance
+workshop_monitor_back_btn=Back to workshop
 workshop_hint=Search the Steam Workshop, subscribe items, and enable them in the server INI. Stop the server before changing mods when possible.
 workshop_api_key_missing=Steam Web API key missing — configure under Integrations for search.
 workshop_goto_integrations=Integrations

@@ -869,6 +869,7 @@ mc_upgrade_versions_unloaded_hint=Versionslisten sind noch nicht geladen. Der Ab
 mc_upgrade_versions_load_failed=Versionslisten konnten nicht geladen werden.
 workshop_title=Steam Workshop
 workshop_back_manage=Zurück zur Instanz
+workshop_monitor_back_btn=Zurück zum Workshop
 workshop_hint=Steam-Workshop suchen, Items abonnieren und in der Server-INI aktivieren. Server möglichst vorher stoppen.
 workshop_api_key_missing=Steam Web API-Key fehlt — unter Integrationen hinterlegen, um zu suchen.
 workshop_goto_integrations=Integrationen
