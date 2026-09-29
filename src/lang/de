@@ -914,4 +914,14 @@ workshop_subscribed_ok=Workshop-Eintrag abonniert und in der Server-INI aktivier
 workshop_deps_cap_failed=Zu viele erforderliche Steam-Workshop-Abhängigkeiten (max. 20 Einträge inklusive gewähltem Mod).
 workshop_deps_included=inkl. $1 erforderliche Abhängigkeiten.
 workshop_deps_hint=Beim Abonnieren werden erforderliche Steam-Workshop-Abhängigkeiten automatisch mitgeladen (max. 20 Einträge).
+workshop_mod_enabled_ok=Mod-ID in Mods= aktiviert.
+workshop_mod_disabled_ok=Mod-ID in Mods= deaktiviert.
+workshop_mod_enable_btn=Mod aktivieren
+workshop_mod_disable_btn=Mod deaktivieren
+workshop_mod_on=an
+workshop_mod_off=aus
+workshop_bad_mod_id=Ungültige Mod-ID.
+workshop_server_pz_version=Erkannte PZ-Version
+workshop_server_pz_version_unknown=PZ-Version unbekannt — beim Aktivieren eines Workshop-Items werden keine Mod-IDs automatisch gewählt. Bitte manuell aktivieren.
+workshop_mod_version_hint=„Aktivieren“ wählt nur Mod-IDs passend zu dieser Version; andere bleiben aus, bis manuell aktiviert.
 workshop_job_launch_failed=Workshop-Job konnte nicht gestartet werden.

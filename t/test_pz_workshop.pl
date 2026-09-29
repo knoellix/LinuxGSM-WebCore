@@ -510,23 +510,50 @@ subtest 'details get url includes children flags' => sub {
         'does not use RemoteStorage details (no children)');
 };
 
-subtest 'subscribe collect mod ids in closure order' => sub {
+subtest 'subscribe collect mod ids filters by PZ version' => sub {
     my $tmp = tempdir(CLEANUP => 1);
     make_path("$tmp/dep/mods/DepMod");
     open my $fh, '>', "$tmp/dep/mods/DepMod/mod.info" or die $!;
-    print $fh "id=DepMod\n";
+    print $fh "id=DepMod\nrequire=42.12\n";
     close $fh;
     make_path("$tmp/root/mods/RootMod");
     open $fh, '>', "$tmp/root/mods/RootMod/mod.info" or die $!;
-    print $fh "id=RootMod\n";
+    print $fh "id=RootMod\nrequire=42.12\n";
+    close $fh;
+    make_path("$tmp/root/mods/OldMod");
+    open $fh, '>', "$tmp/root/mods/OldMod/mod.info" or die $!;
+    print $fh "id=OldMod\nrequire=41.78\n";
     close $fh;
     my @ids = qw(80000000002 80000000001);
     my %dirs = (
         '80000000002' => "$tmp/dep",
         '80000000001' => "$tmp/root",
     );
-    my @mods = pz_workshop_collect_subscribe_mod_ids(\@ids, \%dirs);
-    is_deeply(\@mods, [qw(DepMod RootMod)], 'deps before root mods');
+    my @mods = pz_workshop_collect_subscribe_mod_ids(\@ids, \%dirs, '42.12.0');
+    is_deeply(\@mods, [qw(DepMod RootMod)], 'deps before root; B41 skipped');
+    is_deeply(
+        [ pz_workshop_collect_subscribe_mod_ids(\@ids, \%dirs, '') ],
+        [],
+        'unknown server version => no auto mods');
+};
+
+subtest 'version match and select AluminumBat-style' => sub {
+    ok(pz_workshop_version_matches('42.12', '42.12.0'), '42.12 matches 42.12.0');
+    ok(pz_workshop_version_matches('42', '42.12'), 'major-only matches');
+    ok(!pz_workshop_version_matches('41.78', '42.12'), 'B41 not B42');
+    ok(!pz_workshop_version_matches('', '42.12'), 'empty require no match');
+    my @infos = (
+        { id => 'AluminumBat', pz_require => '' },
+        { id => 'AluminumBat12', pz_require => '42.12' },
+    );
+    is_deeply(
+        [ pz_workshop_select_mod_ids_for_version(\@infos, '42.12.3') ],
+        ['AluminumBat12'],
+        'only B42 variant selected');
+    is_deeply(
+        [ pz_workshop_select_mod_ids_for_version(\@infos, '') ],
+        [],
+        'unknown version => none');
 };
 
 subtest 'subscribe patch ini adds all workshop ids and ordered mods' => sub {
@@ -540,15 +567,16 @@ subtest 'subscribe patch ini adds all workshop ids and ordered mods' => sub {
 
     make_path("$tmp/dep/mods/DepMod");
     open $fh, '>', "$tmp/dep/mods/DepMod/mod.info" or die $!;
-    print $fh "id=DepMod\n";
+    print $fh "id=DepMod\nrequire=42.12\n";
     close $fh;
     make_path("$tmp/root/mods/RootMod");
     open $fh, '>', "$tmp/root/mods/RootMod/mod.info" or die $!;
-    print $fh "id=RootMod\n";
+    print $fh "id=RootMod\nrequire=42.12\n";
     close $fh;
 
     no warnings 'redefine';
     local *main::pz_workshop_unix_home = sub { return $home; };
+    local *main::pz_workshop_detect_server_version = sub { return '42.12.0'; };
     use warnings 'redefine';
 
     my @ordered = qw(90000000002 90000000001);
@@ -557,15 +585,16 @@ subtest 'subscribe patch ini adds all workshop ids and ordered mods' => sub {
         '90000000001' => "$tmp/root",
     );
     my ($ok, $err, $info) = pz_workshop_subscribe_patch_ini(
-        'fakeuser', 'pzserver', '90000000001', \@ordered, \%dirs,
+        'fakeuser', 'pzserver', '90000000001', \@ordered, \%dirs, '',
     );
     ok($ok, 'subscribe patch ok') or diag($err);
     is($info->{total}, 2, 'total items');
     is($info->{dep_count}, 1, 'one dependency');
+    is($info->{mods_auto}, 2, 'two version-matching mods');
     my ($vals) = pz_workshop_read_ini($ini);
     like($vals->{WorkshopItems}, qr/90000000002.*90000000001|90000000001.*90000000002/,
         'both workshop ids present');
-    is($vals->{Mods}, 'ExistingMod;DepMod;RootMod', 'new mods inserted before root mods');
+    is($vals->{Mods}, 'ExistingMod;DepMod;RootMod', 'version-matching mods inserted');
 };
 
 subtest 'workshop.cgi uses registry user field for job launch' => sub {

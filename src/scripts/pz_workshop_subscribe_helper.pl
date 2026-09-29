@@ -83,6 +83,7 @@ unless (@ordered_ids) {
 
 my ($ok, $err, $info) = pz_workshop_subscribe_patch_ini(
     $unix_user, $script_name, $root_id, \@ordered_ids, \%content_dir_by_id,
+    $ENV{WEBCORE_SERVER_DIR} // '',
 );
 unless ($ok) {
     print "ERROR: INI patch failed ($err)\n";
@@ -95,6 +96,12 @@ my $deps = $info->{dep_count} // ($total > 0 ? $total - 1 : 0);
 print "INI: ", ($info->{ini} // ''), "\n";
 print "WorkshopItems=", ($info->{workshop} // ''), "\n";
 print "Mods=", ($info->{mods} // ''), "\n";
+if (($info->{server_ver} // '') ne '') {
+    print "Server PZ version: $info->{server_ver}\n";
+} else {
+    print "WARN: could not detect server PZ version — no Mod IDs auto-enabled (enable manually)\n";
+}
+print "Auto-enabled Mod IDs: ", int($info->{mods_auto} // 0), "\n";
 print "Installed $total items ($deps dependencies)\n";
 print "INI patched OK\n";
 exit 0;

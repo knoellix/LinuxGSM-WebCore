@@ -350,6 +350,124 @@ sub pz_workshop_normalize_item_id {
     return ($raw =~ /^\d{5,20}$/) ? $raw : '';
 }
 
+# Normalize a PZ version string to dotted digits (e.g. "42.12.0").
+sub pz_workshop_normalize_version {
+    my ($raw) = @_;
+    $raw //= '';
+    $raw =~ s/[\t\n\r\0]//g;
+    $raw =~ s/^\s+|\s+$//g;
+    return '' unless $raw =~ /(\d+(?:\.\d+)*)/;
+    return $1;
+}
+
+# True if mod.info require/pzversion matches the server version.
+# Empty require => no match (do not auto-enable). Unknown server => no match.
+sub pz_workshop_version_matches {
+    my ($require, $server) = @_;
+    my $req = pz_workshop_normalize_version($require);
+    my $srv = pz_workshop_normalize_version($server);
+    return 0 unless length $req && length $srv;
+    return 1 if $srv eq $req;
+    return 1 if index($srv, "$req.") == 0;   # require 42.12 matches 42.12.0
+    return 1 if index($req, "$srv.") == 0;   # server 42 matches require 42.12
+    my @rp = split /\./, $req;
+    my @sp = split /\./, $srv;
+    return 0 unless @rp && @sp && $rp[0] eq $sp[0];
+    # Major-only require ("42") matches any 42.x
+    return 1 if @rp == 1;
+    # Same major+minor
+    return 1 if defined $rp[1] && defined $sp[1] && $rp[1] eq $sp[1];
+    return 0;
+}
+
+# Select mod ids whose pz_require matches $server_ver. Empty require skipped.
+# If $server_ver unknown or nothing matches => empty list (never "enable all").
+sub pz_workshop_select_mod_ids_for_version {
+    my ($mod_infos, $server_ver) = @_;
+    my $srv = pz_workshop_normalize_version($server_ver);
+    return () unless length $srv;
+    return () unless ref($mod_infos) eq 'ARRAY';
+    my @out;
+    my %seen;
+    for my $mi (@$mod_infos) {
+        next unless ref($mi) eq 'HASH';
+        my $id = $mi->{'id'} // '';
+        $id =~ s/[;\r\n]//g;
+        next unless length $id;
+        next if $seen{$id}++;
+        my $req = $mi->{'pz_require'} // '';
+        next unless pz_workshop_version_matches($req, $srv);
+        push @out, $id;
+    }
+    return @out;
+}
+
+# Best-effort PZ game version from serverfiles / recent logs. '' if unknown.
+sub pz_workshop_detect_server_version {
+    my ($unix_user, $server_dir) = @_;
+    $server_dir //= '';
+    my $home = pz_workshop_unix_home($unix_user) // '';
+
+    my @files;
+    if ($server_dir ne '') {
+        push @files,
+            "$server_dir/serverfiles/media/gameversion",
+            "$server_dir/serverfiles/media/gameversion.txt",
+            "$server_dir/media/gameversion",
+            "$server_dir/media/gameversion.txt";
+    }
+    for my $path (@files) {
+        next unless -f $path && -r $path;
+        open(my $fh, '<', $path) or next;
+        local $/;
+        my $body = <$fh> // '';
+        close($fh);
+        my $v = pz_workshop_normalize_version($body);
+        return $v if length $v;
+    }
+
+    my $logs = ($home ne '') ? "$home/Zomboid/Logs" : '';
+    if ($logs ne '' && -d $logs) {
+        my @candidates;
+        if (opendir(my $dh, $logs)) {
+            while (my $ent = readdir($dh)) {
+                next unless $ent =~ /\.(txt|log)\z/i;
+                next unless $ent =~ /DebugLog|console|server/i || $ent =~ /\d{2}-\d{2}-\d{2}/;
+                my $p = "$logs/$ent";
+                next unless -f $p;
+                push @candidates, $p;
+            }
+            closedir($dh);
+        }
+        @candidates = sort { (stat($b))[9] <=> (stat($a))[9] } @candidates;
+        for my $path (@candidates[0 .. 4]) {
+            last unless defined $path;
+            open(my $fh, '<', $path) or next;
+            my $found = '';
+            while (my $line = <$fh>) {
+                if ($line =~ /versionNumber\s*=\s*([0-9]+(?:\.[0-9]+)*)/i
+                    || $line =~ /\bversion[= ]+([0-9]+(?:\.[0-9]+)*)/i)
+                {
+                    $found = pz_workshop_normalize_version($1);
+                }
+            }
+            close($fh);
+            return $found if length $found;
+        }
+    }
+    return '';
+}
+
+sub pz_workshop_normalize_mod_id {
+    my ($raw) = @_;
+    $raw //= '';
+    $raw =~ s/[\t\n\r\0]//g;
+    $raw =~ s/^\s+|\s+$//g;
+    $raw =~ s/[;]//g;
+    return '' unless length($raw) && length($raw) <= 128;
+    return ($raw =~ /\A[A-Za-z0-9_.\-]+\z/) ? $raw : '';
+}
+
 sub _pz_workshop_http_get_json {
     my ($url, $max_time) = @_;
     $max_time = 30 unless defined $max_time && $max_time =~ /^\d+$/;
@@ -752,14 +870,16 @@ sub pz_workshop_subscribe_resolve_closure {
 }
 
 # Collect mod ids from content dirs in workshop-id order (deps before root).
+# Only ids whose mod.info require matches $server_ver; unknown/empty => none.
 sub pz_workshop_collect_subscribe_mod_ids {
-    my ($ordered_ids, $content_dir_by_id) = @_;
+    my ($ordered_ids, $content_dir_by_id, $server_ver) = @_;
     return () unless ref($ordered_ids) eq 'ARRAY' && ref($content_dir_by_id) eq 'HASH';
     my @mod_ids;
     my %seen;
     for my $wid (@$ordered_ids) {
         my $dir = $content_dir_by_id->{$wid} // next;
-        for my $mid (pz_workshop_parse_mod_ids($dir)) {
+        my @infos = pz_workshop_parse_mod_info($dir);
+        for my $mid (pz_workshop_select_mod_ids_for_version(\@infos, $server_ver)) {
             push @mod_ids, $mid unless $seen{$mid}++;
         }
     }
@@ -788,10 +908,10 @@ sub _pz_workshop_merge_mods_subscribe {
     return @existing;
 }
 
-# Patch INI once for subscribe: all workshop ids + ordered mod ids (deps first).
-# Returns (ok, err, { dep_count => N, total => T, ini => path }).
+# Patch INI once for subscribe: all workshop ids + version-filtered mod ids (deps first).
+# Returns (ok, err, { dep_count => N, total => T, ini => path, server_ver => ... }).
 sub pz_workshop_subscribe_patch_ini {
-    my ($unix_user, $script_name, $root_id, $ordered_ids, $content_dir_by_id) = @_;
+    my ($unix_user, $script_name, $root_id, $ordered_ids, $content_dir_by_id, $server_dir) = @_;
     $root_id = pz_workshop_normalize_item_id($root_id);
     return (0, 'bad_id', undef) unless length $root_id;
     return (0, 'bad_ids', undef) unless ref($ordered_ids) eq 'ARRAY' && @$ordered_ids;
@@ -799,6 +919,8 @@ sub pz_workshop_subscribe_patch_ini {
 
     my ($ok, $ini, $err) = pz_workshop_resolve_ini_path($unix_user, $script_name);
     return (0, $err // 'no_ini', undef) unless $ok;
+
+    my $server_ver = pz_workshop_detect_server_version($unix_user, $server_dir);
 
     my ($vals, undef, $raw) = pz_workshop_read_ini($ini);
     my @wi = pz_workshop_split_list($vals->{'WorkshopItems'} // '');
@@ -810,8 +932,10 @@ sub pz_workshop_subscribe_patch_ini {
     }
 
     my @existing_mods = pz_workshop_split_list($vals->{'Mods'} // '');
-    my @all_mod_ids = pz_workshop_collect_subscribe_mod_ids($ordered_ids, $content_dir_by_id);
-    my @root_mod_ids = pz_workshop_parse_mod_ids($content_dir_by_id->{$root_id} // '');
+    my @all_mod_ids = pz_workshop_collect_subscribe_mod_ids(
+        $ordered_ids, $content_dir_by_id, $server_ver);
+    my @root_infos = pz_workshop_parse_mod_info($content_dir_by_id->{$root_id} // '');
+    my @root_mod_ids = pz_workshop_select_mod_ids_for_version(\@root_infos, $server_ver);
     my @merged_mods = _pz_workshop_merge_mods_subscribe(\@existing_mods, \@all_mod_ids, \@root_mod_ids);
 
     my $new_wi = pz_workshop_join_list(@wi);
@@ -837,11 +961,13 @@ sub pz_workshop_subscribe_patch_ini {
     my $total = scalar @$ordered_ids;
     my $dep_count = $total > 0 ? ($total - 1) : 0;
     return (1, undef, {
-        dep_count => $dep_count,
-        total     => $total,
-        ini       => $ini,
-        mods      => $new_mods,
-        workshop  => $new_wi,
+        dep_count  => $dep_count,
+        total      => $total,
+        ini        => $ini,
+        mods       => $new_mods,
+        workshop   => $new_wi,
+        server_ver => $server_ver,
+        mods_auto  => scalar(@all_mod_ids),
     });
 }
 
@@ -940,7 +1066,25 @@ sub pz_workshop_list_inventory {
     my $appid = get_workshop_appid($script_name) || 108600;
     my $disk = pz_workshop_scan_disk($unix_user, $server_dir, $appid);
     my ($ok, $ini) = pz_workshop_resolve_ini_path($unix_user, $script_name);
-    return pz_workshop_merge_inventory($ok ? $ini : undef, $disk);
+    my $rows = pz_workshop_merge_inventory($ok ? $ini : undef, $disk);
+    my %enabled;
+    if ($ok && defined $ini && -f $ini) {
+        my ($vals) = pz_workshop_read_ini($ini);
+        %enabled = map { $_ => 1 } pz_workshop_split_list($vals->{'Mods'} // '');
+    }
+    for my $row (@{ $rows // [] }) {
+        next unless ref($row) eq 'HASH';
+        my @infos;
+        for my $mi (@{ $row->{'mod_infos'} // [] }) {
+            next unless ref($mi) eq 'HASH';
+            my %copy = %$mi;
+            my $id = $copy{'id'} // '';
+            $copy{'enabled_in_ini'} = ($id ne '' && $enabled{$id}) ? 1 : 0;
+            push @infos, \%copy;
+        }
+        $row->{'mod_infos'} = \@infos;
+    }
+    return $rows;
 }
 
 sub pz_workshop_enable_item {
@@ -970,6 +1114,29 @@ sub pz_workshop_disable_item {
     my ($vals) = pz_workshop_read_ini($ini);
     my $wi = $vals->{WorkshopItems} // '';
     return (0, 'verify_failed') if $wi =~ /(?:^|;)\Q$wid\E(?:;|$)/;
+    return (1, undef);
+}
+
+# Enable a single Mod ID (also ensures WorkshopItems contains $wid).
+sub pz_workshop_enable_mod {
+    my ($ini, $wid, $mod_id) = @_;
+    $mod_id = pz_workshop_normalize_mod_id($mod_id);
+    return (0, 'bad_mod_id') unless length $mod_id;
+    return pz_workshop_enable_item($ini, $wid, [$mod_id]);
+}
+
+# Disable a single Mod ID in Mods= only (WorkshopItems unchanged).
+sub pz_workshop_disable_mod {
+    my ($ini, $mod_id) = @_;
+    $mod_id = pz_workshop_normalize_mod_id($mod_id);
+    return (0, 'bad_mod_id') unless length $mod_id;
+    my ($ok, $err) = pz_workshop_patch_ini($ini, {
+        remove_mods => [$mod_id],
+    });
+    return (0, $err) unless $ok;
+    my ($vals) = pz_workshop_read_ini($ini);
+    my $mods = $vals->{'Mods'} // '';
+    return (0, 'verify_failed') if $mods =~ /(?:^|;)\Q$mod_id\E(?:;|$)/;
     return (1, undef);
 }
 

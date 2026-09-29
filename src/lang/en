@@ -915,4 +915,14 @@ workshop_subscribed_ok=Workshop item subscribed and enabled in the server INI.
 workshop_deps_cap_failed=Too many required Steam Workshop dependencies (max. 20 items including the selected mod).
 workshop_deps_included=Including $1 required dependencies.
 workshop_deps_hint=Subscribe automatically downloads required Steam Workshop dependencies (up to 20 items).
+workshop_mod_enabled_ok=Mod ID enabled in Mods=.
+workshop_mod_disabled_ok=Mod ID disabled in Mods=.
+workshop_mod_enable_btn=Enable mod
+workshop_mod_disable_btn=Disable mod
+workshop_mod_on=on
+workshop_mod_off=off
+workshop_bad_mod_id=Invalid Mod ID.
+workshop_server_pz_version=Detected PZ version
+workshop_server_pz_version_unknown=PZ version unknown — enabling a workshop item will not auto-select Mod IDs. Enable Mod IDs manually.
+workshop_mod_version_hint=Enable item auto-selects Mod IDs matching this version; others stay off until enabled manually.
 workshop_job_launch_failed=Could not start workshop job.

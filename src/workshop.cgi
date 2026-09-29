@@ -185,8 +185,9 @@ sub _ws_status_label {
 }
 
 sub _ws_render_mod_infos {
-    my ($mod_infos) = @_;
+    my ($instance_id, $workshop_id, $mod_infos) = @_;
     return '<i>—</i>' unless ref($mod_infos) eq 'ARRAY' && @$mod_infos;
+    my $can_act = &user_can_operate($instance_id) && !&user_is_readonly($instance_id);
     my @parts;
     for my $mi (@$mod_infos) {
         next unless ref($mi) eq 'HASH';
@@ -199,6 +200,26 @@ sub _ws_render_mod_infos {
         $label .= ' · v' . &html_escape($ver) if $ver =~ /\S/;
         my $req = $mi->{'pz_require'} // '';
         $label .= ' · PZ ' . &html_escape($req) if $req =~ /\S/;
+        my $on = $mi->{'enabled_in_ini'} ? 1 : 0;
+        $label .= ' · <b>' . &html_escape($on
+            ? ($text{'workshop_mod_on'} || 'on')
+            : ($text{'workshop_mod_off'} || 'off')) . '</b>';
+        if ($can_act && length($workshop_id)) {
+            my $act = $on ? 'disable_mod' : 'enable_mod';
+            my $btn = $on
+                ? ($text{'workshop_mod_disable_btn'} || 'Disable mod')
+                : ($text{'workshop_mod_enable_btn'} || 'Enable mod');
+            my $cls = $on ? 'btn-default' : 'btn-success';
+            my $form = &ui_form_start('workshop.cgi', 'post');
+            $form .= &ui_hidden('instance_id', &html_escape($instance_id));
+            $form .= &ui_hidden('xnavigation', '1');
+            $form .= &ui_hidden('action', $act);
+            $form .= &ui_hidden('workshop_id', &html_escape($workshop_id));
+            $form .= &ui_hidden('mod_id', &html_escape($id));
+            $form .= &ui_submit($btn, undef, undef, undef, $cls);
+            $form .= &ui_form_end();
+            $label .= ' ' . _ws_inline_action($form);
+        }
         push @parts, $label;
     }
     return join('<br>', @parts) if @parts;
@@ -307,7 +328,7 @@ my (undef, $script_name, $server_dir) = _ws_parse_script_info($inst);
 my $action = $in{'action'} // '';
 $action =~ s/[^a-z_]//g;
 
-if ($action ne '' && $action !~ /^(?:search|subscribe|enable|disable|delete)$/) {
+if ($action ne '' && $action !~ /^(?:search|subscribe|enable|disable|delete|enable_mod|disable_mod)$/) {
     &error($text{'err_invalid_action'} || 'Invalid action');
 }
 if ($action ne '' && $action ne 'search' && &user_is_readonly($instance_id)) {
@@ -329,7 +350,7 @@ if ($action eq 'subscribe') {
     exit;
 }
 
-if ($action =~ /^(?:enable|disable|delete)$/) {
+if ($action =~ /^(?:enable|disable|delete|enable_mod|disable_mod)$/) {
     $ENV{'REQUEST_METHOD'} eq 'POST'
         or &error($text{'err_invalid_action'} || 'Invalid action');
     &user_can_operate($instance_id)
@@ -343,9 +364,12 @@ if ($action =~ /^(?:enable|disable|delete)$/) {
     &error($text{'workshop_bad_id'} || 'Invalid workshop ID.') unless $row;
     my @mod_ids = @{ _ws_mod_ids_from_row($row) };
     my $orphan = (($row->{'status'} // '') eq 'orphan_ini');
+    my $server_ver = &pz_workshop_detect_server_version($unix_user, $server_dir);
 
     if ($action eq 'enable') {
-        my ($ok, $err) = &pz_workshop_enable_item($ini, $wid, \@mod_ids);
+        my @selected = &pz_workshop_select_mod_ids_for_version(
+            $row->{'mod_infos'} // [], $server_ver);
+        my ($ok, $err) = &pz_workshop_enable_item($ini, $wid, \@selected);
         $ok or &error(($text{'workshop_action_failed'} || 'Workshop action failed.')
             . ($err ? " ($err)" : ''));
         _ws_redirect_with_flash($instance_id, 'workshop_enabled', 'enabled');
@@ -357,6 +381,22 @@ if ($action =~ /^(?:enable|disable|delete)$/) {
         $ok or &error(($text{'workshop_action_failed'} || 'Workshop action failed.')
             . ($err ? " ($err)" : ''));
         _ws_redirect_with_flash($instance_id, 'workshop_disabled', 'disabled');
+    }
+
+    if ($action eq 'enable_mod' || $action eq 'disable_mod') {
+        my $mid = &pz_workshop_normalize_mod_id($in{'mod_id'} // '');
+        &error($text{'workshop_bad_mod_id'} || 'Invalid Mod ID.') unless length $mid;
+        my ($ok, $err);
+        if ($action eq 'enable_mod') {
+            ($ok, $err) = &pz_workshop_enable_mod($ini, $wid, $mid);
+        } else {
+            ($ok, $err) = &pz_workshop_disable_mod($ini, $mid);
+        }
+        $ok or &error(($text{'workshop_action_failed'} || 'Workshop action failed.')
+            . ($err ? " ($err)" : ''));
+        my $flash = ($action eq 'enable_mod') ? 'workshop_mod_enabled' : 'workshop_mod_disabled';
+        my $flag  = ($action eq 'enable_mod') ? 'mod_enabled' : 'mod_disabled';
+        _ws_redirect_with_flash($instance_id, $flash, $flag);
     }
 
     if ($action eq 'delete') {
@@ -418,6 +458,16 @@ if (($in{'disabled'} // '') eq '1' && &module_config_flash_consume('workshop_dis
 if (($in{'deleted'} // '') eq '1' && &module_config_flash_consume('workshop_deleted')) {
     print "<div class='alert alert-success'>"
         . &html_escape($text{'workshop_deleted_ok'} || 'Workshop item deleted.')
+        . "</div>\n";
+}
+if (($in{'mod_enabled'} // '') eq '1' && &module_config_flash_consume('workshop_mod_enabled')) {
+    print "<div class='alert alert-success'>"
+        . &html_escape($text{'workshop_mod_enabled_ok'} || 'Mod ID enabled in Mods=.')
+        . "</div>\n";
+}
+if (($in{'mod_disabled'} // '') eq '1' && &module_config_flash_consume('workshop_mod_disabled')) {
+    print "<div class='alert alert-success'>"
+        . &html_escape($text{'workshop_mod_disabled_ok'} || 'Mod ID disabled in Mods=.')
         . "</div>\n";
 }
 
@@ -538,6 +588,19 @@ if ($ini_ok) {
         . (-f $ini_path ? '' : ' (' . &html_escape($text{'workshop_ini_not_created'} || 'not created yet') . ')')
         . "</small></p>\n";
 }
+my $pz_ver = &pz_workshop_detect_server_version($unix_user, $server_dir);
+if ($pz_ver ne '') {
+    print "<p><small>" . &html_escape($text{'workshop_server_pz_version'} || 'Detected PZ version')
+        . ": " . &html_escape($pz_ver)
+        . " — " . &html_escape($text{'workshop_mod_version_hint'}
+            || 'Enable item auto-selects Mod IDs matching this version; others stay off until enabled manually.')
+        . "</small></p>\n";
+} else {
+    print "<p><small class=\"text-warning\">"
+        . &html_escape($text{'workshop_server_pz_version_unknown'}
+            || 'PZ version unknown — enabling a workshop item will not auto-select Mod IDs. Enable Mod IDs manually.')
+        . "</small></p>\n";
+}
 
 my $steam_details = {};
 if ($api_key =~ /\S/ && @inventory_rows) {
@@ -562,7 +625,7 @@ if (!@inventory_rows) {
         my $steam = $steam_details->{$wid};
         print &ui_columns_row([
             _ws_render_item_cell($row, $steam),
-            _ws_render_mod_infos($row->{'mod_infos'}),
+            _ws_render_mod_infos($instance_id, $wid, $row->{'mod_infos'}),
             &html_escape(_ws_status_label($row->{'status'} // '')),
             _ws_render_row_actions($instance_id, $row),
         ]);

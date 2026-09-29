@@ -212,6 +212,7 @@ for wid in "${ORDERED_IDS[@]}"; do
     PATCH_ARGS+=("${wid}:${CONTENT_DIRS[$wid]}")
 done
 
+export WEBCORE_SERVER_DIR="$SERVER_DIR"
 perl "$MODULE_ROOT/scripts/pz_workshop_subscribe_helper.pl" patch \
     "$UNIX_USER" "$SCRIPT_NAME" "$ITEM_ID" "${PATCH_ARGS[@]}" || {
     set_final_status "failed"

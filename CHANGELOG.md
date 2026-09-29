@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Workshop inventory** (`workshop.cgi`): installed list merges disk scan with INI — shows mod.info metadata, Steam titles (with API key), and per-item enable / disable / delete actions
+- **Workshop inventory** (`workshop.cgi`): installed list merges disk scan with INI — shows mod.info metadata, Steam titles (with API key), and per-item enable / disable / delete actions; per Mod-ID enable/disable; auto-enable on subscribe/enable only Mod IDs matching detected PZ version (else none)
 - **Workshop subscribe dependencies:** Subscribe pulls transitive Steam Required items automatically (cap 20 workshop IDs including the selected mod); `Mods=` order places dependencies before dependents
 - PZ stop uses a short direct/force path (like Minecraft) so a hung admin-password prompt no longer waits ~90s on LGSM `quit`
 - Config editor GET render uses soft path checks (`check_game_config_path`) so paths outside `$script_dir` no longer abort the manage page via Webmin `&error`
