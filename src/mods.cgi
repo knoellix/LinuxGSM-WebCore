@@ -1193,10 +1193,17 @@ if ($action eq 'start' || $action eq 'stop' || $action eq 'restart') {
     _mods_rebuild_monitor_cron();
     my $next_status = &job_next_instance_status($action);
     if (($action eq 'start' || $action eq 'restart') && &server_log_start_log_enabled()) {
-        &server_log_start_log_flash_mark($instance_id)
-            or _mods_job_launch_failed();
+        if (&server_log_start_log_flash_mark($instance_id)) {
+            my $url = _mods_list_url($instance_id, $q, $status, $sort, $dir, $page)
+                . '&start_log=1';
+            &redirect($url);
+            exit;
+        }
+        # Job already launched — do not claim launch failure; soft-warn and stay on list.
+        &module_config_flash_mark('start_log_embed_warn')
+            if defined &module_config_flash_mark;
         my $url = _mods_list_url($instance_id, $q, $status, $sort, $dir, $page)
-            . '&start_log=1';
+            . '&start_log_warn=1';
         &redirect($url);
         exit;
     }
@@ -1982,6 +1989,10 @@ if (($in{'monitor_disabled'} // '') eq '1' && &module_config_flash_consume('moni
 }
 if (($in{'monitor_enabled'} // '') eq '1' && &module_config_flash_consume('monitor_enabled')) {
     _mods_print_success($text{'mc_mods_page_monitor_enabled_ok'} || 'Monitoring enabled.');
+}
+if (($in{'start_log_warn'} // '') eq '1' && &module_config_flash_consume('start_log_embed_warn')) {
+    print ui_warning($text{'start_log_embed_unavailable'}
+        || 'Start job is running, but the embedded start log could not be prepared.');
 }
 {
     my $flash_id = $instance_id // '';

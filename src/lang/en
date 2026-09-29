@@ -53,6 +53,7 @@ integrations_show_start_log=Show start log after Start/Restart
 integrations_show_start_log_desc=When on: after Start or Restart an embedded console log with auto-refresh appears on the current page (Manage / Mods / Workshop). When off: previous behaviour (silent banner or job live view).
 start_log_panel_title=Start log
 start_log_ready_banner=Server started
+start_log_embed_unavailable=Start job is running, but the embedded start log could not be prepared. Check progress under job live view or the console monitor.
 integrations_live_log_section=Live log (Webmin terminal)
 integrations_live_log_desc=Setup jobs show live output via JSON polling (scrollable log). Refreshes every 1.5 seconds — reliable inside the Webmin iframe, no xterm.js required.
 integrations_mc_download_section=Minecraft — download sources

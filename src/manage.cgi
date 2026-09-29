@@ -1015,9 +1015,15 @@ sub _manage_redirect_silent_job {
         $opts{'start_log'} = 1;
     }
     if ($opts{'start_log'}) {
-        &server_log_start_log_flash_mark($inst_id)
-            or &error($text{'err_invalid_action'} || 'Could not prepare start log.');
-        $url .= "&start_log=1";
+        if (&server_log_start_log_flash_mark($inst_id)) {
+            $url .= "&start_log=1";
+        }
+        else {
+            # Job already launched — soft-warn, never claim launch failed.
+            &module_config_flash_mark('start_log_embed_warn')
+                if defined &module_config_flash_mark;
+            $url .= "&start_log_warn=1";
+        }
     }
     &redirect($url);
     exit;
@@ -2958,6 +2964,11 @@ unless ($silent_polling) {
     $nact =~ s/[^a-z_]//g;
     $silent_opts{'next_action'} = $nact if $nact ne '';
     &_manage_render_silent_job_poll($instance_id, $silent_job_id, %silent_opts);
+}
+
+if (($in{'start_log_warn'} // '') eq '1' && &module_config_flash_consume('start_log_embed_warn')) {
+    print ui_warning($text{'start_log_embed_unavailable'}
+        || 'Start job is running, but the embedded start log could not be prepared.');
 }
 
 if (&server_log_start_log_should_show(\%in, $instance_id)) {

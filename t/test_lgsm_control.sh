@@ -122,4 +122,23 @@ out="$(lgsm_start_reliable "$TMP/pz" pzserver 5 2>&1)"
 echo "$out" | grep -qi 'Ready: marker seen' || { echo "fail: expected PZ Ready marker: $out"; exit 1; }
 unset WEBCORE_PZ_START_READY_SECS
 
+# --- PZ already online still waits for ready marker from current offset ---
+unset -f lgsm_is_started lgsm_run_timeout 2>/dev/null || true
+lgsm_is_started() { return 0; }
+lgsm_run_timeout() { echo "FAIL: should not start when already online"; return 1; }
+: >"$TMP/pz/log/console/pzserver-console.log"
+printf 'old *** SERVER STARTED ****\n' >"$TMP/pz/log/console/pzserver-console.log"
+(
+    sleep 1
+    printf 'LOG  : General     , *** SERVER STARTED ****\n' \
+        >>"$TMP/pz/log/console/pzserver-console.log"
+) &
+export WEBCORE_PZ_START_READY_SECS=10
+out="$(lgsm_start_reliable "$TMP/pz" pzserver 5 2>&1)"
+echo "$out" | grep -qi 'Already online' || { echo "fail: expected Already online: $out"; exit 1; }
+echo "$out" | grep -qi 'Ready: marker seen' || { echo "fail: already-online should wait for marker: $out"; exit 1; }
+echo "$out" | grep -qi 'should not start' && { echo "fail: must not invoke LGSM start when online: $out"; exit 1; }
+unset WEBCORE_PZ_START_READY_SECS
+unset -f lgsm_is_started lgsm_run_timeout 2>/dev/null || true
+
 echo "ok test_lgsm_control.sh"

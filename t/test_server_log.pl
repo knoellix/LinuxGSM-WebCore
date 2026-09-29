@@ -77,6 +77,7 @@ ok(server_log_looks_binary($raw_gz), 'raw gzip bytes look binary');
     is($payload->{log_file}, 'latest.log', 'poll payload log basename');
     like($payload->{output}, qr/LINE_LATEST/, 'poll payload has tail');
     ok(!$payload->{binary}, 'poll payload not binary');
+    is($payload->{started}, 0, 'poll started=0 without ready marker');
 }
 
 {
@@ -166,7 +167,23 @@ like(server_log_filemin_path_urlencode('/foo bar'), qr/%20/,
     like($html, qr/start_log_panel/, 'embed panel id present');
     like($html, qr/poll_monitor/, 'embed poll url present');
     like($html, qr/setInterval/, 'embed auto-poll JS present');
+    like($html, qr/start_log_ready_banner/, 'embed ready banner id present');
+    like($html, qr/readyBannerId/, 'embed wires readyBannerId into poll JS');
     like($html, qr/LINE_LATEST/, 'embed includes initial log tail');
+
+    # Poll payload exposes started/online when ready marker is in the tail.
+    open(my $done_fh, '>>', "$logs/latest.log") or die $!;
+    print {$done_fh} "[Server thread/INFO]: Done (1.2s)! For help, type \"help\"\n";
+    close($done_fh);
+    my $payload_ready = server_log_monitor_poll_payload(
+        server_dir  => $root,
+        script_name => 'mcserver',
+        source      => 'lgsm',
+        minecraft   => 1,
+    );
+    ok($payload_ready->{ok}, 'poll payload ok');
+    is($payload_ready->{started}, 1, 'poll started=1 when Done in log');
+    is($payload_ready->{status}, 'online', 'poll status online when Done in log');
 }
 
 done_testing();

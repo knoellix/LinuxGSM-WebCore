@@ -830,6 +830,7 @@ sub server_monitor_poll_client_js {
         pollFailMsg   => $opts{poll_fail_msg}   // '',
         pollInterval  => 0 + ($opts{poll_interval} // 3000),
         autoStart     => $opts{auto_start} ? 1 : 0,
+        readyBannerId => $opts{ready_banner_id} // '',
     );
     my $json = job_log_json_for_script(\%js);
     return <<"JS";
@@ -864,6 +865,15 @@ sub server_monitor_poll_client_js {
     if (stick) {
       outEl.scrollTop = outEl.scrollHeight;
     }
+  }
+
+  function showReadyBanner(d) {
+    if (!O.readyBannerId) return;
+    var ready = d && (d.started == 1 || d.started === true
+      || d.status === "online" || d.status === "started" || d.status === "running");
+    if (!ready) return;
+    var el = document.getElementById(O.readyBannerId);
+    if (el) el.style.display = "";
   }
 
   function currentLogFile() {
@@ -910,6 +920,7 @@ sub server_monitor_poll_client_js {
         } else if (d && d.ok === 0 && O.pollFailMsg) {
           setOutText(O.pollFailMsg);
         }
+        showReadyBanner(d);
       })
       .catch(function () {
         /* keep last output; avoid reload loops */

@@ -212,6 +212,11 @@ sub server_log_monitor_poll_payload {
         output   => $tail,
         log_file => basename($log_file),
         binary   => server_log_looks_binary($tail) ? 1 : 0,
+        # Hint for start-log embed: show ready banner when tail looks online/started.
+        started  => (defined $tail && $tail =~ /(?:\*\*\* SERVER STARTED \*\*\*\*|Done\s*\()/m) ? 1 : 0,
+        status   => (defined $tail && $tail =~ /(?:\*\*\* SERVER STARTED \*\*\*\*|Done\s*\()/m)
+            ? 'online'
+            : '',
     };
 }
 
@@ -515,15 +520,16 @@ sub server_log_embed_html {
     }
     if ($poll_url_base ne '' && defined &server_monitor_poll_client_js) {
         $html .= &server_monitor_poll_client_js(
-            poll_url_base => $poll_url_base,
-            out_id        => $out_id,
-            form_id       => '',
-            checkbox_id   => '',
-            log_file      => $opts{log_file} // '',
-            wait_msg      => $wait_msg,
-            poll_fail_msg => $wait_msg,
-            poll_interval => $opts{poll_interval} // 3000,
-            auto_start    => 1,
+            poll_url_base   => $poll_url_base,
+            out_id          => $out_id,
+            form_id         => '',
+            checkbox_id     => '',
+            log_file        => $opts{log_file} // '',
+            wait_msg        => $wait_msg,
+            poll_fail_msg   => $wait_msg,
+            poll_interval   => $opts{poll_interval} // 3000,
+            auto_start      => 1,
+            ready_banner_id => 'start_log_ready_banner',
         );
     }
     $html .= "</div>\n";

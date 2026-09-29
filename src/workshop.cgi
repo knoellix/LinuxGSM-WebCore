@@ -496,9 +496,14 @@ if ($action eq 'start' || $action eq 'stop' || $action eq 'restart') {
     _ws_rebuild_monitor_cron();
     my $next_status = &job_next_instance_status($action);
     if (($action eq 'start' || $action eq 'restart') && &server_log_start_log_enabled()) {
-        &server_log_start_log_flash_mark($instance_id)
-            or _ws_launch_failed();
-        &redirect(_ws_page_url($instance_id) . '&start_log=1');
+        if (&server_log_start_log_flash_mark($instance_id)) {
+            &redirect(_ws_page_url($instance_id) . '&start_log=1');
+            exit;
+        }
+        # Job already launched — soft-warn, do not claim job launch failed.
+        &module_config_flash_mark('start_log_embed_warn')
+            if defined &module_config_flash_mark;
+        &redirect(_ws_page_url($instance_id) . '&start_log_warn=1');
         exit;
     }
     _ws_redirect_job_live($job_id, $instance_id, next_status => $next_status);
@@ -708,6 +713,12 @@ if (($in{'mod_enabled'} // '') eq '1' && &module_config_flash_consume('workshop_
 if (($in{'mod_disabled'} // '') eq '1' && &module_config_flash_consume('workshop_mod_disabled')) {
     print "<div class='alert alert-success'>"
         . &html_escape($text{'workshop_mod_disabled_ok'} || 'Mod ID disabled in Mods=.')
+        . "</div>\n";
+}
+if (($in{'start_log_warn'} // '') eq '1' && &module_config_flash_consume('start_log_embed_warn')) {
+    print "<div class='alert alert-warning'>"
+        . &html_escape($text{'start_log_embed_unavailable'}
+            || 'Start job is running, but the embedded start log could not be prepared.')
         . "</div>\n";
 }
 

@@ -72,6 +72,17 @@ set_final_status() {
 }
 
 _finalize_detach_ok() {
+    # After successful start/restart: clear monitor starting/paused → running
+    # (same hook as game_action_user.sh).
+    if [[ "$ACTION" == "start" || "$ACTION" == "restart" ]]; then
+        _MODULE_ROOT="${MODULE_ROOT:-}"
+        if [[ -z "$_MODULE_ROOT" ]]; then
+            _MODULE_ROOT="$(cd "$(dirname "$0")"/.. && pwd)"
+        fi
+        if [[ -f "$_MODULE_ROOT/scripts/monitor_mark_ready.pl" ]]; then
+            perl "$_MODULE_ROOT/scripts/monitor_mark_ready.pl" "$SERVER_DIR" || true
+        fi
+    fi
     set_final_status "ok"
 }
 on_exit() {

@@ -448,12 +448,8 @@ lgsm_start_reliable() {
         fi
     fi
 
-    if lgsm_is_started "$server_dir" "$script_name"; then
-        echo "Already online"
-        return 0
-    fi
-
     # Capture console byte offset before start so prior boots do not false-match.
+    # Also used when session is already up (mid-boot): wait from current EOF.
     if [[ "$is_pz" -eq 1 ]]; then
         if pz_log=$(lgsm_console_log "$server_dir" "$script_name"); then
             pz_offset=$(wc -c <"$pz_log" 2>/dev/null | tr -d ' ') || pz_offset=0
@@ -461,6 +457,19 @@ lgsm_start_reliable() {
             pz_log=""
             pz_offset=0
         fi
+    fi
+
+    if lgsm_is_started "$server_dir" "$script_name"; then
+        echo "Already online"
+        # PZ: session may be up while workshop/world still loads — wait for marker.
+        if [[ "$is_pz" -eq 1 ]]; then
+            lgsm_start_wait_ready_marker "$server_dir" "$script_name" \
+                "$pz_log" "$pz_offset" \
+                '\*\*\* SERVER STARTED \*\*\*\*' \
+                "${WEBCORE_PZ_START_READY_SECS:-900}"
+            return $?
+        fi
+        return 0
     fi
 
     echo "Start path: LGSM CLI (timeout ${wait_secs}s)"
