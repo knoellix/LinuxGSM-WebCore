@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - PZ **SandboxVars** world-settings tab (`*_SandboxVars.lua`): all flattened keys as form fields + raw mode
 - Root **LGSM deps install** worker (`./script install` as root after `setup_lgsm`) instead of maintaining full per-game `apt_deps` for LGSM titles
 - Module config **Steam Web API key** on Integrations
+- Mods/Workshop: shared Start/Stop/Restart/Log control bar; optional embedded start-log (Integrations)
+- Workshop: PZ-Version column (keine Angabe / passt / unpassend)
 
 ### Changed
 
@@ -23,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - PZ stop uses a short direct/force path (like Minecraft) so a hung admin-password prompt no longer waits ~90s on LGSM `quit`
 - Config editor GET render uses soft path checks (`check_game_config_path`) so paths outside `$script_dir` no longer abort the manage page via Webmin `&error`
 - Collapsible section chevrons/borders made theme-visible
+- Start: wait for game ready marker (PZ `*** SERVER STARTED ****`); pause monitor until ready
 
 ### Fixed
 
