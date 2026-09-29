@@ -175,6 +175,10 @@ sub _ws_status_label {
     if ($status eq 'active') {
         return $text{'workshop_status_active'} || 'Active';
     }
+    if ($status eq 'workshop_only') {
+        return $text{'workshop_status_workshop_only'}
+            || 'Workshop only (mods off)';
+    }
     if ($status eq 'inactive') {
         return $text{'workshop_status_inactive'} || 'Inactive';
     }
@@ -265,19 +269,22 @@ sub _ws_render_row_actions {
     my $on_disk = $row->{'on_disk'} ? 1 : 0;
     my $actions = '';
 
-    if ($status eq 'inactive') {
+    # inactive: not in WorkshopItems; workshop_only: in WorkshopItems but Mods= off
+    if ($status eq 'inactive' || $status eq 'workshop_only') {
         my $form = &ui_form_start('workshop.cgi', 'post');
         $form .= &ui_hidden('instance_id', &html_escape($instance_id));
         $form .= &ui_hidden('xnavigation', '1');
         $form .= &ui_hidden('action', 'enable');
         $form .= &ui_hidden('workshop_id', $wid);
-        $form .= &ui_submit($text{'workshop_enable_btn'} || 'Enable',
-            undef, undef, undef, 'btn-success');
+        my $btn = ($status eq 'workshop_only')
+            ? ($text{'workshop_enable_mods_btn'} || 'Enable mods')
+            : ($text{'workshop_enable_btn'} || 'Enable');
+        $form .= &ui_submit($btn, undef, undef, undef, 'btn-success');
         $form .= &ui_form_end();
         $actions .= _ws_inline_action($form);
     }
 
-    if ($status eq 'active' || $status eq 'orphan_ini') {
+    if ($status eq 'active' || $status eq 'workshop_only' || $status eq 'orphan_ini') {
         my $form = &ui_form_start('workshop.cgi', 'post');
         $form .= &ui_hidden('instance_id', &html_escape($instance_id));
         $form .= &ui_hidden('xnavigation', '1');

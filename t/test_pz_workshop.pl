@@ -240,6 +240,31 @@ subtest 'inventory merge statuses' => sub {
     is($by{$id_orphan}{status}, 'orphan_ini');
 };
 
+subtest 'inventory workshop_only when Mods empty' => sub {
+    my $tmp = tempdir(CLEANUP => 1);
+    my $home = "$tmp/home";
+    my $server = "$tmp/server";
+    make_path("$home/Zomboid/Server");
+    make_path("$server/serverfiles/steamapps/workshop/content/108600/333333/mods/OnlyMod");
+    open my $fh, '>', "$server/serverfiles/steamapps/workshop/content/108600/333333/mods/OnlyMod/mod.info" or die $!;
+    print $fh "id=OnlyMod\nname=Only\n";
+    close $fh;
+    my $ini = "$home/Zomboid/Server/pzserver.ini";
+    open $fh, '>', $ini or die $!;
+    print $fh "WorkshopItems=333333\nMods=\n";
+    close $fh;
+
+    no warnings 'redefine';
+    local *main::pz_workshop_unix_home = sub { return $home; };
+    use warnings 'redefine';
+
+    my $rows = pz_workshop_list_inventory('fakeuser', 'pzserver', $server);
+    my ($row) = grep { ($_->{workshop_id} // '') eq '333333' } @$rows;
+    ok($row, 'row found');
+    is($row->{status}, 'workshop_only', 'WI on Mods empty => workshop_only');
+    is($row->{mod_infos}[0]{enabled_in_ini}, 0, 'mod marked off');
+};
+
 subtest 'enable disable verify' => sub {
     my $tmp = tempdir(CLEANUP => 1);
     my $ini = "$tmp/pzserver.ini";
@@ -554,6 +579,16 @@ subtest 'version match and select AluminumBat-style' => sub {
         [ pz_workshop_select_mod_ids_for_version(\@infos, '') ],
         [],
         'unknown version => none');
+    is_deeply(
+        [ pz_workshop_select_mod_ids_for_version(
+            [ { id => 'SkillRecoveryJournal', pz_require => '' } ], '42.12') ],
+        ['SkillRecoveryJournal'],
+        'empty require alone => enable');
+    is_deeply(
+        [ pz_workshop_select_mod_ids_for_version(
+            [ { id => 'OldBat', pz_require => '41.78' } ], '42.12') ],
+        [],
+        'only mismatched require => none');
 };
 
 subtest 'subscribe patch ini adds all workshop ids and ordered mods' => sub {

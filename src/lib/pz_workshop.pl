@@ -380,14 +380,20 @@ sub pz_workshop_version_matches {
     return 0;
 }
 
-# Select mod ids whose pz_require matches $server_ver. Empty require skipped.
-# If $server_ver unknown or nothing matches => empty list (never "enable all").
+# Select Mod IDs to auto-enable for a workshop item given $server_ver.
+# Unknown server => none. Prefer version-matching require; if none match but the
+# item only has unconstrained (empty require) Mod IDs => enable those. If the
+# item has versioned variants and none match => none (never enable the wrong
+# branch). When both matching and empty-require siblings exist => matching only
+# (AluminumBat + AluminumBat12).
 sub pz_workshop_select_mod_ids_for_version {
     my ($mod_infos, $server_ver) = @_;
     my $srv = pz_workshop_normalize_version($server_ver);
     return () unless length $srv;
     return () unless ref($mod_infos) eq 'ARRAY';
-    my @out;
+    my @matching;
+    my @unconstrained;
+    my $has_mismatch = 0;
     my %seen;
     for my $mi (@$mod_infos) {
         next unless ref($mi) eq 'HASH';
@@ -396,10 +402,20 @@ sub pz_workshop_select_mod_ids_for_version {
         next unless length $id;
         next if $seen{$id}++;
         my $req = $mi->{'pz_require'} // '';
-        next unless pz_workshop_version_matches($req, $srv);
-        push @out, $id;
+        $req =~ s/^\s+|\s+$//g;
+        if ($req eq '') {
+            push @unconstrained, $id;
+            next;
+        }
+        if (pz_workshop_version_matches($req, $srv)) {
+            push @matching, $id;
+        } else {
+            $has_mismatch = 1;
+        }
     }
-    return @out;
+    return @matching if @matching;
+    return () if $has_mismatch;
+    return @unconstrained;
 }
 
 # Best-effort PZ game version from serverfiles / recent logs. '' if unknown.
@@ -870,7 +886,7 @@ sub pz_workshop_subscribe_resolve_closure {
 }
 
 # Collect mod ids from content dirs in workshop-id order (deps before root).
-# Only ids whose mod.info require matches $server_ver; unknown/empty => none.
+# Per item: version-matched prefer; unconstrained (empty require) if no mismatch.
 sub pz_workshop_collect_subscribe_mod_ids {
     my ($ordered_ids, $content_dir_by_id, $server_ver) = @_;
     return () unless ref($ordered_ids) eq 'ARRAY' && ref($content_dir_by_id) eq 'HASH';
@@ -1075,14 +1091,20 @@ sub pz_workshop_list_inventory {
     for my $row (@{ $rows // [] }) {
         next unless ref($row) eq 'HASH';
         my @infos;
+        my $any_mod_on = 0;
         for my $mi (@{ $row->{'mod_infos'} // [] }) {
             next unless ref($mi) eq 'HASH';
             my %copy = %$mi;
             my $id = $copy{'id'} // '';
             $copy{'enabled_in_ini'} = ($id ne '' && $enabled{$id}) ? 1 : 0;
+            $any_mod_on = 1 if $copy{'enabled_in_ini'};
             push @infos, \%copy;
         }
         $row->{'mod_infos'} = \@infos;
+        # In WorkshopItems but no Mod ID in Mods= → not "fully active".
+        if (($row->{'status'} // '') eq 'active' && @infos && !$any_mod_on) {
+            $row->{'status'} = 'workshop_only';
+        }
     }
     return $rows;
 }
