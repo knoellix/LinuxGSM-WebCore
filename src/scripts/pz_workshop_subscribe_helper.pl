@@ -35,7 +35,7 @@ if ($cmd eq 'resolve') {
     $res = {} unless ref($res) eq 'HASH';
 
     if (($res->{warn} // '') eq 'api_key_missing') {
-        print "WARN: steam_web_api_key missing; subscribing root item only\n";
+        print "WARN: steam_web_api_key missing; resolving Required items via Steam Workshop page scrape\n";
     }
 
     unless ($ok) {

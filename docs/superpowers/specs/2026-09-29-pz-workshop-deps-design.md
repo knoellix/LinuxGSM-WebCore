@@ -63,7 +63,7 @@ root_id
 | `pz_workshop_resolve_dependency_closure($root_id, %opts)` | Returns `{ ok, ids => [...], err, skipped_cycles }` |
 | Worker uses closure then existing download + `pz_workshop_patch_ini` | |
 
-Steam: reuse/extend `GetPublishedFileDetails` (or Query) so one batch can return `children` for many IDs while expanding.
+Steam: `IPublishedFileService/GetDetails` mit `includechildren=true` (RemoteStorage `GetPublishedFileDetails` liefert keine Required items). Fallback: HTML-Scrape der Workshop-Seite (`RequiredItems`), auch ohne API-Key.
 
 ---
 
@@ -71,7 +71,7 @@ Steam: reuse/extend `GetPublishedFileDetails` (or Query) so one batch can return
 
 | Fall | Verhalten |
 |------|-----------|
-| API-Key fehlt | Closure nur Root (kein Children); Log-Warnung; Subscribe wie bisher ohne Deps **oder** fail — **Entscheidung: Warnung + nur Root**, damit ID-Subscribe ohne Key weitergeht |
+| API-Key fehlt | Closure über HTML-Scrape der Required items; Warnung im Job-Log |
 | Cap überschritten | `failed`, keine INI-Änderung für diesen Lauf (oder Rollback wenn schon gepatcht — Prefer: resolve **before** any download/patch) |
 | Einzel-Download fail | `failed` nach Log; bereits geladene Dateien dürfen bleiben; INI nicht halb patchen wenn Root fehlte — Prefer: download all first, patch once at end |
 | Zyklus | Kante ignorieren, weiter |

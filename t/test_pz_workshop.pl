@@ -462,12 +462,52 @@ subtest 'dependency closure bad root id' => sub {
     is($res->{err}, 'bad_id', 'bad_id err');
 };
 
-subtest 'subscribe resolve without api key is root only' => sub {
+subtest 'subscribe resolve without api key scrapes required items' => sub {
     local %config = ();
+    no warnings 'redefine';
+    local *main::pz_workshop_fetch_details_via_scrape = sub {
+        my ($ids) = @_;
+        my %out;
+        for my $id (@{ $ids // [] }) {
+            if ($id eq '70000000001') {
+                $out{$id} = { children => ['70000000002'] };
+            } else {
+                $out{$id} = { children => [] };
+            }
+        }
+        return \%out;
+    };
+    use warnings 'redefine';
     my ($ok, $res) = pz_workshop_subscribe_resolve_closure('70000000001');
-    ok($ok, 'root-only ok without key') or diag($res->{err});
+    ok($ok, 'ok without key via scrape') or diag($res->{err});
     is($res->{warn}, 'api_key_missing', 'warn flag');
-    is_deeply($res->{ids}, ['70000000001'], 'only root id');
+    is_deeply($res->{ids}, [qw(70000000002 70000000001)], 'scrape deps before root');
+};
+
+subtest 'required items html parse (Skill Recovery Journal shape)' => sub {
+    my $html = <<'HTML';
+<div class="requiredItemsContainer" id="RequiredItems">
+  <a href="https://steamcommunity.com/workshop/filedetails/?id=2896041179" target="_blank">
+    <div class="requiredItem">errorMagnifier</div>
+  </a>
+  <a href="https://steamcommunity.com/workshop/filedetails/?id=3077900375" target="_blank">
+    <div class="requiredItem">Mod Update and Alert System</div>
+  </a>
+</div>
+</div>
+HTML
+    my @ids = pz_workshop_parse_required_items_html($html);
+    is_deeply(\@ids, [qw(2896041179 3077900375)], 'parsed required workshop ids');
+    is_deeply([ pz_workshop_parse_required_items_html('') ], [], 'empty html');
+};
+
+subtest 'details get url includes children flags' => sub {
+    my $url = pz_workshop_details_get_url('k', ['2503622437']);
+    like($url, qr{IPublishedFileService/GetDetails}, 'uses GetDetails');
+    like($url, qr{includechildren=true}, 'asks for children');
+    like($url, qr{publishedfileids%5B0%5D=2503622437}, 'id encoded');
+    unlike($url, qr{ISteamRemoteStorage/GetPublishedFileDetails},
+        'does not use RemoteStorage details (no children)');
 };
 
 subtest 'subscribe collect mod ids in closure order' => sub {

@@ -584,7 +584,102 @@ sub _pz_workshop_http_post_json {
     return $data;
 }
 
-# Batch Steam GetPublishedFileDetails. Returns id => details hash; {} on missing key / API fail.
+# Build IPublishedFileService/GetDetails URL (includechildren — RemoteStorage GetPublishedFileDetails does not return Required items).
+sub pz_workshop_details_get_url {
+    my ($key, $ids) = @_;
+    return '' unless defined $key && $key =~ /\S/ && ref($ids) eq 'ARRAY' && @$ids;
+    my $url = 'https://api.steampowered.com/IPublishedFileService/GetDetails/v1/'
+        . '?key=' . _pz_workshop_urlencode($key)
+        . '&includechildren=true'
+        . '&return_children=true'
+        . '&includetags=false'
+        . '&includeadditionalpreviews=false'
+        . '&includekvtags=false'
+        . '&includevotes=false'
+        . '&short_description=true'
+        . '&includeforsaledata=false'
+        . '&includemetadata=false'
+        . '&strip_description_bbcode=true';
+    for my $i (0 .. $#$ids) {
+        $url .= '&publishedfileids%5B' . $i . '%5D=' . _pz_workshop_urlencode($ids->[$i]);
+    }
+    return $url;
+}
+
+# Parse Required items IDs from a Steam Workshop filedetails HTML page.
+sub pz_workshop_parse_required_items_html {
+    my ($html) = @_;
+    return () unless defined $html && $html =~ /\S/;
+    my $block = '';
+    if ($html =~ /id=["']RequiredItems["'][^>]*>(.*?)<\/div>\s*<\/div>/si) {
+        $block = $1;
+    } elsif ($html =~ /requiredItemsContainer[^>]*>(.*?)(?:<\/div>\s*<\/div>\s*<!--|<\/div>\s*<\/div>\s*<div class="panel")/si) {
+        $block = $1;
+    } else {
+        return ();
+    }
+    my @ids;
+    my %seen;
+    while ($block =~ /filedetails\/\?id=(\d{5,20})/gi) {
+        my $id = $1;
+        next if $seen{$id}++;
+        push @ids, $id;
+    }
+    return @ids;
+}
+
+sub _pz_workshop_http_get_text {
+    my ($url, $max_time) = @_;
+    $max_time = 30 unless defined $max_time && $max_time =~ /^\d+$/;
+    return undef unless defined $url && $url =~ m{\Ahttps://steamcommunity\.com/}i;
+    my @cmd = (
+        'curl', '-fsSL',
+        '-A', 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        '--connect-timeout', '15',
+        '--max-time', "$max_time",
+        '--proto-redir', '=https',
+        $url,
+    );
+    my $out = '';
+    {
+        local $SIG{__WARN__} = sub { };
+        open(my $fh, '-|', @cmd) or return undef;
+        local $/;
+        $out = <$fh> // '';
+        close($fh);
+        return undef if $? != 0;
+    }
+    return ($out =~ /\S/) ? $out : undef;
+}
+
+# Scrape Steam Workshop "Required items" for one published file id (no API key).
+sub pz_workshop_scrape_required_items {
+    my ($workshop_id) = @_;
+    $workshop_id = pz_workshop_normalize_item_id($workshop_id);
+    return () unless length $workshop_id;
+    my $url = 'https://steamcommunity.com/sharedfiles/filedetails/?id=' . $workshop_id;
+    my $html = _pz_workshop_http_get_text($url, 45);
+    return () unless defined $html;
+    return pz_workshop_parse_required_items_html($html);
+}
+
+# Enrich details hash: fill missing children via HTML Required-items scrape.
+sub pz_workshop_enrich_details_children {
+    my ($details) = @_;
+    return $details unless ref($details) eq 'HASH';
+    for my $id (keys %$details) {
+        my $entry = $details->{$id};
+        next unless ref($entry) eq 'HASH';
+        my @kids = _pz_workshop_parse_details_children($entry->{'children'});
+        next if @kids;
+        @kids = pz_workshop_scrape_required_items($id);
+        $entry->{'children'} = \@kids if @kids;
+    }
+    return $details;
+}
+
+# Batch Steam published-file details (IPublishedFileService/GetDetails + children).
+# Returns id => details hash; {} on missing key / API fail. May scrape HTML for Required items when children absent.
 sub pz_workshop_steam_details {
     my ($ids) = @_;
     return {} unless ref($ids) eq 'ARRAY';
@@ -604,15 +699,11 @@ sub pz_workshop_steam_details {
     return {} unless @clean;
 
     my %merged;
-    my $url = 'https://api.steampowered.com/ISteamRemoteStorage/GetPublishedFileDetails/v1/';
     while (@clean) {
         my @chunk = splice @clean, 0, 50;
-        my @form = ('key=' . _pz_workshop_urlencode($key));
-        push @form, 'itemcount=' . scalar(@chunk);
-        for my $i (0 .. $#chunk) {
-            push @form, "publishedfileids\[$i\]=" . $chunk[$i];
-        }
-        my $data = _pz_workshop_http_post_json($url, \@form, 45);
+        my $url = pz_workshop_details_get_url($key, \@chunk);
+        next unless length $url;
+        my $data = _pz_workshop_http_get_json($url, 45);
         next unless ref($data) eq 'HASH';
         my $resp = $data->{'response'};
         next unless ref($resp) eq 'HASH';
@@ -620,10 +711,24 @@ sub pz_workshop_steam_details {
         next unless ref($part) eq 'HASH';
         @merged{keys %$part} = values %$part;
     }
-    return \%merged;
+    return pz_workshop_enrich_details_children(\%merged);
 }
 
-# Resolve subscribe closure; warn (api_key_missing) and root-only when no Steam key.
+# Fetch children via HTML scrape only (used when Steam Web API key is missing).
+sub pz_workshop_fetch_details_via_scrape {
+    my ($ids) = @_;
+    my %out;
+    return \%out unless ref($ids) eq 'ARRAY';
+    for my $raw (@$ids) {
+        my $id = pz_workshop_normalize_item_id($raw);
+        next unless length $id;
+        my @kids = pz_workshop_scrape_required_items($id);
+        $out{$id} = { children => \@kids };
+    }
+    return \%out;
+}
+
+# Resolve subscribe closure. With API key: GetDetails(+scrape enrich). Without: HTML Required-items scrape.
 # Returns (ok, { ids => [...], err => ..., warn => ... }).
 sub pz_workshop_subscribe_resolve_closure {
     my ($root_id) = @_;
@@ -631,15 +736,17 @@ sub pz_workshop_subscribe_resolve_closure {
     return (0, { err => 'bad_id', ids => [] }) unless length $root_id;
 
     my $key = steam_web_api_key();
-    unless ($key =~ /\S/) {
-        return (1, {
-            ids  => [$root_id],
-            err  => undef,
-            warn => 'api_key_missing',
-        });
+    my ($ok, $res);
+    if ($key =~ /\S/) {
+        ($ok, $res) = pz_workshop_resolve_dependency_closure($root_id, max => 20);
+    } else {
+        ($ok, $res) = pz_workshop_resolve_dependency_closure($root_id,
+            max => 20,
+            fetch_details => \&pz_workshop_fetch_details_via_scrape,
+        );
+        $res = {} unless ref($res) eq 'HASH';
+        $res->{'warn'} = 'api_key_missing';
     }
-
-    my ($ok, $res) = pz_workshop_resolve_dependency_closure($root_id, max => 20);
     $res = {} unless ref($res) eq 'HASH';
     return ($ok, $res);
 }

@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - After Workshop subscribe, job live view returns to `workshop.cgi` (not manage)
+- Workshop dependency resolve used `ISteamRemoteStorage/GetPublishedFileDetails`, which omits Required items — switched to `IPublishedFileService/GetDetails` (`includechildren`) with HTML scrape fallback (e.g. Skill Recovery Journal deps)
 - Firewall open/close is **protocol-aware**: opening UDP no longer skips when TCP is already allowed (broke PZ — only `16261/tcp` was opened). Manage firewall badge requires both tcp and udp
 - PZ monitor: force LGSM `querymode=1` (session-only) so GameDig query FAIL no longer stop→start loops; longer monitor wait after PZ start
 - Quick Fix create config when `lgsm/config-lgsm/<script>/` does not exist yet (realpath parent walk)
