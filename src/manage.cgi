@@ -2323,6 +2323,14 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|monitor|job_log
                 &_manage_redirect_poll_job($job_id, $instance_id, next_status => 'installed', next_action => 'start');
             }
             if ($action eq 'restart') {
+                {
+                    my $mon = &read_monitor_state($server_dir, $config_directory, $instance_id);
+                    unless (($mon->{status} // '') eq 'disabled') {
+                        my $ready = &get_start_ready_config($script_name);
+                        my $secs = ($ready->{secs} && $ready->{regex}) ? $ready->{secs} : 180;
+                        &set_monitor_starting($server_dir, $config_directory, $instance_id, time() + $secs);
+                    }
+                }
                 my $job_id = &_manage_launch_background_job(
                     $instance_id, 'restart', $unix_user,
                     sub {
@@ -2332,11 +2340,18 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|monitor|job_log
                     },
                 );
                 $job_id or _manage_job_launch_failed();
-                &set_monitor_resume_after_start($server_dir, $config_directory, $instance_id);
                 &_rebuild_monitor_cron();
                 &_manage_redirect_after_job_launch($job_id, $instance_id,
                     action => 'restart', notice_action => 'restart');
             } else {
+            if ($action ne 'stop') {
+                my $mon = &read_monitor_state($server_dir, $config_directory, $instance_id);
+                unless (($mon->{status} // '') eq 'disabled') {
+                    my $ready = &get_start_ready_config($script_name);
+                    my $secs = ($ready->{secs} && $ready->{regex}) ? $ready->{secs} : 180;
+                    &set_monitor_starting($server_dir, $config_directory, $instance_id, time() + $secs);
+                }
+            }
             my $job_id = &_manage_launch_background_job(
                 $instance_id, $action, $unix_user,
                 sub {
@@ -2348,8 +2363,6 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|monitor|job_log
             $job_id or _manage_job_launch_failed();
             if ($action eq 'stop') {
                 &set_monitor_paused($server_dir, $config_directory, $instance_id);
-            } else {
-                &set_monitor_resume_after_start($server_dir, $config_directory, $instance_id);
             }
             &_rebuild_monitor_cron();
             my %launch_opts = (action => $action);
@@ -2357,6 +2370,14 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|monitor|job_log
             }
         } else {
             $script_name = _manage_executable_script_name($server_dir, $script_name);
+            if ($action ne 'stop') {
+                my $mon = &read_monitor_state($server_dir, $config_directory, $instance_id);
+                unless (($mon->{status} // '') eq 'disabled') {
+                    my $ready = &get_start_ready_config($script_name);
+                    my $secs = ($ready->{secs} && $ready->{regex}) ? $ready->{secs} : 180;
+                    &set_monitor_starting($server_dir, $config_directory, $instance_id, time() + $secs);
+                }
+            }
             my $job_id = &_manage_launch_background_job(
                 $instance_id, $action, $unix_user,
                 sub {
@@ -2373,8 +2394,6 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|monitor|job_log
             $job_id or _manage_job_launch_failed();
             if ($action eq 'stop') {
                 &set_monitor_paused($server_dir, $config_directory, $instance_id);
-            } else {
-                &set_monitor_resume_after_start($server_dir, $config_directory, $instance_id);
             }
             &_rebuild_monitor_cron();
             my %launch_opts = (action => $action);

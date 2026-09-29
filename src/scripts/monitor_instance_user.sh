@@ -88,6 +88,20 @@ if [[ "$STATUS" == "paused" || "$STATUS" == "disabled" ]]; then
     exit 0
 fi
 
+if [[ "$STATUS" == "starting" ]]; then
+    UNTIL=$(_read_state_key starting_until 0)
+    NOW=$(date +%s)
+    if [[ "$UNTIL" =~ ^[0-9]+$ ]] && (( NOW < UNTIL )); then
+        _log "Skipping — still starting (until $UNTIL)"
+        exit 0
+    fi
+    _log "Starting grace expired — resuming monitor"
+    # Clear starting → running (preserve restart counter / last_restart_*).
+    RESTART_COUNT=$(_read_state_key restart_count 0)
+    WINDOW_START=$(_read_state_key window_start "$NOW")
+    _write_state "running" "$RESTART_COUNT" "$WINDOW_START"
+fi
+
 # --- LGSM path (runs as the game user, no root) ----------------------------
 
 LGSM_ONLINE_SH="$MODULE_ROOT/scripts/lib/lgsm_online.sh"

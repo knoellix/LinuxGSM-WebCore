@@ -101,6 +101,16 @@ if [ "$ACTION" = "start" ] || [ "$ACTION" = "stop" ] || [ "$ACTION" = "restart" 
         set_final_status "failed"
         exit 1
     fi
+    # After successful start/restart: clear monitor starting/paused → running.
+    if [[ "$ACTION" == "start" || "$ACTION" == "restart" ]]; then
+        _MODULE_ROOT="${MODULE_ROOT:-}"
+        if [[ -z "$_MODULE_ROOT" ]]; then
+            _MODULE_ROOT="$(cd "$(dirname "$0")"/.. && pwd)"
+        fi
+        if [[ -f "$_MODULE_ROOT/scripts/monitor_mark_ready.pl" ]]; then
+            perl "$_MODULE_ROOT/scripts/monitor_mark_ready.pl" "$SERVER_DIR" || true
+        fi
+    fi
     echo "=== '$ACTION' successfully completed ==="
     set_final_status "ok"
     exit 0

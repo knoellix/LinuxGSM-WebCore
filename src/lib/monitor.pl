@@ -34,6 +34,7 @@ sub _read_state_from_file {
     $s{restart_count} = int($s{restart_count} // 0);
     $s{window_start}  = int($s{window_start}  // 0);
     $s{last_restart_at} = int($s{last_restart_at} // 0) if defined $s{last_restart_at};
+    $s{starting_until} = int($s{starting_until} // 0) if exists $s{starting_until};
     return \%s;
 }
 
@@ -61,11 +62,12 @@ sub _monitor_state_serialize {
     my ($state_ref) = @_;
     return '' unless $state_ref && ref($state_ref) eq 'HASH';
     my @lines;
-    for my $k (qw(status restart_count window_start last_restart_at last_restart_job)) {
+    for my $k (qw(status restart_count window_start last_restart_at last_restart_job starting_until)) {
         next unless exists $state_ref->{$k} && defined $state_ref->{$k} && $state_ref->{$k} ne '';
         my $v = $state_ref->{$k};
-        $v = int($v) if $k =~ /^(?:restart_count|window_start|last_restart_at)$/;
+        $v = int($v) if $k =~ /^(?:restart_count|window_start|last_restart_at|starting_until)$/;
         next if $k eq 'last_restart_at' && !$v;
+        next if $k eq 'starting_until' && !$v;
         next if $k eq 'last_restart_job' && $v !~ /^[0-9a-f]{16}$/;
         push @lines, "$k=$v";
     }
@@ -154,10 +156,43 @@ sub set_monitor_resume_after_start {
     return 1;
 }
 
+# Arm monitor grace after Start/Restart: status=starting until $until_epoch.
+# No-op when explicitly disabled. Returns 1 if written, 0 if skipped/failed.
+sub set_monitor_starting {
+    my ($server_dir, $config_dir, $id, $until_epoch) = @_;
+    my $s = read_monitor_state($server_dir, $config_dir, $id);
+    return 0 if ($s->{status} // '') eq 'disabled';
+    $s->{status} = 'starting';
+    $s->{starting_until} = int($until_epoch // 0);
+    return write_monitor_state($server_dir, $s, _monitor_unix_user_for_id($id)) ? 1 : 0;
+}
+
+# Clear starting (or paused) → running after ready marker / start job success.
+# Never overrides disabled.
+sub set_monitor_ready_after_start {
+    my ($server_dir, $config_dir, $id) = @_;
+    my $s = read_monitor_state($server_dir, $config_dir, $id);
+    my $st = $s->{status} // 'disabled';
+    return 0 if $st eq 'disabled';
+    return 0 unless $st eq 'starting' || $st eq 'paused';
+    set_monitor_running($server_dir, $config_dir, $id);
+    return 1;
+}
+
+# True while status=starting and now is still before starting_until.
+sub monitor_is_starting {
+    my ($state_href) = @_;
+    return 0 unless $state_href && ref($state_href) eq 'HASH';
+    return 0 unless ($state_href->{status} // '') eq 'starting';
+    my $until = int($state_href->{starting_until} // 0);
+    return ($until > 0 && time() < $until) ? 1 : 0;
+}
+
 sub set_monitor_disabled {
     my ($server_dir, $config_dir, $id) = @_;
     my $s = read_monitor_state($server_dir, $config_dir, $id);
     $s->{status} = 'disabled';
+    delete $s->{starting_until};
     write_monitor_state($server_dir, $s, _monitor_unix_user_for_id($id));
 }
 

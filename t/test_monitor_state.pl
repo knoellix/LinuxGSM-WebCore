@@ -6,9 +6,22 @@ use FindBin qw($Bin);
 use lib "$Bin/..";
 chdir "$Bin/.." or die "Cannot chdir: $!";
 
-print "1..14\n";
+print "1..20\n";
 sub pass { print "ok - $_[0]\n" }
 sub fail { print "not ok - $_[0]\n" }
+sub is {
+    my ($got, $exp, $name) = @_;
+    ($got // '') eq ($exp // '') ? pass($name) : fail("$name (got='$got' expected='$exp')");
+}
+sub cmp_ok {
+    my ($got, $op, $exp, $name) = @_;
+    my $ok = eval "\$got $op \$exp";
+    $ok ? pass($name) : fail("$name (got=$got $op $exp failed)");
+}
+sub ok {
+    my ($cond, $name) = @_;
+    $cond ? pass($name) : fail($name);
+}
 
 my $tmp = tempdir(CLEANUP => 1);
 
@@ -161,4 +174,51 @@ require './src/lib/monitor.pl';
     (!$changed && $s->{status} eq 'disabled')
         ? pass('resume_after_start: disabled stays disabled')
         : fail("resume_after_start disabled: changed=$changed status=$s->{status}");
+}
+
+# 15. set_monitor_starting writes starting + starting_until
+{
+    my $server_dir = "$tmp/instS";
+    set_monitor_running($server_dir, $tmp, 'instS');
+    set_monitor_starting($server_dir, $tmp, 'instS', time() + 600);
+    my $s = read_monitor_state($server_dir, $tmp, 'instS');
+    is($s->{status}, 'starting', 'starting status');
+    cmp_ok(int($s->{starting_until} // 0), '>', time(), 'deadline future');
+}
+
+# 16. monitor_is_starting true inside window
+{
+    my $server_dir = "$tmp/instS";
+    my $s = read_monitor_state($server_dir, $tmp, 'instS');
+    ok(monitor_is_starting($s), 'inside grace');
+}
+
+# 17. past deadline → not starting
+{
+    my $s = { status => 'starting', starting_until => time() - 10 };
+    ok(!monitor_is_starting($s), 'past grace');
+}
+
+# 18. set_monitor_ready_after_start: starting -> running
+{
+    my $server_dir = "$tmp/ready_start";
+    set_monitor_running($server_dir, $tmp, 'ready_start');
+    set_monitor_starting($server_dir, $tmp, 'ready_start', time() + 300);
+    my $changed = set_monitor_ready_after_start($server_dir, $tmp, 'ready_start');
+    my $s = read_monitor_state($server_dir, $tmp, 'ready_start');
+    ($changed && $s->{status} eq 'running' && !($s->{starting_until} // 0))
+        ? pass('ready_after_start: starting -> running')
+        : fail("ready_after_start starting: changed=$changed status=$s->{status} until=$s->{starting_until}");
+}
+
+# 19. set_monitor_ready_after_start / set_monitor_starting: disabled stays disabled
+{
+    my $server_dir = "$tmp/ready_dis";
+    set_monitor_disabled($server_dir, $tmp, 'ready_dis');
+    my $armed = set_monitor_starting($server_dir, $tmp, 'ready_dis', time() + 100);
+    my $changed = set_monitor_ready_after_start($server_dir, $tmp, 'ready_dis');
+    my $s = read_monitor_state($server_dir, $tmp, 'ready_dis');
+    (!$armed && !$changed && $s->{status} eq 'disabled')
+        ? pass('starting/ready: disabled stays disabled')
+        : fail("disabled guard: armed=$armed changed=$changed status=$s->{status}");
 }

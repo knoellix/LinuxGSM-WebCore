@@ -1149,6 +1149,15 @@ if ($action eq 'start' || $action eq 'stop') {
         }
     }
 
+    if ($action ne 'stop') {
+        my $mon = &read_monitor_state($server_dir, $config_directory, $instance_id);
+        unless (($mon->{status} // '') eq 'disabled') {
+            my $ready = &get_start_ready_config($script_name);
+            my $secs = ($ready->{secs} && $ready->{regex}) ? $ready->{secs} : 180;
+            &set_monitor_starting($server_dir, $config_directory, $instance_id, time() + $secs);
+        }
+    }
+
     my $source = &instance_effective_source($inst);
     my $job_id;
     if ($source eq 'steamcmd') {
@@ -1177,11 +1186,8 @@ if ($action eq 'start' || $action eq 'stop') {
         );
     }
     $job_id or _mods_job_launch_failed();
-
     if ($action eq 'stop') {
         &set_monitor_paused($server_dir, $config_directory, $instance_id);
-    } else {
-        &set_monitor_resume_after_start($server_dir, $config_directory, $instance_id);
     }
     _mods_rebuild_monitor_cron();
     my $next_status = &job_next_instance_status($action);
