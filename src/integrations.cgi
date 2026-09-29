@@ -152,6 +152,7 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
         &is_admin() or &error($text{'err_acl_admin_only'} || 'Access denied');
 
         $config{debug_logging} = &module_config_bool($in{'debug_logging'});
+        $config{manage_show_start_log} = &module_config_bool($in{'manage_show_start_log'});
         $config{download_allow_custom_url} = &module_config_bool($in{'download_allow_custom_url'});
         $config{modpack_cf_auto_resume} = &module_config_bool($in{'modpack_cf_auto_resume'});
 
@@ -541,6 +542,15 @@ if (&is_admin()) {
         &html_escape($text{'config_debug_logging'} || 'Debug-Logging'),
         &ui_radio('debug_logging', &module_config_bool($config{debug_logging}) ? 1 : 0,
             [[1, ($text{'yes'} || 'Ja')], [0, ($text{'no'} || 'Nein')]]));
+    print &ui_table_row(
+        &html_escape($text{'integrations_show_start_log'} || 'Start-Log nach Start/Neustart'),
+        &ui_radio('manage_show_start_log',
+            &module_config_bool($config{manage_show_start_log}) ? 1 : 0,
+            [[1, ($text{'yes'} || 'Ja')], [0, ($text{'no'} || 'Nein')]])
+            . "<br><small>"
+            . &html_escape($text{'integrations_show_start_log_desc'}
+                || 'Embedded console after Start/Restart on the current page.')
+            . "</small>");
     print &ui_table_end();
     print "<p><small><i>" . &html_escape($text{'integrations_secrets_persist_hint'}) . "</i></small></p>\n";
     print &ui_submit($text{'acl_manage_save'} || 'Speichern', undef, undef, undef, 'btn-default');

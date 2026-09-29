@@ -1,4 +1,5 @@
 debug_logging=0
+manage_show_start_log=0
 modrinth_contact=
 curseforge_api_key=
 hangar_api_token=

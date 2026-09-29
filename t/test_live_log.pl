@@ -109,6 +109,17 @@ ok(@apt >= 2, 'apt package list defined');
     unlike($mon_js, qr/http-equiv|metaFallback|enableMetaFallback/i,
         'monitor poll has no meta refresh fallback');
     like($mon_js, qr/\b3000\b/, 'monitor poll interval is 3s');
+
+    my $embed_js = server_monitor_poll_client_js(
+        poll_url_base => '/linuxgsm-webcore/workshop.cgi?action=poll_monitor',
+        out_id        => 'start_log_panel',
+        form_id       => '',
+        checkbox_id   => '',
+        poll_interval => 3000,
+        auto_start    => 1,
+    );
+    like($embed_js, qr/setInterval/, 'embed poll without checkbox still sets interval');
+    like($embed_js, qr/pollOnce\(\)/, 'embed poll runs immediately on autoStart');
 }
 
 {

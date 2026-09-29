@@ -464,6 +464,12 @@ if ($action eq 'start' || $action eq 'stop' || $action eq 'restart') {
     }
     _ws_rebuild_monitor_cron();
     my $next_status = &job_next_instance_status($action);
+    if (($action eq 'start' || $action eq 'restart') && &server_log_start_log_enabled()) {
+        &server_log_start_log_flash_mark($instance_id)
+            or _ws_launch_failed();
+        &redirect(_ws_page_url($instance_id) . '&start_log=1');
+        exit;
+    }
     _ws_redirect_job_live($job_id, $instance_id, next_status => $next_status);
 }
 
@@ -684,6 +690,20 @@ if ($action_result_job ne ''
         . &html_escape($text{'workshop_subscribed_ok'}
             || 'Workshop item subscribed and enabled in the server INI.')
         . "</div>\n";
+}
+
+if (&server_log_start_log_should_show(\%in, $instance_id)) {
+    my $mn = $module_name // $main::module_name // 'linuxgsm-webcore';
+    $mn =~ s/[^a-zA-Z0-9_-]//g;
+    print &server_log_embed_html(
+        instance_id   => $instance_id,
+        server_dir    => $server_dir,
+        script_name   => $script_name,
+        source        => &instance_effective_source($inst),
+        minecraft     => 0,
+        poll_url_base => "/$mn/workshop.cgi?instance_id=" . &urlize($instance_id)
+            . '&action=poll_monitor',
+    );
 }
 
 my $api_key = &steam_web_api_key();

@@ -1006,6 +1006,19 @@ sub _manage_redirect_silent_job {
     $url .= "&next_status=" . &html_escape($opts{'next_status'}) if $opts{'next_status'};
     $url .= "&next_action=" . &html_escape($opts{'next_action'}) if $opts{'next_action'};
     $url .= "&notice_action=" . &html_escape($opts{'notice_action'}) if $opts{'notice_action'};
+    my $na = $opts{'notice_action'} // '';
+    $na =~ s/[^a-z_]//g;
+    if (!$opts{'start_log'}
+        && ($na eq 'start' || $na eq 'restart')
+        && &server_log_start_log_enabled())
+    {
+        $opts{'start_log'} = 1;
+    }
+    if ($opts{'start_log'}) {
+        &server_log_start_log_flash_mark($inst_id)
+            or &error($text{'err_invalid_action'} || 'Could not prepare start log.');
+        $url .= "&start_log=1";
+    }
     &redirect($url);
     exit;
 }
@@ -2945,6 +2958,25 @@ unless ($silent_polling) {
     $nact =~ s/[^a-z_]//g;
     $silent_opts{'next_action'} = $nact if $nact ne '';
     &_manage_render_silent_job_poll($instance_id, $silent_job_id, %silent_opts);
+}
+
+if (&server_log_start_log_should_show(\%in, $instance_id)) {
+    my $source = $effective_source;
+    my $is_mc = ($script_dir_for_cfg
+        && (
+            (&is_minecraft_game($script_name_for_cfg) ? 1 : 0)
+            || (-d "$script_dir_for_cfg/serverfiles/logs" ? 1 : 0)
+            || (&read_mc_profile($script_dir_for_cfg) ? 1 : 0)
+        )) ? 1 : 0;
+    print &server_log_embed_html(
+        instance_id   => $instance_id,
+        server_dir    => $script_dir_for_cfg,
+        script_name   => $script_name_for_cfg,
+        source        => $source,
+        minecraft     => $is_mc,
+        poll_url_base => _manage_poll_job_module_path(
+            'manage.cgi?instance_id=' . &urlize($instance_id) . '&action=poll_monitor'),
+    );
 }
 
 # Parse LGSM config to check _has_user_config

@@ -889,7 +889,8 @@ sub server_monitor_poll_client_js {
 
   function startPoll() {
     stopPoll();
-    if (!cb || !cb.checked) return;
+    if (cb && !cb.checked) return;
+    if (!cb && !O.autoStart) return;
     pollTimer = window.setInterval(pollOnce, O.pollInterval);
   }
 
@@ -939,7 +940,8 @@ sub server_monitor_poll_client_js {
       pollOnce();
     });
   }
-  if (O.autoStart && cb && cb.checked) {
+  if (O.autoStart && (!cb || cb.checked)) {
+    pollOnce();
     startPoll();
   }
 })();

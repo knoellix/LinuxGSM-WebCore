@@ -8,6 +8,8 @@ use FindBin qw($Bin);
 require "$Bin/stubs.pl";
 require "$Bin/../src/lib/server_log.pl";
 
+our (%config, $module_config_directory);
+
 my $root = tempdir(CLEANUP => 1);
 my $logs = "$root/serverfiles/logs";
 system('mkdir', '-p', $logs) == 0 or die "mkdir: $!";
@@ -122,5 +124,49 @@ ok(server_log_monitor_resolve_auto_refresh(undef), 'auto refresh on when unset')
 
 like(server_log_filemin_path_urlencode('/foo bar'), qr/%20/,
     'filemin path urlencode spaces');
+
+{
+    require "$Bin/../src/lib/live_log.pl";
+    require "$Bin/../src/lib/module_config.pl";
+
+    ok(!server_log_start_log_enabled(), 'start log disabled when config unset');
+    local $config{manage_show_start_log} = '1';
+    ok(server_log_start_log_enabled(), 'start log enabled when config is 1');
+    local $config{manage_show_start_log} = '0';
+    ok(!server_log_start_log_enabled(), 'start log off when config is 0');
+
+    is(server_log_start_log_flash_name('inst-1'), 'start_log_inst-1',
+        'flash name includes instance id');
+    is(server_log_start_log_flash_name('../x'), 'start_log_x',
+        'flash name strips path chars');
+
+    my $tmpdir = tempdir(CLEANUP => 1);
+    local $module_config_directory = $tmpdir;
+    local $main::module_config_directory = $tmpdir;
+    ok(server_log_start_log_flash_mark('demo1'), 'flash mark succeeds');
+    ok(!server_log_start_log_should_show({ start_log => '0' }, 'demo1'),
+        'no show without start_log=1');
+    ok(server_log_start_log_should_show({ start_log => '1' }, 'demo1'),
+        'show when start_log=1 and flash fresh');
+    ok(!server_log_start_log_should_show({ start_log => '1' }, 'demo1'),
+        'flash consumed only once');
+
+    our %text;
+    local $text{start_log_panel_title} = 'Start-Log';
+    local $text{start_log_ready_banner} = 'Server gestartet';
+    my $html = server_log_embed_html(
+        instance_id   => 'demo1',
+        server_dir    => $root,
+        script_name   => 'mcserver',
+        source        => 'lgsm',
+        minecraft     => 1,
+        poll_url_base => '/linuxgsm-webcore/mods.cgi?instance_id=demo1&action=poll_monitor',
+    );
+    like($html, qr/Start-Log/, 'embed title present');
+    like($html, qr/start_log_panel/, 'embed panel id present');
+    like($html, qr/poll_monitor/, 'embed poll url present');
+    like($html, qr/setInterval/, 'embed auto-poll JS present');
+    like($html, qr/LINE_LATEST/, 'embed includes initial log tail');
+}
 
 done_testing();

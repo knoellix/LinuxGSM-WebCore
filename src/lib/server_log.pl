@@ -430,4 +430,104 @@ sub server_log_render_monitor_page {
     );
 }
 
+# Module config: optional embedded start-log after Start/Restart (default off).
+sub server_log_start_log_enabled {
+    our %config;
+    return 0 unless defined &module_config_bool;
+    return &module_config_bool($config{'manage_show_start_log'});
+}
+
+sub server_log_start_log_flash_name {
+    my ($instance_id) = @_;
+    $instance_id //= '';
+    $instance_id =~ s/[^a-zA-Z0-9_-]//g;
+    return '' if $instance_id eq '';
+    return "start_log_$instance_id";
+}
+
+sub server_log_start_log_flash_mark {
+    my ($instance_id) = @_;
+    my $name = server_log_start_log_flash_name($instance_id);
+    return 0 unless $name ne '' && defined &module_config_flash_mark;
+    return &module_config_flash_mark($name);
+}
+
+# True only when URL has start_log=1 and a fresh flash was consumed.
+sub server_log_start_log_should_show {
+    my ($in_href, $instance_id) = @_;
+    return 0 unless ref($in_href) eq 'HASH';
+    return 0 unless (($in_href->{'start_log'} // '') eq '1');
+    my $name = server_log_start_log_flash_name($instance_id);
+    return 0 unless $name ne '' && defined &module_config_flash_consume;
+    return &module_config_flash_consume($name);
+}
+
+# Compact embedded console panel for Start/Restart (poll_monitor JSON, ~3s).
+# Returns HTML string; caller prints it. Does not force job_live.cgi.
+sub server_log_embed_html {
+    my (%opts) = @_;
+    our %text;
+    my $poll_url_base = $opts{poll_url_base} // '';
+    my $out_id = $opts{out_id} // 'start_log_panel';
+    $out_id =~ s/[^a-zA-Z0-9_-]//g;
+    $out_id = 'start_log_panel' if $out_id eq '';
+
+    my $title = $opts{title};
+    if (!defined $title || $title eq '') {
+        $title = (defined $text{'start_log_panel_title'} && $text{'start_log_panel_title'} =~ /\S/)
+            ? $text{'start_log_panel_title'}
+            : 'Start-Log';
+    }
+    my $ready_banner = $opts{ready_banner};
+    if (!defined $ready_banner || $ready_banner eq '') {
+        $ready_banner = (defined $text{'start_log_ready_banner'} && $text{'start_log_ready_banner'} =~ /\S/)
+            ? $text{'start_log_ready_banner'}
+            : 'Server started';
+    }
+
+    my $initial = $opts{initial_text} // '';
+    if ($initial eq '' && ($opts{server_dir} // '') ne '') {
+        my $payload = server_log_monitor_poll_payload(
+            server_dir  => $opts{server_dir},
+            script_name => $opts{script_name} // '',
+            source      => $opts{source} // '',
+            minecraft   => $opts{minecraft} ? 1 : 0,
+            log_file    => $opts{log_file} // '',
+        );
+        $initial = $payload->{output} // '' if ref($payload) eq 'HASH' && $payload->{ok};
+    }
+
+    my $wait_msg = $opts{wait_msg}
+        // server_log_monitor_text(['manage_monitor_no_log'], 'No log file found.');
+
+    my $html = "<div class=\"lgsm-start-log\" id=\"start_log_wrap\">\n";
+    $html .= "<h3>" . &html_escape($title) . "</h3>\n";
+    $html .= "<div id=\"start_log_ready_banner\" class=\"alert alert-success\" style=\"display:none\">"
+        . &html_escape($ready_banner) . "</div>\n";
+    if (defined &job_log_view_page_css) {
+        $html .= &job_log_view_page_css();
+    }
+    if (defined &job_log_view_block) {
+        $html .= &job_log_view_block($initial, id => $out_id, live => 1);
+    } else {
+        $html .= "<pre id=\"" . &html_escape($out_id) . "\">"
+            . &html_escape($initial) . "</pre>\n";
+    }
+    if ($poll_url_base ne '' && defined &server_monitor_poll_client_js) {
+        $html .= &server_monitor_poll_client_js(
+            poll_url_base => $poll_url_base,
+            out_id        => $out_id,
+            form_id       => '',
+            checkbox_id   => '',
+            log_file      => $opts{log_file} // '',
+            wait_msg      => $wait_msg,
+            poll_fail_msg => $wait_msg,
+            poll_interval => $opts{poll_interval} // 3000,
+            auto_start    => 1,
+        );
+    }
+    $html .= "</div>\n";
+    return $html;
+}
+
 1;

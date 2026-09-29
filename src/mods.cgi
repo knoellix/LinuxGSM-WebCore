@@ -1192,6 +1192,14 @@ if ($action eq 'start' || $action eq 'stop' || $action eq 'restart') {
     }
     _mods_rebuild_monitor_cron();
     my $next_status = &job_next_instance_status($action);
+    if (($action eq 'start' || $action eq 'restart') && &server_log_start_log_enabled()) {
+        &server_log_start_log_flash_mark($instance_id)
+            or _mods_job_launch_failed();
+        my $url = _mods_list_url($instance_id, $q, $status, $sort, $dir, $page)
+            . '&start_log=1';
+        &redirect($url);
+        exit;
+    }
     _mods_redirect_job_live($job_id, $instance_id, next_status => $next_status);
 }
 
@@ -2057,6 +2065,20 @@ my $after_status = '';
         extra_status_parts  => \@extra_parts,
         after_status_html   => $after_status,
         back_cgi            => 'manage.cgi',
+    );
+}
+
+if (&server_log_start_log_should_show(\%in, $instance_id)) {
+    my $mn = $module_name // $main::module_name // 'linuxgsm-webcore';
+    $mn =~ s/[^a-zA-Z0-9_-]//g;
+    print &server_log_embed_html(
+        instance_id   => $instance_id,
+        server_dir    => $server_dir,
+        script_name   => $script_name,
+        source        => &instance_effective_source($inst),
+        minecraft     => 1,
+        poll_url_base => "/$mn/mods.cgi?instance_id=" . &urlize($instance_id)
+            . '&action=poll_monitor',
     );
 }
 
