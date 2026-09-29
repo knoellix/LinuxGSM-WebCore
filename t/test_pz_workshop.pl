@@ -565,8 +565,13 @@ subtest 'subscribe collect mod ids filters by PZ version' => sub {
 subtest 'version match and select AluminumBat-style' => sub {
     ok(pz_workshop_version_matches('42.12', '42.12.0'), '42.12 matches 42.12.0');
     ok(pz_workshop_version_matches('42', '42.12'), 'major-only matches');
+    ok(pz_workshop_version_matches('42.12', '42.20'), 'older pin ok on newer same major');
+    ok(pz_workshop_version_matches('42.13', '42.20'), '42.13 ok on 42.20');
+    ok(!pz_workshop_version_matches('42.13', '42.12'), 'newer pin not ok on older server');
     ok(!pz_workshop_version_matches('41.78', '42.12'), 'B41 not B42');
     ok(!pz_workshop_version_matches('', '42.12'), 'empty require no match');
+    ok(pz_workshop_version_exactish('42.12', '42.12.3'), 'exactish same minor');
+    ok(!pz_workshop_version_exactish('42.12', '42.20'), 'exactish rejects other minor');
     my @infos = (
         { id => 'AluminumBat', pz_require => '' },
         { id => 'AluminumBat12', pz_require => '42.12' },
@@ -589,6 +594,56 @@ subtest 'version match and select AluminumBat-style' => sub {
             [ { id => 'OldBat', pz_require => '41.78' } ], '42.12') ],
         [],
         'only mismatched require => none');
+};
+
+subtest 'AluminumBat versioned subdirs collapse' => sub {
+    my $tmp = tempdir(CLEANUP => 1);
+    my $item = "$tmp/2895632846";
+    make_path("$item/mods/AluminumBat");
+    make_path("$item/mods/AluminumBat/42.12");
+    make_path("$item/mods/AluminumBat/42.13");
+    open my $fh, '>', "$item/mods/AluminumBat/mod.info" or die $!;
+    print $fh "name=Aluminum Bat Mod\nid=AluminumBat\n";
+    close $fh;
+    open $fh, '>', "$item/mods/AluminumBat/42.12/mod.info" or die $!;
+    print $fh "name=Aluminum Bat Mod\nid=AluminumBat12\npzversion=42.12\nmodversion=1.5\n";
+    close $fh;
+    open $fh, '>', "$item/mods/AluminumBat/42.13/mod.info" or die $!;
+    print $fh "name=Aluminum Bat Mod\nid=AluminumBat\npzversion=42.13\nmodversion=1.6\n";
+    close $fh;
+
+    my @raw = pz_workshop_parse_mod_info($item);
+    cmp_ok(scalar(@raw), '>=', 3, 'parse keeps all mod.info variants');
+
+    my @for_12 = pz_workshop_collapse_mod_infos(\@raw, '42.12');
+    my %by12 = map { $_->{id} => $_ } @for_12;
+    is($by12{'AluminumBat12'}{pz_require}, '42.12', '42.12 keeps AluminumBat12 pin');
+    is($by12{'AluminumBat'}{pz_require}, '', '42.12 prefers empty AluminumBat over newer 42.13 pin');
+    is_deeply(
+        [ pz_workshop_select_mod_ids_for_version(\@for_12, '42.12') ],
+        ['AluminumBat12'],
+        'select on 42.12 => AluminumBat12');
+    is(pz_workshop_pz_version_cell($by12{'AluminumBat12'}{pz_require}, '42.12')->{match},
+        'ok', 'AluminumBat12 passt on 42.12');
+
+    my @for_13 = pz_workshop_collapse_mod_infos(\@raw, '42.13');
+    my %by13 = map { $_->{id} => $_ } @for_13;
+    is($by13{'AluminumBat'}{pz_require}, '42.13', '42.13 keeps versioned AluminumBat');
+    is(pz_workshop_pz_version_cell($by13{'AluminumBat'}{pz_require}, '42.13')->{match},
+        'ok', 'AluminumBat passt on 42.13');
+    is(pz_workshop_pz_version_cell($by13{'AluminumBat12'}{pz_require}, '42.13')->{match},
+        'ok', 'AluminumBat12 older pin still passt on 42.13');
+    is_deeply(
+        [ pz_workshop_select_mod_ids_for_version(\@raw, '42.13') ],
+        ['AluminumBat'],
+        'select on 42.13 prefers exact AluminumBat over AluminumBat12');
+
+    is(pz_workshop_pz_version_cell('42.12', '42.20')->{match}, 'ok', '42.12 passt on 42.20');
+    is(pz_workshop_pz_version_cell('42.13', '42.20')->{match}, 'ok', '42.13 passt on 42.20');
+    is_deeply(
+        [ pz_workshop_select_mod_ids_for_version(\@raw, '42.20') ],
+        ['AluminumBat'],
+        'select on 42.20 => newest compatible pin AluminumBat (42.13)');
 };
 
 subtest 'pz_workshop_pz_version_cell' => sub {

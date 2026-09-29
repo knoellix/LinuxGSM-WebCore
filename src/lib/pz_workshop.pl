@@ -240,7 +240,6 @@ sub pz_workshop_parse_mod_info {
     my ($item_dir) = @_;
     return () unless defined $item_dir && -d $item_dir;
     my @out;
-    my %seen_id;
     require File::Find;
     File::Find::find({
         wanted => sub {
@@ -257,7 +256,8 @@ sub pz_workshop_parse_mod_info {
             my $id = $f{id} // '';
             $id =~ s/[;\r\n]//g;
             return unless length $id;
-            return if $seen_id{$id}++;
+            # Keep every mod.info (same id may appear in versioned subdirs, e.g.
+            # AluminumBat root + AluminumBat/42.13/). Collapse later with server ver.
             my $req = $f{require} // $f{pzversion} // $f{'pz-version'} // '';
             push @out, {
                 id         => $id,
@@ -269,6 +269,57 @@ sub pz_workshop_parse_mod_info {
         },
         no_chdir => 1,
     }, $item_dir);
+    return @out;
+}
+
+# Pick one mod.info per Mod-ID. Prefer require matching $server_ver; else empty
+# require over a known-mismatched pin; else first versioned entry.
+sub pz_workshop_pick_mod_info_variant {
+    my ($variants, $server_ver) = @_;
+    return undef unless ref($variants) eq 'ARRAY' && @$variants;
+    return $variants->[0] if @$variants == 1;
+    my $srv = pz_workshop_normalize_version($server_ver);
+    my (@matching, @empty, @other);
+    for my $mi (@$variants) {
+        next unless ref($mi) eq 'HASH';
+        my $req = $mi->{'pz_require'} // '';
+        $req =~ s/^\s+|\s+$//g;
+        if (length $srv && length $req && pz_workshop_version_matches($req, $srv)) {
+            push @matching, $mi;
+        }
+        elsif ($req eq '') {
+            push @empty, $mi;
+        }
+        else {
+            push @other, $mi;
+        }
+    }
+    return $matching[0] if @matching;
+    return $empty[0] if @empty && length $srv;
+    return $other[0] if @other;
+    return $empty[0] if @empty;
+    return $variants->[0];
+}
+
+# Collapse duplicate Mod-IDs from versioned mod.info trees for a server version.
+sub pz_workshop_collapse_mod_infos {
+    my ($infos, $server_ver) = @_;
+    return () unless ref($infos) eq 'ARRAY';
+    my %groups;
+    my @order;
+    for my $mi (@$infos) {
+        next unless ref($mi) eq 'HASH';
+        my $id = $mi->{'id'} // '';
+        $id =~ s/[;\r\n]//g;
+        next unless length $id;
+        push @order, $id unless exists $groups{$id};
+        push @{ $groups{$id} }, $mi;
+    }
+    my @out;
+    for my $id (@order) {
+        my $pick = pz_workshop_pick_mod_info_variant($groups{$id}, $server_ver);
+        push @out, $pick if ref($pick) eq 'HASH';
+    }
     return @out;
 }
 
@@ -360,8 +411,31 @@ sub pz_workshop_normalize_version {
     return $1;
 }
 
-# True if mod.info require/pzversion matches the server version.
+# Compare dotted version strings: -1 if $a < $b, 0 if equal, 1 if $a > $b.
+sub pz_workshop_version_cmp {
+    my ($a, $b) = @_;
+    my $na = pz_workshop_normalize_version($a);
+    my $nb = pz_workshop_normalize_version($b);
+    return 0 if $na eq '' && $nb eq '';
+    return -1 if $na eq '';
+    return 1 if $nb eq '';
+    my @aa = split /\./, $na;
+    my @bb = split /\./, $nb;
+    my $n = @aa > @bb ? scalar(@aa) : scalar(@bb);
+    for my $i (0 .. $n - 1) {
+        my $x = int($aa[$i] // 0);
+        my $y = int($bb[$i] // 0);
+        return -1 if $x < $y;
+        return 1 if $x > $y;
+    }
+    return 0;
+}
+
+# True if mod.info require/pzversion is compatible with the server version.
 # Empty require => no match (do not auto-enable). Unknown server => no match.
+# Compatible = same major and require <= server (older/equal pin on newer game),
+# or exact/prefix/major-only rules. Require newer than server (e.g. 42.13 on 42.12)
+# is not compatible.
 sub pz_workshop_version_matches {
     my ($require, $server) = @_;
     my $req = pz_workshop_normalize_version($require);
@@ -375,8 +449,26 @@ sub pz_workshop_version_matches {
     return 0 unless @rp && @sp && $rp[0] eq $sp[0];
     # Major-only require ("42") matches any 42.x
     return 1 if @rp == 1;
-    # Same major+minor
+    # Same major+minor (incl. patch differences via prefix above)
     return 1 if defined $rp[1] && defined $sp[1] && $rp[1] eq $sp[1];
+    # Same major, require not newer than server (42.12/42.13 ok on 42.20)
+    return 1 if pz_workshop_version_cmp($req, $srv) <= 0;
+    return 0;
+}
+
+# Exact major.minor (or prefix) match — used to prefer auto-enable picks.
+sub pz_workshop_version_exactish {
+    my ($require, $server) = @_;
+    my $req = pz_workshop_normalize_version($require);
+    my $srv = pz_workshop_normalize_version($server);
+    return 0 unless length $req && length $srv;
+    return 1 if $srv eq $req;
+    return 1 if index($srv, "$req.") == 0;
+    return 1 if index($req, "$srv.") == 0;
+    my @rp = split /\./, $req;
+    my @sp = split /\./, $srv;
+    return 0 unless @rp >= 2 && @sp >= 2;
+    return 1 if $rp[0] eq $sp[0] && $rp[1] eq $sp[1];
     return 0;
 }
 
@@ -405,18 +497,23 @@ sub pz_workshop_pz_version_cell {
 # Unknown server => none. Prefer version-matching require; if none match but the
 # item only has unconstrained (empty require) Mod IDs => enable those. If the
 # item has versioned variants and none match => none (never enable the wrong
-# branch). When both matching and empty-require siblings exist => matching only
-# (AluminumBat + AluminumBat12).
+# branch). When both matching and empty-require siblings exist => matching only.
+# Among compatible pins: prefer exact major.minor; else the highest require
+# (newest pin that still fits the server) — avoids enabling AluminumBat12 and
+# AluminumBat together on 42.20.
 sub pz_workshop_select_mod_ids_for_version {
     my ($mod_infos, $server_ver) = @_;
     my $srv = pz_workshop_normalize_version($server_ver);
     return () unless length $srv;
-    return () unless ref($mod_infos) eq 'ARRAY';
-    my @matching;
+    my @infos = pz_workshop_collapse_mod_infos($mod_infos, $srv);
+    return () unless @infos;
+    my @exact;
+    my @compatible;
     my @unconstrained;
     my $has_mismatch = 0;
     my %seen;
-    for my $mi (@$mod_infos) {
+    my %req_for;
+    for my $mi (@infos) {
         next unless ref($mi) eq 'HASH';
         my $id = $mi->{'id'} // '';
         $id =~ s/[;\r\n]//g;
@@ -424,17 +521,28 @@ sub pz_workshop_select_mod_ids_for_version {
         next if $seen{$id}++;
         my $req = $mi->{'pz_require'} // '';
         $req =~ s/^\s+|\s+$//g;
+        $req_for{$id} = $req;
         if ($req eq '') {
             push @unconstrained, $id;
             next;
         }
         if (pz_workshop_version_matches($req, $srv)) {
-            push @matching, $id;
+            push @compatible, $id;
+            push @exact, $id if pz_workshop_version_exactish($req, $srv);
         } else {
             $has_mismatch = 1;
         }
     }
-    return @matching if @matching;
+    if (@exact) {
+        return @exact;
+    }
+    if (@compatible) {
+        @compatible = sort {
+            pz_workshop_version_cmp($req_for{$b}, $req_for{$a})
+              || ($a cmp $b)
+        } @compatible;
+        return ($compatible[0]);
+    }
     return () if $has_mismatch;
     return @unconstrained;
 }
@@ -1104,6 +1212,7 @@ sub pz_workshop_list_inventory {
     my $disk = pz_workshop_scan_disk($unix_user, $server_dir, $appid);
     my ($ok, $ini) = pz_workshop_resolve_ini_path($unix_user, $script_name);
     my $rows = pz_workshop_merge_inventory($ok ? $ini : undef, $disk);
+    my $server_ver = pz_workshop_detect_server_version($unix_user, $server_dir);
     my %enabled;
     if ($ok && defined $ini && -f $ini) {
         my ($vals) = pz_workshop_read_ini($ini);
@@ -1113,7 +1222,8 @@ sub pz_workshop_list_inventory {
         next unless ref($row) eq 'HASH';
         my @infos;
         my $any_mod_on = 0;
-        for my $mi (@{ $row->{'mod_infos'} // [] }) {
+        my @collapsed = pz_workshop_collapse_mod_infos($row->{'mod_infos'}, $server_ver);
+        for my $mi (@collapsed) {
             next unless ref($mi) eq 'HASH';
             my %copy = %$mi;
             my $id = $copy{'id'} // '';
