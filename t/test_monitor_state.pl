@@ -6,7 +6,7 @@ use FindBin qw($Bin);
 use lib "$Bin/..";
 chdir "$Bin/.." or die "Cannot chdir: $!";
 
-print "1..20\n";
+print "1..21\n";
 sub pass { print "ok - $_[0]\n" }
 sub fail { print "not ok - $_[0]\n" }
 sub is {
@@ -221,4 +221,16 @@ require './src/lib/monitor.pl';
     (!$armed && !$changed && $s->{status} eq 'disabled')
         ? pass('starting/ready: disabled stays disabled')
         : fail("disabled guard: armed=$armed changed=$changed status=$s->{status}");
+}
+
+# 20. monitor_starting_until includes ready secs + 180s spawn slack
+{
+    my $before = time();
+    my $until = monitor_starting_until(900);
+    my $after = time();
+    my $lo = $before + 1080;
+    my $hi = $after + 1080;
+    ($until >= $lo && $until <= $hi)
+        ? pass('monitor_starting_until(900) ≈ time()+1080')
+        : fail("monitor_starting_until(900)=$until expected [$lo,$hi]");
 }

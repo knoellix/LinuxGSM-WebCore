@@ -2328,7 +2328,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|monitor|job_log
                     unless (($mon->{status} // '') eq 'disabled') {
                         my $ready = &get_start_ready_config($script_name);
                         my $secs = ($ready->{secs} && $ready->{regex}) ? $ready->{secs} : 180;
-                        &set_monitor_starting($server_dir, $config_directory, $instance_id, time() + $secs);
+                        &set_monitor_starting($server_dir, $config_directory, $instance_id, &monitor_starting_until($secs));
                     }
                 }
                 my $job_id = &_manage_launch_background_job(
@@ -2349,7 +2349,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|monitor|job_log
                 unless (($mon->{status} // '') eq 'disabled') {
                     my $ready = &get_start_ready_config($script_name);
                     my $secs = ($ready->{secs} && $ready->{regex}) ? $ready->{secs} : 180;
-                    &set_monitor_starting($server_dir, $config_directory, $instance_id, time() + $secs);
+                    &set_monitor_starting($server_dir, $config_directory, $instance_id, &monitor_starting_until($secs));
                 }
             }
             my $job_id = &_manage_launch_background_job(
@@ -2375,7 +2375,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|monitor|job_log
                 unless (($mon->{status} // '') eq 'disabled') {
                     my $ready = &get_start_ready_config($script_name);
                     my $secs = ($ready->{secs} && $ready->{regex}) ? $ready->{secs} : 180;
-                    &set_monitor_starting($server_dir, $config_directory, $instance_id, time() + $secs);
+                    &set_monitor_starting($server_dir, $config_directory, $instance_id, &monitor_starting_until($secs));
                 }
             }
             my $job_id = &_manage_launch_background_job(

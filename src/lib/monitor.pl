@@ -156,8 +156,19 @@ sub set_monitor_resume_after_start {
     return 1;
 }
 
+# Epoch deadline for status=starting: ready-wait secs + 180s CLI/spawn slack.
+# Ready-wait in lgsm_control only begins after session-up; without slack, cron
+# can expire grace mid-boot. Always secs+180 (incl. fallback 180 → 360).
+sub monitor_starting_until {
+    my ($ready_secs) = @_;
+    my $secs = int($ready_secs // 0);
+    $secs = 180 if $secs < 1;
+    return time() + $secs + 180;
+}
+
 # Arm monitor grace after Start/Restart: status=starting until $until_epoch.
 # No-op when explicitly disabled. Returns 1 if written, 0 if skipped/failed.
+# Prefer monitor_starting_until($ready_secs) for the epoch arg from CGI.
 sub set_monitor_starting {
     my ($server_dir, $config_dir, $id, $until_epoch) = @_;
     my $s = read_monitor_state($server_dir, $config_dir, $id);
