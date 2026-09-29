@@ -17,5 +17,7 @@ is($pz->{log}, 'console', 'pz uses console log');
 
 my $none = get_start_ready_config('unknownserverxyz');
 is($none->{regex}, '', 'unknown game → no regex');
+is($none->{log}, '', 'unknown game → no log');
+is($none->{secs}, 0, 'unknown game → no timeout');
 
 done_testing();

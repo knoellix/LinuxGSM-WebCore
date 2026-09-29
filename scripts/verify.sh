@@ -88,6 +88,7 @@ critical_tests=(
   "t/test_jobs.pl"
   "t/test_live_log.pl"
   "t/test_server_log.pl"
+  "t/test_start_ready.pl"
   "t/test_monitor_state.pl"
   "t/test_monitor_cron.pl"
   "t/test_monitor_lgsm.sh"
