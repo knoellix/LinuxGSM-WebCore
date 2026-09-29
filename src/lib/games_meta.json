@@ -2,6 +2,9 @@
   "mcserver": {
     "name": "Minecraft (Vanilla)",
     "steam_required": false,
+    "start_ready_log": "latest_log",
+    "start_ready_regex": "Done \\([0-9.]+s\\)!",
+    "start_ready_secs": 900,
     "variants": ["mcserver", "mc-paper", "mc-forge", "mc-neoforge", "mc-fabric"],
     "game_config_format": "properties",
     "game_config_fields": [
@@ -204,6 +207,9 @@
     "game_sandbox_label_de": "Welteinstellungen (SandboxVars)",
     "game_sandbox_label_en": "World settings (SandboxVars)",
     "query_port_field": "queryport",
+    "start_ready_log": "console",
+    "start_ready_regex": "\\*\\*\\* SERVER STARTED \\*\\*\\*\\*",
+    "start_ready_secs": 900,
     "fields": [
       {"key": "port",          "type": "port",     "label_de": "Port",            "label_en": "Port",            "default": "16261"},
       {"key": "queryport",     "type": "port",     "label_de": "Query Port",      "label_en": "Query Port",      "default": "16262"},

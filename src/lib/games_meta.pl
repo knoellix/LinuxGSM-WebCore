@@ -385,6 +385,22 @@ sub sync_pz_lgsm_instance_cfg {
     return (-f $cfg_path) ? 1 : 0;
 }
 
+# Return start-ready log polling config for a game script.
+# Empty/missing meta → { log => '', regex => '', secs => 0 }.
+sub get_start_ready_config {
+    my ($script) = @_;
+    $script //= '';
+    $script =~ s/[^a-zA-Z0-9_\-]//g;
+    my %meta = load_games_meta();
+    my $g = $meta{$script} // {};
+    my $log = $g->{start_ready_log} // '';
+    my $re  = $g->{start_ready_regex} // '';
+    my $secs = int($g->{start_ready_secs} // 0);
+    $secs = 0 if $secs < 0;
+    $secs = 3600 if $secs > 3600;
+    return { log => "$log", regex => "$re", secs => $secs };
+}
+
 # Returns the query port field name for A2S-capable games.
 # For games that support A2S UDP queries, returns the LGSM config key holding the query port
 # (typically 'queryport'). Returns empty string for non-A2S games (e.g. Minecraft).
