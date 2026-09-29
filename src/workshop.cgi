@@ -273,8 +273,6 @@ sub _ws_render_mod_infos {
         $label = &html_escape($label);
         my $ver = $mi->{'modversion'} // '';
         $label .= ' · v' . &html_escape($ver) if $ver =~ /\S/;
-        my $req = $mi->{'pz_require'} // '';
-        $label .= ' · PZ ' . &html_escape($req) if $req =~ /\S/;
         my $on = $mi->{'enabled_in_ini'} ? 1 : 0;
         $label .= ' · <b>' . &html_escape($on
             ? ($text{'workshop_mod_on'} || 'on')
@@ -294,6 +292,39 @@ sub _ws_render_mod_infos {
             $form .= &ui_submit($btn, undef, undef, undef, $cls);
             $form .= &ui_form_end();
             $label .= ' ' . _ws_inline_action($form);
+        }
+        push @parts, $label;
+    }
+    return join('<br>', @parts) if @parts;
+    return '<i>—</i>';
+}
+
+sub _ws_render_pz_version_cell {
+    my ($mod_infos, $server_ver) = @_;
+    return '<i>—</i>' unless ref($mod_infos) eq 'ARRAY' && @$mod_infos;
+    my @parts;
+    for my $mi (@$mod_infos) {
+        next unless ref($mi) eq 'HASH';
+        my $id = $mi->{'id'} // '';
+        next unless $id =~ /\S/;
+        my $cell = &pz_workshop_pz_version_cell($mi->{'pz_require'}, $server_ver);
+        my $req = $mi->{'pz_require'} // '';
+        $req =~ s/^\s+|\s+$//g;
+        my $label;
+        if ($req eq '') {
+            $label = &html_escape($text{'workshop_pz_version_none'} || 'keine Angabe');
+        } else {
+            $label = &html_escape($cell->{'label'} // '');
+        }
+        my $match = $cell->{'match'} // 'none';
+        if ($match eq 'ok') {
+            $label .= ' <small class="text-success">'
+                . &html_escape($text{'workshop_pz_match_ok'} || 'passt')
+                . '</small>';
+        } elsif ($match eq 'bad') {
+            $label .= ' <small class="text-danger">'
+                . &html_escape($text{'workshop_pz_match_bad'} || 'unpassend')
+                . '</small>';
         }
         push @parts, $label;
     }
@@ -839,6 +870,7 @@ if (!@inventory_rows) {
     print &ui_columns_start([
         &html_escape($text{'workshop_col_item'} || 'Item'),
         &html_escape($text{'workshop_col_mods'} || 'Mods'),
+        &html_escape($text{'workshop_col_pz_version'} || 'PZ version'),
         &html_escape($text{'workshop_col_status'} || 'Status'),
         &html_escape($text{'workshop_col_actions'} || 'Actions'),
     ]);
@@ -849,6 +881,7 @@ if (!@inventory_rows) {
         print &ui_columns_row([
             _ws_render_item_cell($row, $steam),
             _ws_render_mod_infos($instance_id, $wid, $row->{'mod_infos'}),
+            _ws_render_pz_version_cell($row->{'mod_infos'}, $pz_ver),
             &html_escape(_ws_status_label($row->{'status'} // '')),
             _ws_render_row_actions($instance_id, $row),
         ]);

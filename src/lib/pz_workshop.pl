@@ -380,6 +380,27 @@ sub pz_workshop_version_matches {
     return 0;
 }
 
+# Inventory PZ-Version cell data: label + match badge hint.
+# Empty require => label "keine Angabe", match none (never "neueste").
+# Set require + matching server => "PZ $req", ok; mismatch => bad; unknown server => none.
+sub pz_workshop_pz_version_cell {
+    my ($pz_require, $server_ver) = @_;
+    my $req = defined $pz_require ? $pz_require : '';
+    $req =~ s/^\s+|\s+$//g;
+    if ($req eq '') {
+        return { label => 'keine Angabe', match => 'none' };
+    }
+    my $label = "PZ $req";
+    my $srv = pz_workshop_normalize_version($server_ver);
+    if (!length $srv) {
+        return { label => $label, match => 'none' };
+    }
+    if (pz_workshop_version_matches($req, $server_ver)) {
+        return { label => $label, match => 'ok' };
+    }
+    return { label => $label, match => 'bad' };
+}
+
 # Select Mod IDs to auto-enable for a workshop item given $server_ver.
 # Unknown server => none. Prefer version-matching require; if none match but the
 # item only has unconstrained (empty require) Mod IDs => enable those. If the

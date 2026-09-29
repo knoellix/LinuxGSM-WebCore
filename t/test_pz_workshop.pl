@@ -591,6 +591,33 @@ subtest 'version match and select AluminumBat-style' => sub {
         'only mismatched require => none');
 };
 
+subtest 'pz_workshop_pz_version_cell' => sub {
+    is_deeply(
+        pz_workshop_pz_version_cell('', '42.12'),
+        { label => 'keine Angabe', match => 'none' },
+        'empty require => keine Angabe');
+    is_deeply(
+        pz_workshop_pz_version_cell(undef, ''),
+        { label => 'keine Angabe', match => 'none' },
+        'undef require => keine Angabe');
+    is_deeply(
+        pz_workshop_pz_version_cell('42.12', '42.12.0'),
+        { label => 'PZ 42.12', match => 'ok' },
+        'matching require => ok');
+    is_deeply(
+        pz_workshop_pz_version_cell('41.78', '42.12'),
+        { label => 'PZ 41.78', match => 'bad' },
+        'mismatch => bad');
+    is_deeply(
+        pz_workshop_pz_version_cell('42.12', ''),
+        { label => 'PZ 42.12', match => 'none' },
+        'unknown server => none badge');
+    is_deeply(
+        pz_workshop_pz_version_cell(' 42.12 ', '42.12'),
+        { label => 'PZ 42.12', match => 'ok' },
+        'trims require whitespace');
+};
+
 subtest 'subscribe patch ini adds all workshop ids and ordered mods' => sub {
     my $tmp = tempdir(CLEANUP => 1);
     my $home = "$tmp/home";
@@ -640,6 +667,17 @@ subtest 'workshop.cgi uses registry user field for job launch' => sub {
     like($src, qr/\$inst->\{'user'\}/, 'workshop.cgi: reads inst user');
     unlike($src, qr/\$inst->\{'unix_user'\}/, 'workshop.cgi: does not use nonexistent unix_user');
     like($src, qr/user_worker_launch_cmd/, 'workshop.cgi: launches user worker');
+};
+
+subtest 'workshop.cgi PZ-Version column' => sub {
+    open my $fh, '<', 'src/workshop.cgi' or die $!;
+    local $/;
+    my $src = <$fh>;
+    close $fh;
+    like($src, qr/workshop_col_pz_version/, 'column header key');
+    like($src, qr/_ws_render_pz_version_cell/, 'PZ version cell renderer');
+    like($src, qr/pz_workshop_pz_version_cell/, 'uses library cell helper');
+    unlike($src, qr/· PZ /, 'no inline PZ fragment in mods cell');
 };
 
 done_testing();
