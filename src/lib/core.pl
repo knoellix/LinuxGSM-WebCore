@@ -35,6 +35,8 @@ sub sanitize_input {
 #   force => keep open regardless of stored state (running job, search hits, deep link)
 #   badge => short suffix in the summary line (counts, target versions)
 #   hint  => paragraph directly below the summary
+our $_ui_collapsible_styles_emitted = 0;
+
 sub ui_collapsible_start {
     my ($title, %opts) = @_;
     my $id = lc($opts{'id'} // '');
@@ -44,8 +46,18 @@ sub ui_collapsible_start {
     $attrs .= " id=\"$id\"" if $id ne '';
     $attrs .= ' data-lgsm-force="1"' if $opts{'force'};
     $attrs .= ' open' if $open;
-    my $out = "<details$attrs>\n<summary>"
-        . "<span class=\"lgsm-section-chevron\" aria-hidden=\"true\"></span>"
+    # Emit frame CSS with the first section so themes that override late styles
+    # still see a bordered box + chevron on first paint.
+    my $out = '';
+    unless ($_ui_collapsible_styles_emitted) {
+        $out .= &ui_collapsible_styles();
+        $_ui_collapsible_styles_emitted = 1;
+    }
+    $out .= "<details$attrs>\n<summary>"
+        . "<span class=\"lgsm-section-chevron\" aria-hidden=\"true\">"
+        . "<span class=\"lgsm-chevron-closed\">\x{25B6}</span>"
+        . "<span class=\"lgsm-chevron-open\">\x{25BC}</span>"
+        . "</span>"
         . "<span class=\"lgsm-section-title\"><b>" . &html_escape($title // '') . "</b>";
     my $badge = $opts{'badge'} // '';
     $out .= " <small>(" . &html_escape($badge) . ")</small>" if $badge =~ /\S/;
@@ -75,11 +87,13 @@ sub ui_instance_status_line {
 }
 
 # Visual frame + chevron for collapsible sections (theme-neutral: currentColor only).
+# Solid #888 border is the baseline; color-mix is an enhancement for modern browsers.
 sub ui_collapsible_styles {
     return <<'CSS';
 <style>
 details.lgsm-section {
-    border: 1px solid color-mix(in srgb, currentColor 28%, transparent);
+    border: 1px solid #888;
+    border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
     border-radius: 4px;
     margin: 0 0 10px 0;
     background: color-mix(in srgb, currentColor 5%, transparent);
@@ -100,7 +114,8 @@ details.lgsm-section > summary::-webkit-details-marker {
     display: none;
 }
 details.lgsm-section[open] > summary {
-    border-bottom: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+    border-bottom: 1px solid #888;
+    border-bottom: 1px solid color-mix(in srgb, currentColor 28%, transparent);
 }
 details.lgsm-section > :not(summary) {
     margin: 0 12px 12px 12px;
@@ -108,26 +123,31 @@ details.lgsm-section > :not(summary) {
 details.lgsm-section > summary + :not(summary) {
     margin-top: 12px;
 }
-.lgsm-section-chevron {
+details.lgsm-section > summary .lgsm-section-chevron {
     display: inline-block;
-    width: 0.85em;
+    width: 1em;
     flex-shrink: 0;
     line-height: 1;
-    opacity: 0.8;
-    font-size: 0.85em;
+    opacity: 0.9;
+    font-size: 0.9em;
+    text-align: center;
 }
-.lgsm-section-chevron::before {
-    content: '\25B6';
+details.lgsm-section > summary .lgsm-section-chevron .lgsm-chevron-open {
+    display: none;
 }
-details.lgsm-section[open] > summary .lgsm-section-chevron::before {
-    content: '\25BC';
+details.lgsm-section[open] > summary .lgsm-section-chevron .lgsm-chevron-closed {
+    display: none;
+}
+details.lgsm-section[open] > summary .lgsm-section-chevron .lgsm-chevron-open {
+    display: inline;
 }
 .lgsm-section-title {
     flex: 1 1 auto;
     min-width: 0;
 }
 .lgsm-danger-zone {
-    border: 1px solid color-mix(in srgb, currentColor 28%, transparent);
+    border: 1px solid #888;
+    border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
     border-radius: 4px;
     margin: 16px 0 10px 0;
     padding: 12px;
@@ -142,8 +162,12 @@ CSS
 
 # Remembers open/closed state per section id in localStorage. Without JS the
 # server-side default from ui_collapsible_start() stays in effect.
+# Styles are emitted with the first ui_collapsible_start(); avoid a second
+# copy at the page footer when already printed.
 sub ui_collapsible_state_script {
-    return &ui_collapsible_styles() . <<'JS';
+    my $css = $_ui_collapsible_styles_emitted ? '' : &ui_collapsible_styles();
+    $_ui_collapsible_styles_emitted = 1;
+    return $css . <<'JS';
 <script>
 (function() {
     var KEY = 'lgsmWebcoreSections';

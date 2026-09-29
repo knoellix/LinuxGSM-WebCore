@@ -83,6 +83,9 @@ sub _job_live_safe_return_param {
     if ($key eq 'xnavigation') {
         return ($raw eq '1') ? '1' : undef;
     }
+    if ($key eq 'subscribed') {
+        return ($raw eq '1') ? '1' : undef;
+    }
     return undef;
 }
 
@@ -92,10 +95,14 @@ sub _job_live_safe_return_query {
     $raw =~ s/[\t\n\r\0]//g;
     $raw =~ s/^\s+|\s+$//g;
     return '' unless length($raw) <= 600;
-    return '' unless $raw =~ m{\Amods\.cgi\?(.+)\z};
+    return '' unless $raw =~ m{\A(mods|workshop)\.cgi\?(.+)\z};
+    my ($cgi, $query) = ($1, $2);
 
-    my $query = $1;
-    my %allowed = map { $_ => 1 } qw(instance_id q status sort dir page mod_q pack_q xnavigation);
+    my %allowed_by_cgi = (
+        'mods' => { map { $_ => 1 } qw(instance_id q status sort dir page mod_q pack_q xnavigation) },
+        'workshop' => { map { $_ => 1 } qw(instance_id xnavigation subscribed) },
+    );
+    my %allowed = %{ $allowed_by_cgi{$cgi} };
     my %vals;
     my %seen;
     for my $pair (split /&/, $query, -1) {
@@ -115,13 +122,15 @@ sub _job_live_safe_return_query {
     return '' unless defined $instance_id && $ret_id eq $instance_id;
 
     my @pairs = ("instance_id=" . _job_live_query_urlencode($ret_id));
-    for my $k (qw(q status sort dir page mod_q pack_q)) {
-        next unless exists $vals{$k};
-        next unless length($vals{$k});
-        push @pairs, $k . '=' . _job_live_query_urlencode($vals{$k});
+    if ($cgi eq 'mods') {
+        for my $k (qw(q status sort dir page mod_q pack_q)) {
+            next unless exists $vals{$k};
+            next unless length($vals{$k});
+            push @pairs, $k . '=' . _job_live_query_urlencode($vals{$k});
+        }
     }
     push @pairs, 'xnavigation=1';
-    return 'mods.cgi?' . join('&', @pairs);
+    return "$cgi.cgi?" . join('&', @pairs);
 }
 
 sub _job_live_mc_search_url_suffix {
@@ -176,7 +185,11 @@ my $return_path = "/$module_name/"
     . ($return_query ne ''
         ? $return_query
         : "manage.cgi?instance_id=$instance_id&xnavigation=1" . $mc_search_suffix);
-$return_path .= "&action_result=$job_id" if ($return_query eq '' && $job_done && $status eq 'ok');
+if ($job_done && $status eq 'ok') {
+    if ($return_query eq '' || $return_query =~ /\Aworkshop\.cgi\?/) {
+        $return_path .= "&action_result=$job_id";
+    }
+}
 
 require JSON::PP;
 my $job_hint_key = '';
@@ -233,11 +246,19 @@ unless ($job_done) {
         . "</i></small></p>\n";
 }
 
-my $back_target = $return_query ne '' ? 'mods.cgi' : 'manage.cgi';
+my $back_target = 'manage.cgi';
+my $back_label  = $text{'job_back_to_instance'} || 'Zur Instanz';
+if ($return_query =~ /\A(mods|workshop)\.cgi\?/) {
+    $back_target = "$1.cgi";
+    $back_label = $text{'job_back_to_workshop'} || 'Zum Workshop'
+        if $1 eq 'workshop';
+    $back_label = $text{'job_back_to_mods'} || 'Zu Mods'
+        if $1 eq 'mods';
+}
 print &ui_form_start($back_target, 'get');
 print &ui_hidden('instance_id', &html_escape($instance_id));
 print &ui_hidden('xnavigation', '1');
-print &ui_submit($text{'job_back_to_instance'} || 'Zur Instanz', undef, undef, undef, 'btn-default');
+print &ui_submit($back_label, undef, undef, undef, 'btn-default');
 print &ui_form_end();
 
 unless ($job_done) {

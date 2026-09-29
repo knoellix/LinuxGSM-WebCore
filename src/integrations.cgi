@@ -169,6 +169,12 @@ if ($ENV{REQUEST_METHOD} eq 'POST') {
             $k = substr($k, 0, 128);
             $config{curseforge_api_key} = $k if length $k;
         }
+        if (defined $in{'steam_web_api_key'} && $in{'steam_web_api_key'} ne '') {
+            my $k = $in{'steam_web_api_key'};
+            $k =~ s/[\t\n\r]//g;
+            $k = substr($k, 0, 64);
+            $config{steam_web_api_key} = $k if length $k;
+        }
         if (defined $in{'hangar_api_token'} && $in{'hangar_api_token'} ne '') {
             my $t = $in{'hangar_api_token'};
             $t =~ s/[\t\n\r]//g;
@@ -484,6 +490,18 @@ if (&is_admin()) {
             . &_integrations_help_link(
                 'https://console.curseforge.com/',
                 $text{'integrations_curseforge_api_key_link'}));
+
+    my $steam_api_ph = &_integrations_secret_placeholder($config{steam_web_api_key});
+    print &ui_table_row(
+        &html_escape($text{'integrations_steam_web_api_key'} || 'Steam Web API key'),
+        &_integrations_secret_input('steam_web_api_key', '', 50, $steam_api_ph)
+            . &_integrations_secret_status($config{steam_web_api_key})
+            . "<br><small>" . &html_escape($text{'integrations_steam_web_api_key_hint'}
+                || 'Required for Steam Workshop search (Project Zomboid). Leave empty to keep the stored value.')
+            . "</small>"
+            . &_integrations_help_link(
+                'https://steamcommunity.com/dev/apikey',
+                $text{'integrations_steam_web_api_key_link'} || 'Steam Web API key'));
 
     my $hg_ph = &_integrations_secret_placeholder($config{hangar_api_token});
     print &ui_table_row(

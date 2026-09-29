@@ -94,8 +94,7 @@ sub get_game_config_format {
 }
 
 # Return the path of the game-server's primary config file relative to the
-# instance's $script_dir. Used by non-LGSM games (steamcmd/wine) where there
-# is no LGSM cfg layer to drive servercfgfullpath.
+# instance's $script_dir (or unix home when get_game_config_path_base eq 'home').
 # Empty string means "no static hint, fall back to LGSM resolution".
 sub get_game_config_path {
     my ($script_name) = @_;
@@ -103,6 +102,34 @@ sub get_game_config_path {
     my $key   = _resolve_meta_key($script_name);
     my $entry = $meta{$key} or return '';
     return $entry->{'game_config_path'} // '';
+}
+
+# Where get_game_config_path is rooted: 'home' (unix home) or 'script' (default).
+# Project Zomboid stores server INI under $HOME/Zomboid/Server/, not $script_dir.
+sub get_game_config_path_base {
+    my ($script_name) = @_;
+    my %meta = load_games_meta();
+    my $key   = _resolve_meta_key($script_name);
+    my $entry = $meta{$key} or return 'script';
+    my $base = $entry->{'game_config_path_base'} // 'script';
+    return ($base eq 'home') ? 'home' : 'script';
+}
+
+# Resolve unix home for game-config paths rooted at home.
+# Prefer getpwnam($unix_user); fall back to parent of $script_dir (/home/user/srv → /home/user).
+sub resolve_game_config_home {
+    my ($unix_user, $script_dir) = @_;
+    if (defined $unix_user && $unix_user =~ /^[a-z][a-z0-9_-]{0,30}$/) {
+        my @pw = getpwnam($unix_user);
+        if (@pw && defined $pw[7] && $pw[7] =~ m|^/|) {
+            (my $h = $pw[7]) =~ s{/\z}{};
+            return $h;
+        }
+    }
+    if (defined $script_dir && $script_dir =~ m|^(/home/[^/]+)/|) {
+        return $1;
+    }
+    return '';
 }
 
 # Optional UI label for the game-config tab (e.g. Palworld "World settings").
@@ -114,6 +141,42 @@ sub get_game_config_label {
     $lang = ($lang // '') eq 'de' ? 'de' : 'en';
     my $k = "game_config_label_$lang";
     return $entry->{$k} // '';
+}
+
+# Relative path of SandboxVars.lua (PZ world settings), same base as game_config_path.
+sub get_game_sandbox_path {
+    my ($script_name) = @_;
+    my %meta = load_games_meta();
+    my $key   = _resolve_meta_key($script_name);
+    my $entry = $meta{$key} or return '';
+    my $p = $entry->{'game_sandbox_path'} // '';
+    return $p if $p =~ /\S/;
+    # Derive from game_config_path: foo.ini → foo_SandboxVars.lua
+    my $ini = $entry->{'game_config_path'} // '';
+    return '' unless $ini =~ /\.ini\z/i;
+    (my $derived = $ini) =~ s/\.ini\z/_SandboxVars.lua/i;
+    return $derived;
+}
+
+sub get_game_sandbox_label {
+    my ($script_name, $lang) = @_;
+    my %meta = load_games_meta();
+    my $key = _resolve_meta_key($script_name);
+    my $entry = $meta{$key} or return '';
+    $lang = ($lang // '') eq 'de' ? 'de' : 'en';
+    my $k = "game_sandbox_label_$lang";
+    return $entry->{$k} // '';
+}
+
+# Return mod_support string from games_meta (e.g. workshop), or ''.
+sub get_game_mod_support {
+    my ($script_name) = @_;
+    my %meta = load_games_meta();
+    my $key = _resolve_meta_key($script_name);
+    my $entry = $meta{$key} or return '';
+    my $ms = $entry->{'mod_support'} // '';
+    $ms =~ s/[^a-z0-9_]//g;
+    return $ms;
 }
 
 # Return path of the primary live server log file, relative to the instance
@@ -247,6 +310,79 @@ sub get_game_field_hints {
     my $key  = _resolve_meta_key($script);
     return {} unless defined $meta{$key};
     return $meta{$key}{'field_hints'} // {};
+}
+
+# Canonical LGSM startparameters for PZ when adminpassword is set.
+# Inner quotes must be backslash-escaped so fn_reload_startparameters eval works.
+sub pz_lgsm_startparameters_with_admin {
+    return '-servername ${selfname} -adminpassword \"${adminpassword}\"';
+}
+
+# Project Zomboid: LGSM _default.cfg defines adminpassword but startparameters
+# is only "-servername ${selfname}" — the game never sees -adminpassword unless
+# we add it here. Returns 1 if startparameters was changed.
+sub ensure_pz_lgsm_startparameters {
+    my ($script_name, $vals) = @_;
+    return 0 unless ref($vals) eq 'HASH';
+    return 0 unless defined $script_name && $script_name =~ /\S/;
+    my $canon = defined &_resolve_meta_key ? &_resolve_meta_key($script_name) : $script_name;
+    return 0 unless $canon eq 'pzserver' || $script_name =~ /^pz/i;
+
+    my $ap = $vals->{'adminpassword'} // '';
+    $ap =~ s/^\s+|\s+$//g;
+    return 0 if $ap eq '' || $ap eq 'CHANGE_ME';
+
+    my $want = pz_lgsm_startparameters_with_admin();
+    my $sp   = $vals->{'startparameters'} // '';
+    return 0 if $sp eq $want;
+    $vals->{'startparameters'} = $want;
+    return 1;
+}
+
+# Session-only monitor (querymode=1). GameDig often false-fails on PZ and
+# LGSM monitor then stop→start loops while the world is still healthy.
+sub ensure_pz_lgsm_querymode {
+    my ($script_name, $vals) = @_;
+    return 0 unless ref($vals) eq 'HASH';
+    return 0 unless defined $script_name && $script_name =~ /\S/;
+    my $canon = defined &_resolve_meta_key ? &_resolve_meta_key($script_name) : $script_name;
+    return 0 unless $canon eq 'pzserver' || $script_name =~ /^pz/i;
+
+    my $qm = $vals->{'querymode'} // '';
+    return 0 if $qm eq '1';
+    $vals->{'querymode'} = '1';
+    return 1;
+}
+
+# Sync instance cfg on disk before PZ start (worker / standalone script).
+# Returns 1 if file was rewritten.
+sub sync_pz_lgsm_instance_cfg {
+    my ($server_dir, $script_name) = @_;
+    return 0 unless defined $server_dir && $server_dir =~ m|^/|;
+    $script_name =~ s/[^a-zA-Z0-9_-]//g;
+    return 0 unless $script_name ne '';
+
+    my $cfg_path = "$server_dir/lgsm/config-lgsm/$script_name/$script_name.cfg";
+    return 0 unless -f $cfg_path;
+
+    my $root = $module_root // '';
+    return 0 unless $root ne '' && -f "$root/lib/config_editor.pl";
+    require "$root/lib/config_editor.pl";
+    return 0 unless defined &read_config_file;
+
+    my ($vals, $order, $raw) = &read_config_file($cfg_path);
+    my $changed = 0;
+    $changed |= &ensure_pz_lgsm_startparameters($script_name, $vals);
+    $changed |= &ensure_pz_lgsm_querymode($script_name, $vals);
+    return 0 unless $changed;
+
+    push @$order, 'startparameters' unless grep { $_ eq 'startparameters' } @$order;
+    push @$order, 'querymode'     unless grep { $_ eq 'querymode' } @$order;
+    my $content = join('', map { exists $vals->{$_} ? "$_=\"$vals->{$_}\"\n" : () } @$order);
+    open(my $fh, '>:raw', $cfg_path) or return 0;
+    print {$fh} $content;
+    close($fh) or return 0;
+    return (-f $cfg_path) ? 1 : 0;
 }
 
 # Returns the query port field name for A2S-capable games.

@@ -26,8 +26,8 @@ for my $path (@workers) {
         "$path contains no internal 'su -s /bin/bash' (line(s): @offending)");
 }
 
-# apt is centralized in provision_deps.sh (one-time root bootstrap). The former
-# apt-owning install workers must not call apt-get anymore.
+# apt is centralized in provision_deps.sh / lgsm_deps_install.sh (root bootstrap).
+# The former apt-owning install workers must not call apt-get anymore.
 for my $p ('src/scripts/setup_lgsm.sh', 'src/scripts/steamcmd_install.sh') {
     if (-f $p) {
         open(my $fh, '<', $p) or do { fail("cannot read $p: $!"); next; };
@@ -41,6 +41,20 @@ for my $p ('src/scripts/setup_lgsm.sh', 'src/scripts/steamcmd_install.sh') {
     }
 }
 
+# Root LGSM deps worker must exist and refuse non-root (checked by script text).
+{
+    my $p = 'src/scripts/lgsm_deps_install.sh';
+    ok(-f $p, 'lgsm_deps_install.sh exists (root LGSM ./script install)');
+    open(my $fh, '<', $p) or die $!;
+    local $/;
+    my $src = <$fh>;
+    close($fh);
+    like($src, qr/id -u.*-ne 0/, 'lgsm_deps_install refuses non-root');
+    like($src, qr{\./"\$LGSM_SCRIPT" install},
+        'invokes LGSM install as root for deps');
+    like($src, qr/\.webcore_lgsm_deps_ok/, 'writes deps-ok marker');
+}
+
 # provision_deps.sh and module_bootstrap_deps.sh are apt owners (root bootstrap).
 for my $apt_script (qw(src/scripts/provision_deps.sh src/scripts/module_bootstrap_deps.sh)) {
     if (-f $apt_script) {
@@ -52,12 +66,16 @@ for my $apt_script (qw(src/scripts/provision_deps.sh src/scripts/module_bootstra
     }
 }
 
-# manage.cgi must not rm serverfiles as root during steamcmd reinstall dispatch.
+# manage.cgi chains LGSM deps after setup_lgsm (not via games_meta apt_deps).
 if (-f 'src/manage.cgi') {
     open(my $fh, '<', 'src/manage.cgi') or die "cannot read manage.cgi: $!\n";
     local $/;
     my $src = <$fh>;
     close($fh);
+    like($src, qr/_manage_maybe_launch_lgsm_deps_after_setup/,
+        'manage chains LGSM deps after setup_lgsm');
+    like($src, qr/lgsm_deps_install\.sh/,
+        'manage dispatches lgsm_deps_install.sh as root');
     ok($src !~ /rm\s+-rf\s+'\$server_dir\/serverfiles'/, 'manage.cgi: no root rm serverfiles in dispatch');
 }
 

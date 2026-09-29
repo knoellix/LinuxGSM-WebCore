@@ -53,38 +53,72 @@ sub validate_config_target {
     return $resolved;
 }
 
-# Resolve path; returns undef if missing and realpath fails on all parents.
+# Resolve path; walk missing parents so Quick Fix can create
+# …/lgsm/config-lgsm/<script>/<script>.cfg before the <script>/ dir exists.
+# Returns undef only when no ancestor can be realpath'd.
 sub _config_editor_realpath {
     my ($path) = @_;
     return undef unless defined $path && $path ne '';
     require Cwd;
     my $resolved = Cwd::realpath($path);
     return $resolved if defined $resolved && $resolved ne '';
-    (my $parent = $path) =~ s|/[^/]+$||;
-    return undef unless defined $parent && $parent ne '' && $parent ne $path;
-    my $base = Cwd::realpath($parent);
-    return undef unless defined $base && $base ne '';
-    my $leaf = $path;
-    $leaf =~ s|.*/||;
-    return "$base/$leaf";
+
+    my @missing;
+    my $cur = $path;
+    while (1) {
+        (my $parent = $cur) =~ s|/[^/]+$||;
+        last if !defined $parent || $parent eq '' || $parent eq $cur;
+        my $leaf = $cur;
+        $leaf =~ s|.*/||;
+        unshift @missing, $leaf;
+        my $base = Cwd::realpath($parent);
+        if (defined $base && $base ne '') {
+            return join('/', $base, @missing);
+        }
+        $cur = $parent;
+    }
+    return undef;
 }
 
-# Game-server config must stay under $script_dir (resolved canonical tree).
-sub validate_game_config_path {
-    my ($script_dir, $path) = @_;
-    our %text;
-    &error($text{'err_invalid_input'}) unless defined $path && $path =~ m|^/|;
-    &error($text{'err_invalid_input'}) if $path =~ /\.\./;
-    &error($text{'err_invalid_input'}) unless defined $script_dir && $script_dir =~ m|^/|;
+# Soft check for game-server config paths (no &error — safe during GET render).
+# Returns resolved path or undef when the path is missing/unsafe/outside the tree.
+# Webmin &error() exits the process; eval cannot catch it, so manage.cgi must
+# use this for page display and only call validate_game_config_path on POST.
+#
+# Optional 3rd arg $home: also allow paths under the game user's home when they
+# match a safe relative pattern (used for Project Zomboid $HOME/Zomboid/Server/*.ini).
+sub check_game_config_path {
+    my ($script_dir, $path, $home) = @_;
+    return undef unless defined $path && $path =~ m|^/|;
+    return undef if $path =~ /\.\./;
+    return undef unless defined $script_dir && $script_dir =~ m|^/|;
 
     require Cwd;
     my $base = Cwd::realpath($script_dir) // $script_dir;
     $base =~ s{/\z}{};
     my $resolved = _config_editor_realpath($path);
-    &error($text{'err_invalid_input'}) unless defined $resolved && $resolved ne '';
-    unless ($resolved eq $base || index($resolved, "$base/") == 0) {
-        &error($text{'err_invalid_input'});
+    return undef unless defined $resolved && $resolved ne '';
+    return $resolved if $resolved eq $base || index($resolved, "$base/") == 0;
+
+    if (defined $home && $home =~ m|^/| && $home !~ /\.\./) {
+        my $hbase = Cwd::realpath($home) // $home;
+        $hbase =~ s{/\z}{};
+        if ($hbase ne ''
+            && ($resolved eq $hbase || index($resolved, "$hbase/") == 0)
+            && $resolved =~ m{\Q$hbase\E/Zomboid/Server/[a-zA-Z0-9_-]+(?:\.ini|_SandboxVars\.lua)\z}) {
+            return $resolved;
+        }
     }
+    return undef;
+}
+
+# Game-server config must stay under $script_dir (or optional $home for PZ).
+# Fatal for POST/save paths — use check_game_config_path during GET render.
+sub validate_game_config_path {
+    my ($script_dir, $path, $home) = @_;
+    our %text;
+    my $resolved = check_game_config_path($script_dir, $path, $home);
+    &error($text{'err_invalid_input'}) unless defined $resolved && $resolved ne '';
     return $resolved;
 }
 
@@ -194,19 +228,27 @@ sub read_game_config_raw {
     return _normalize_game_config_text($raw);
 }
 
-# Unified format pick: OptionSettings content wins over a wrong games_meta hint.
+# Unified format pick:
+#   1. OptionSettings=(...) content → Palworld-style (wins over wrong meta)
+#   2. games_meta game_config_format (e.g. PZ .ini = properties)
+#   3. Path / content heuristics
+# Never treat every *.ini as OptionSettings — Project Zomboid uses key=value INI.
 sub resolve_game_config_format {
     my ($script_name, $path, $raw) = @_;
     $raw = _normalize_game_config_text($raw // '');
     return 'ini_option_settings' if $raw =~ /OptionSettings\s*=\s*\(/;
-    if (defined $path && $path ne '') {
-        return 'json'                if $path =~ /\.json$/i;
-        return 'properties'          if $path =~ /\.properties$/i;
-        return 'ini_option_settings' if $path =~ /\.ini$/i;
-    }
     if (defined &get_game_config_format) {
         my $meta_fmt = &get_game_config_format($script_name);
-        return $meta_fmt if $meta_fmt ne '';
+        return $meta_fmt if defined $meta_fmt && $meta_fmt ne '';
+    }
+    if (defined $path && $path ne '') {
+        return 'json'       if $path =~ /\.json$/i;
+        return 'properties' if $path =~ /\.properties$/i;
+        # Bare .ini without OptionSettings: prefer properties (PZ) over Palworld.
+        # Palworld files always contain OptionSettings=( and are caught above.
+        return 'properties' if $path =~ /\.ini$/i && $raw =~ /\S/
+            && $raw !~ /OptionSettings\s*=\s*\(/;
+        return 'ini_option_settings' if $path =~ /\.ini$/i;
     }
     return &detect_game_config_format($path, $raw);
 }
@@ -307,19 +349,38 @@ sub _expand_lgsm_vars {
 
 # Resolve game-server config path.
 # Priority order:
-#   1. Explicit static path hint (4th arg) — used by SteamCMD/Wine games
-#      whose config sits at a known relative location inside serverfiles/.
-#      The CGI looks up `get_game_config_path($script)` from games_meta and
-#      passes the result here; we resolve relative paths against
-#      $script_dir.
+#   1. Explicit static path hint (4th arg) — relative to $script_dir, or to
+#      $opts{home} when games_meta game_config_path_base is "home" (PZ).
 #   2. LGSM servercfgfullpath
 #   3. LGSM servercfgdir + servercfg
+#
+# Optional 5th arg \%opts: home => unix home; selfname => LGSM script basename.
 sub resolve_game_server_config_path {
-    my ($script_dir, $script_name, $cfg_ref, $static_hint) = @_;
+    my ($script_dir, $script_name, $cfg_ref, $static_hint, $opts) = @_;
     my %cfg = %{$cfg_ref || {}};
+    my %o = %{$opts || {}};
+    my $home = $o{'home'} // '';
+    $home =~ s{/\z}{} if $home ne '';
 
     if (defined $static_hint && length $static_hint) {
         return '' if $static_hint =~ /\.\./;
+
+        my $base_home = ($home ne '' && $home =~ m|^/|
+            && defined &get_game_config_path_base
+            && &get_game_config_path_base($script_name) eq 'home');
+
+        if ($static_hint !~ m|^/| && $base_home) {
+            my $abs = "$home/$static_hint";
+            $abs =~ s|//+|/|g;
+            require Cwd;
+            my $hbase = Cwd::realpath($home) // $home;
+            $hbase =~ s{/\z}{};
+            my $resolved = _config_editor_realpath($abs) // $abs;
+            return '' unless $hbase ne ''
+                && ($resolved eq $hbase || index($resolved, "$hbase/") == 0);
+            return $resolved;
+        }
+
         my $abs = ($static_hint =~ m|^/|) ? $static_hint : "$script_dir/$static_hint";
         $abs =~ s|//+|/|g;
         return $abs if $static_hint !~ m|^/|;
@@ -330,12 +391,22 @@ sub resolve_game_server_config_path {
         my $resolved = _config_editor_realpath($abs);
         return '' unless defined $resolved && $resolved ne '';
         return $resolved if $resolved eq $base || index($resolved, "$base/") == 0;
+        if ($home ne '') {
+            my $hbase = Cwd::realpath($home) // $home;
+            $hbase =~ s{/\z}{};
+            return $resolved if $hbase ne ''
+                && ($resolved eq $hbase || index($resolved, "$hbase/") == 0);
+        }
         return '';
     }
 
     $cfg{'rootdir'}     ||= $script_dir;
     $cfg{'serverfiles'} ||= "$script_dir/serverfiles";
     $cfg{'lgsmdir'}     ||= "$script_dir/lgsm";
+    $cfg{'selfname'}    ||= ($o{'selfname'} // $script_name // '');
+    if ($home ne '' && !defined $cfg{'HOME'}) {
+        $cfg{'HOME'} = $home;
+    }
 
     my $full = _expand_lgsm_vars($cfg{'servercfgfullpath'} // '', \%cfg);
     if ($full eq '') {
@@ -608,6 +679,327 @@ sub find_palworld_world_option_sav {
     }
     closedir($dh);
     return $found;
+}
+
+# --- Project Zomboid SandboxVars.lua (nested Lua table) -----------------
+
+# Parse SandboxVars = { ... } into flat dotted keys.
+# Returns ($vals_href, $order_aref) where order is depth-first leaf paths.
+sub parse_sandboxvars_lua {
+    my ($raw) = @_;
+    my (%vals, @order);
+    $raw = heal_sandboxvars_lua_text(_normalize_game_config_text($raw // ''));
+    return (\%vals, \@order) unless $raw =~ /SandboxVars\s*=\s*/;
+    my $after = $+[0];
+    my $eq = index($raw, '{', $after > 0 ? $after - 1 : 0);
+    my $body = _sandboxvars_extract_table($raw, $eq);
+    return (\%vals, \@order) unless defined $body && $body ne '';
+
+    my $tree = _sandboxvars_parse_table($body);
+    return (\%vals, \@order) unless ref($tree) eq 'HASH';
+    _sandboxvars_flatten($tree, '', \%vals, \@order);
+    return (\%vals, \@order);
+}
+
+# Apply flat dotted updates onto SandboxVars.lua text; re-serialize table.
+sub update_sandboxvars_lua {
+    my ($raw, $updates) = @_;
+    $raw = heal_sandboxvars_lua_text(_normalize_game_config_text($raw // ''));
+    my ($vals, $order) = parse_sandboxvars_lua($raw);
+    return $raw unless ref($updates) eq 'HASH' && %$updates;
+
+    for my $k (keys %$updates) {
+        next unless defined $k && $k =~ /\S/;
+        my $v = $updates->{$k};
+        $v = '' unless defined $v;
+        $v = normalize_config_form_value($v);
+        if (!exists $vals->{$k}) {
+            push @$order, $k;
+        }
+        $vals->{$k} = $v;
+    }
+
+    my $tree = _sandboxvars_unflatten($vals, $order);
+    my $table = _sandboxvars_serialize_table($tree, $order, 1);
+    if ($raw =~ /SandboxVars\s*=/s) {
+        $raw =~ s/SandboxVars\s*=\s*\{.*\}\s*\z/SandboxVars = $table\n/s;
+        return $raw;
+    }
+    return "SandboxVars = $table\n";
+}
+
+# Rewrite false\0true / "false true" artifacts left by Webmin checkbox multi-values.
+sub heal_sandboxvars_lua_text {
+    my ($raw) = @_;
+    return '' unless defined $raw;
+    # Walk and replace bool artifacts; keep logic out of s///e to avoid qr/$sep/ pitfalls.
+    my $out = '';
+    my $len = length($raw);
+    my $i = 0;
+    while ($i < $len) {
+        my $ch = substr($raw, $i, 1);
+        # Quoted string: maybe "false\0true"
+        if ($ch eq '"') {
+            my $j = $i + 1;
+            my $inner = '';
+            while ($j < $len) {
+                my $c = substr($raw, $j, 1);
+                if ($c eq '\\' && $j + 1 < $len) {
+                    $inner .= substr($raw, $j, 2);
+                    $j += 2;
+                    next;
+                }
+                last if $c eq '"';
+                $inner .= $c;
+                $j++;
+            }
+            if ($j < $len && substr($raw, $j, 1) eq '"') {
+                my $norm = normalize_config_form_value($inner);
+                if ($norm =~ /^(?:true|false)$/i
+                    && $inner =~ /(?:true|false)/i
+                    && $inner =~ /[\0\s\x{EF}\x{BF}\x{BD}]/) {
+                    $out .= $norm;    # bare true/false, drop quotes
+                } else {
+                    $out .= substr($raw, $i, $j - $i + 1);
+                }
+                $i = $j + 1;
+                next;
+            }
+        }
+        # Bare false\0true / true false
+        if (($ch eq 't' || $ch eq 'T' || $ch eq 'f' || $ch eq 'F')
+            && substr($raw, $i) =~ /^((?:true|false)(?:(?:\0|\s+|\xEF\xBF\xBD)+(?:true|false))+)\b/i) {
+            my $tok = $1;
+            $out .= normalize_config_form_value($tok);
+            $i += length($tok);
+            next;
+        }
+        $out .= $ch;
+        $i++;
+    }
+    return $out;
+}
+
+sub _sandboxvars_extract_table {
+    my ($raw, $open_pos) = @_;
+    return '' if !defined $open_pos || $open_pos < 0;
+    my $depth = 0;
+    my $in_str = 0;
+    my $q = '';
+    my $len = length($raw);
+    for (my $i = $open_pos; $i < $len; $i++) {
+        my $ch = substr($raw, $i, 1);
+        if ($in_str) {
+            if ($ch eq '\\' && $i + 1 < $len) { $i++; next; }
+            if ($ch eq $q) { $in_str = 0; }
+            next;
+        }
+        # Skip Lua line comments — must run before quote detection so
+        # apostrophes in comments (hasn't, player's) do not break brace depth.
+        if ($ch eq '-' && $i + 1 < $len && substr($raw, $i + 1, 1) eq '-') {
+            my $nl = index($raw, "\n", $i);
+            $i = ($nl < 0) ? $len : $nl;
+            next;
+        }
+        if ($ch eq '"' || $ch eq "'") { $in_str = 1; $q = $ch; next; }
+        if ($ch eq '{') { $depth++; next; }
+        if ($ch eq '}') {
+            $depth--;
+            if ($depth == 0) {
+                return substr($raw, $open_pos, $i - $open_pos + 1);
+            }
+        }
+    }
+    return '';
+}
+
+# Parse a Lua table string "{ ... }" into a nested Perl hash.
+# Leaf values are strings (numbers/bools kept as their Lua text form).
+sub _sandboxvars_parse_table {
+    my ($table) = @_;
+    return {} unless defined $table && $table =~ /^\s*\{/;
+
+    my $inner = $table;
+    $inner =~ s/^\s*\{//;
+    $inner =~ s/\}\s*\z//;
+
+    my %out;
+    my $pos = 0;
+    my $len = length($inner);
+    while ($pos < $len) {
+        # skip whitespace, commas, comments
+        while ($pos < $len) {
+            my $ch = substr($inner, $pos, 1);
+            if ($ch =~ /\s/ || $ch eq ',') { $pos++; next; }
+            if ($ch eq '-' && substr($inner, $pos, 2) eq '--') {
+                my $nl = index($inner, "\n", $pos);
+                $pos = ($nl < 0) ? $len : $nl + 1;
+                next;
+            }
+            last;
+        }
+        last if $pos >= $len;
+
+        pos($inner) = $pos;
+        unless ($inner =~ /\G([A-Za-z_][A-Za-z0-9_]*)\s*=\s*/gc) {
+            last;
+        }
+        my $key = $1;
+        $pos = pos($inner);
+
+        my $ch = substr($inner, $pos, 1);
+        if ($ch eq '{') {
+            my $sub = _sandboxvars_extract_table($inner, $pos);
+            last if $sub eq '';
+            $out{$key} = _sandboxvars_parse_table($sub);
+            $pos += length($sub);
+        } elsif ($ch eq '"' || $ch eq "'") {
+            my $q = $ch;
+            $pos++;
+            my $val = '';
+            while ($pos < $len) {
+                my $c = substr($inner, $pos, 1);
+                if ($c eq '\\' && $pos + 1 < $len) {
+                    $val .= substr($inner, $pos, 2);
+                    $pos += 2;
+                    next;
+                }
+                if ($c eq $q) { $pos++; last; }
+                $val .= $c;
+                $pos++;
+            }
+            $out{$key} = $val;
+        } else {
+            # bare token: number, true, false
+            if ($inner =~ /\G(-?\d+(?:\.\d+)?|true|false)\b/gc) {
+                $out{$key} = $1;
+                $pos = pos($inner);
+            } else {
+                last;
+            }
+        }
+    }
+    return \%out;
+}
+
+sub _sandboxvars_flatten {
+    my ($node, $prefix, $vals, $order) = @_;
+    return unless ref($node) eq 'HASH';
+    for my $k (sort keys %$node) {
+        my $path = $prefix eq '' ? $k : "$prefix.$k";
+        my $v = $node->{$k};
+        if (ref($v) eq 'HASH') {
+            _sandboxvars_flatten($v, $path, $vals, $order);
+        } else {
+            push @$order, $path unless exists $vals->{$path};
+            my $leaf = defined $v ? "$v" : '';
+            $leaf = normalize_config_form_value($leaf);
+            $vals->{$path} = $leaf;
+        }
+    }
+}
+
+sub _sandboxvars_unflatten {
+    my ($vals, $order) = @_;
+    my %tree;
+    my @keys = @$order;
+    # Also include any update-only keys
+    for my $k (keys %$vals) {
+        push @keys, $k unless grep { $_ eq $k } @keys;
+    }
+    for my $path (@keys) {
+        next unless exists $vals->{$path};
+        my @parts = split /\./, $path;
+        my $cur = \%tree;
+        while (@parts > 1) {
+            my $p = shift @parts;
+            $cur->{$p} = {} unless ref($cur->{$p}) eq 'HASH';
+            $cur = $cur->{$p};
+        }
+        $cur->{ $parts[0] } = $vals->{$path};
+    }
+    return \%tree;
+}
+
+# Serialize nested hash to Lua table text. $order guides leaf order when possible.
+sub _sandboxvars_serialize_table {
+    my ($tree, $order, $indent_level) = @_;
+    $indent_level //= 1;
+    my $pad = '    ' x $indent_level;
+    my $pad0 = '    ' x ($indent_level - 1);
+
+    # Group order into top-level keys sequence
+    my (@top_order, %seen_top);
+    for my $path (@{ $order || [] }) {
+        my ($top) = split /\./, $path, 2;
+        next unless defined $top && $top ne '';
+        push @top_order, $top unless $seen_top{$top}++;
+    }
+    for my $k (sort keys %$tree) {
+        push @top_order, $k unless $seen_top{$k}++;
+    }
+
+    my @lines = ('{');
+    for my $k (@top_order) {
+        next unless exists $tree->{$k};
+        my $v = $tree->{$k};
+        if (ref($v) eq 'HASH') {
+            # nested order: paths under this key
+            my @sub_order = map {
+                /^\Q$k\E\.(.+)$/ ? $1 : ()
+            } @{ $order || [] };
+            my $inner = _sandboxvars_serialize_table($v, \@sub_order, $indent_level + 1);
+            $inner =~ s/\A\{\s*\n?//;
+            $inner =~ s/\n?[ \t]*\}\s*\z//;
+            push @lines, "$pad$k = {";
+            push @lines, $inner if $inner =~ /\S/;
+            push @lines, "$pad},";
+        } else {
+            push @lines, "$pad$k = " . _sandboxvars_format_value($v) . ',';
+        }
+    }
+    push @lines, "$pad0}";
+    return join("\n", @lines);
+}
+
+sub _sandboxvars_format_value {
+    my ($v) = @_;
+    $v = '' unless defined $v;
+    $v = normalize_config_form_value($v);
+    return $v if $v =~ /^(?:true|false)$/i;
+    return $v if $v =~ /^-?\d+(?:\.\d+)?$/;
+    $v =~ s/\\/\\\\/g;
+    $v =~ s/"/\\"/g;
+    return "\"$v\"";
+}
+
+# Webmin joins duplicate form names with \0 (hidden false + checkbox true).
+# Also heals already-saved "false true" / "true false" artifacts.
+sub normalize_config_form_value {
+    my ($v) = @_;
+    return '' unless defined $v;
+    # Treat UTF-8 replacement (U+FFFD) like NUL/space separators
+    $v =~ s/\xEF\xBF\xBD/\0/g;
+    # NUL-separated multi-value from ReadParse
+    if (index($v, "\0") >= 0) {
+        my @parts = grep { $_ ne '' } split /\0/, $v;
+        if (@parts && (grep { /^(?:true|false)$/i } @parts) == @parts) {
+            return lc($parts[-1]);
+        }
+        $v = $parts[-1] if @parts;
+    }
+    # Space-joined bool artifact already written to disk / odd parsers
+    if ($v =~ /^(?:true|false)(?:\s+(?:true|false))+$/i) {
+        my @parts = split /\s+/, $v;
+        return lc($parts[-1]);
+    }
+    # Quoted variant from a previous bad serialize
+    if ($v =~ /^"(?:true|false)(?:\s+(?:true|false))+"$/i) {
+        $v =~ s/^"|"$//g;
+        my @parts = split /\s+/, $v;
+        return lc($parts[-1]);
+    }
+    return $v;
 }
 
 *normalize_game_config_text = \&_normalize_game_config_text;

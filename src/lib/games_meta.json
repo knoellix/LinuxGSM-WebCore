@@ -187,5 +187,50 @@
         "en": "Eventfd synchronisation (compatible from kernel 4.x). Do not use together with WINEFSYNC."
       }
     }
+  },
+  "pzserver": {
+    "name": "Project Zomboid",
+    "steam_required": true,
+    "mod_support": "workshop",
+    "workshop_appid": 108600,
+    "workshop_dedicated_appid": 380870,
+    "workshop_ini_rel": "Zomboid/Server/pzserver.ini",
+    "game_config_path": "Zomboid/Server/pzserver.ini",
+    "game_config_path_base": "home",
+    "game_config_format": "properties",
+    "game_config_label_de": "Server-INI (Zomboid)",
+    "game_config_label_en": "Server INI (Zomboid)",
+    "game_sandbox_path": "Zomboid/Server/pzserver_SandboxVars.lua",
+    "game_sandbox_label_de": "Welteinstellungen (SandboxVars)",
+    "game_sandbox_label_en": "World settings (SandboxVars)",
+    "query_port_field": "queryport",
+    "fields": [
+      {"key": "port",          "type": "port",     "label_de": "Port",            "label_en": "Port",            "default": "16261"},
+      {"key": "queryport",     "type": "port",     "label_de": "Query Port",      "label_en": "Query Port",      "default": "16262"},
+      {"key": "gamename",      "type": "text",     "label_de": "Spielname (LGSM)","label_en": "Game name (LGSM)", "default": "Project Zomboid"},
+      {"key": "adminpassword", "type": "text",     "label_de": "Admin-Passwort",  "label_en": "Admin password",  "default": ""},
+      {"key": "maxplayers",    "type": "int",      "label_de": "Max. Spieler",    "label_en": "Max players",     "default": "16"}
+    ],
+    "game_config_fields": [
+      {"key": "PublicName",  "type": "text", "label_de": "Öffentlicher Name", "label_en": "Public name"},
+      {"key": "Password",    "type": "text", "label_de": "Server-Passwort",   "label_en": "Server password"},
+      {"key": "MaxPlayers",  "type": "int",  "label_de": "Max. Spieler",      "label_en": "Max players"},
+      {"key": "PauseEmpty",  "type": "bool", "label_de": "Pausieren wenn leer","label_en": "Pause when empty"},
+      {"key": "Open",        "type": "bool", "label_de": "Öffentlich",        "label_en": "Public"},
+      {"key": "Description", "type": "text", "label_de": "Beschreibung",      "label_en": "Description"},
+      {"key": "PVP",         "type": "bool", "label_de": "PVP",               "label_en": "PVP"},
+      {"key": "Mods",        "type": "text", "label_de": "Mods",              "label_en": "Mods"},
+      {"key": "WorkshopItems","type": "text","label_de": "Workshop-Items",    "label_en": "Workshop items"}
+    ],
+    "field_hints": {
+      "adminpassword": {
+        "de": "Pflichtfeld. Wird beim Speichern und vor Start automatisch in startparameters eingetragen (-adminpassword), sonst hängt der Erststart an der Konsolenabfrage.",
+        "en": "Required. On save and before start this is wired into startparameters (-adminpassword); otherwise first boot hangs on the console password prompt."
+      },
+      "gamename": {
+        "de": "Nur LGSM-Anzeige. Weltsave/INI heißen nach -servername (Standard: pzserver).",
+        "en": "LGSM display name only. World/INI follow -servername (default: pzserver)."
+      }
+    }
   }
 }

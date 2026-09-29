@@ -20,6 +20,11 @@ MAX_RESTARTS=5
 WINDOW_SECS=3600
 WAIT_TRIES="${WEBCORE_MONITOR_WAIT_TRIES:-12}"
 WAIT_DELAY="${WEBCORE_MONITOR_WAIT_DELAY:-5}"
+# Project Zomboid boots slowly; give monitor more time after start/recovery.
+if [[ "$SCRIPT_NAME" == "pzserver" || "$SCRIPT_NAME" == pz* ]]; then
+    WAIT_TRIES="${WEBCORE_MONITOR_WAIT_TRIES:-36}"
+    WAIT_DELAY="${WEBCORE_MONITOR_WAIT_DELAY:-5}"
+fi
 
 mkdir -p "$STATE_DIR" 2>/dev/null || true
 mkdir -p "$LOG_DIR"   2>/dev/null || true

@@ -78,6 +78,27 @@ lgsm_is_minecraft_instance() {
     return 1
 }
 
+# Project Zomboid: first boot often blocks on interactive admin password; LGSM
+# "quit" is consumed as password input and never stops the session. Prefer a
+# short direct/force path like Minecraft.
+lgsm_is_project_zomboid_instance() {
+    local server_dir="$1" script_name="${2:-}"
+    script_name="${script_name//[^a-zA-Z0-9_-]/}"
+    [[ "$script_name" == "pzserver" || "$script_name" == pz* ]] && return 0
+    local cfg=""
+    if [[ -n "$script_name" ]]; then
+        cfg="$server_dir/lgsm/config-lgsm/${script_name}/${script_name}.cfg"
+    fi
+    if [[ -n "$cfg" && -f "$cfg" ]] && grep -Eqi '^gamename="?Project Zomboid"?$|^engine="?projectzomboid"?$' "$cfg" 2>/dev/null; then
+        return 0
+    fi
+    local def="$server_dir/lgsm/config-default/config-lgsm/${script_name}/_default.cfg"
+    if [[ -n "$script_name" && -f "$def" ]] && grep -Eqi '^gamename="?Project Zomboid"?$|^engine="?projectzomboid"?$' "$def" 2>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
 # Java PIDs belonging to this server dir (cwd or cmdline). Prints one PID per line.
 lgsm_java_pids_for_server() {
     local server_dir="$1"
@@ -186,7 +207,7 @@ lgsm_stop_direct() {
     return 0
 }
 
-# Public stop: Minecraft → direct path; others → timed LGSM + force fallback.
+# Public stop: Minecraft/PZ → direct path; others → timed LGSM + force fallback.
 lgsm_stop_reliable() {
     local server_dir="$1" script_name="$2"
     script_name="${script_name//[^a-zA-Z0-9_-]/}"
@@ -194,6 +215,14 @@ lgsm_stop_reliable() {
     if lgsm_is_minecraft_instance "$server_dir" "$script_name"; then
         echo "Stop path: direct (Minecraft — avoid LGSM info_game hang)"
         lgsm_stop_direct "$server_dir" "$script_name" stop 60
+        return $?
+    fi
+
+    if lgsm_is_project_zomboid_instance "$server_dir" "$script_name"; then
+        # Short graceful "quit" (works once fully booted); if hung on the
+        # admin-password prompt, force within a few seconds instead of ~90s.
+        echo "Stop path: direct (Project Zomboid — avoid password-prompt hang)"
+        lgsm_stop_direct "$server_dir" "$script_name" quit 8
         return $?
     fi
 
@@ -350,6 +379,14 @@ lgsm_start_reliable() {
     if lgsm_is_minecraft_instance "$server_dir" "$script_name"; then
         lgsm_start_minecraft "$server_dir" "$script_name"
         return $?
+    fi
+
+    if lgsm_is_project_zomboid_instance "$server_dir" "$script_name"; then
+        local _pz_sync="${MODULE_ROOT:-}/scripts/pz_sync_lgsm_cfg.pl"
+        if [[ -n "${MODULE_ROOT:-}" && -f "$_pz_sync" ]]; then
+            echo "PZ: syncing LGSM startparameters (adminpassword) before start"
+            perl "$_pz_sync" "$server_dir" "$script_name" || true
+        fi
     fi
 
     if lgsm_is_started "$server_dir" "$script_name"; then

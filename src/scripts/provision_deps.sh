@@ -87,6 +87,8 @@ if ! apt-get install -y \
 fi
 
 # Per-game apt_deps — matched by steam_app_id (preferred) or game key.
+# Only for non-LGSM / overrides (Wine, SteamCMD extras). LGSM games get their
+# packages via lgsm_deps_install.sh (./script install as root after setup_lgsm).
 APT_DEPS=$(MODULE_ROOT="${MODULE_ROOT:-}" STEAM_APP_ID="$STEAM_APP_ID" GAME_KEY="$GAME_KEY" perl -e '
 use JSON::PP;
 my $meta_file = "$ENV{MODULE_ROOT}/lib/games_meta.json";
@@ -111,8 +113,40 @@ for my $k (keys %$data) {
 
 if [ -n "$APT_DEPS" ]; then
     echo "=== Installing per-game dependencies: $APT_DEPS ==="
-    # shellcheck disable=SC2086
-    if ! apt-get install -y $APT_DEPS; then
+    # Install one-by-one so a missing optional name can fall back (e.g. rng-tools5 →
+    # rng-tools on some Debian/Ubuntu variants) without aborting the whole set.
+    _apt_install_one() {
+        local pkg="$1"
+        local alt=""
+        case "$pkg" in
+            rng-tools5) alt="rng-tools" ;;
+            openjdk-25-jre) alt="openjdk-21-jre" ;;
+            openjdk-21-jre) alt="openjdk-17-jre" ;;
+            openjdk-17-jre) alt="default-jre" ;;
+        esac
+        if apt-cache show "$pkg" >/dev/null 2>&1; then
+            if apt-get install -y "$pkg"; then
+                return 0
+            fi
+        else
+            echo "WARN: package not in apt cache: $pkg"
+        fi
+        if [ -n "$alt" ]; then
+            echo "WARN: falling back to $alt instead of $pkg"
+            if apt-cache show "$alt" >/dev/null 2>&1 && apt-get install -y "$alt"; then
+                return 0
+            fi
+        fi
+        return 1
+    }
+    _apt_failed=""
+    for _pkg in $APT_DEPS; do
+        if ! _apt_install_one "$_pkg"; then
+            _apt_failed="${_apt_failed} ${_pkg}"
+        fi
+    done
+    if [ -n "$_apt_failed" ]; then
+        echo "ERROR: could not install packages:$_apt_failed"
         echo "hint_package_not_found" > "$JOB_DIR/error_hint"
         set_final_status "failed"
         exit 1

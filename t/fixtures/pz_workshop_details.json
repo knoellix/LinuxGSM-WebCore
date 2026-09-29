@@ -1,0 +1,24 @@
+{
+  "response": {
+    "publishedfiledetails": [
+      {
+        "publishedfileid": "2859296945",
+        "title": "Brita Weapon Pack",
+        "file_description": "Guns and gear for survivors.",
+        "preview_url": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/items/108600/example.jpg",
+        "time_updated": 1700000000,
+        "children": [
+          { "publishedfileid": "2169435913" },
+          { "publishedfileid": "2335368829" }
+        ]
+      },
+      {
+        "publishedfileid": "2169435913",
+        "title": "Required Dependency",
+        "file_description": "Dependency mod",
+        "preview_url": "https://example.com/dep.jpg",
+        "time_updated": 1690000000
+      }
+    ]
+  }
+}
