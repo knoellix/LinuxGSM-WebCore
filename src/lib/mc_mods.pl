@@ -1663,6 +1663,36 @@ sub _resolve_mod_dependency_meta {
     return ($ok, $meta, $err);
 }
 
+# Parse the install_deps POST flag from Webmin forms.
+# Webmin ReadParse may yield a scalar, "\0"-joined multi-value, or arrayref when
+# both a hidden field and a checkbox share the same name — never use bare eq '1'.
+# $present marks that the preview form was shown (unchecked checkbox sends nothing).
+sub mod_install_deps_flag_from_form {
+    my ($raw, $present) = @_;
+    if (defined $present && "$present" eq '1') {
+        return _mod_form_value_is_true($raw) ? 1 : 0;
+    }
+    # Legacy / Hangar forms without the checkbox: default to installing deps.
+    return 1 unless defined $raw;
+    return _mod_form_value_is_true($raw) ? 1 : 0;
+}
+
+sub _mod_form_value_is_true {
+    my ($raw) = @_;
+    return 0 unless defined $raw;
+    my @vals;
+    if (ref($raw) eq 'ARRAY') {
+        @vals = @$raw;
+    } else {
+        @vals = index("$raw", "\0") >= 0 ? split(/\0/, "$raw") : ($raw);
+    }
+    for my $v (@vals) {
+        next unless defined $v;
+        return 1 if "$v" eq '1' || "$v" =~ /^[yYtT]/
+    }
+    return 0;
+}
+
 # Primary mod + optional auto-install of missing required deps (cap 5).
 sub build_mod_install_plan {
     my ($source, $ids, $profile, $server_dir, $opts) = @_;

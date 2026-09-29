@@ -2,7 +2,7 @@
 # t/test_config_editor.pl — Tests for src/lib/config_editor.pl
 use strict;
 use warnings;
-use Test::More tests => 48;
+use Test::More tests => 101;
 use File::Temp qw(tempdir tempfile);
 use FindBin qw($Bin);
 use lib "$Bin/..";
@@ -74,6 +74,19 @@ my $tmpdir = tempdir(CLEANUP => 1);
     $last_error = '';
     my $ok = eval { &validate_config_target('lgsm/config-lgsm/common.cfg'); 1 };
     ok(!$ok && $last_error eq 'invalid input', 'validate_config_target: relative path rejected');
+}
+
+# Test 5b: instance cfg accepted when <script>/ parent is missing (Quick Fix create)
+{
+    $last_error = '';
+    my $tmp = tempdir(CLEANUP => 1);
+    require File::Path;
+    File::Path::make_path("$tmp/lgsm/config-lgsm");
+    my $cfg = "$tmp/lgsm/config-lgsm/pzserver/pzserver.cfg";
+    ok(!-d "$tmp/lgsm/config-lgsm/pzserver", 'precondition: script config dir absent');
+    my $resolved = eval { &validate_config_target($cfg); };
+    ok($resolved && $resolved =~ m{/lgsm/config-lgsm/pzserver/pzserver\.cfg$},
+        'validate_config_target: create path ok without script subdir');
 }
 
 # ------------------------------------------------------------------
@@ -415,4 +428,239 @@ my $tmpdir = tempdir(CLEANUP => 1);
     close $fh;
     my $resolved = eval { &validate_game_config_path($server, $ini); };
     ok($resolved && $resolved =~ /PalWorldSettings\.ini$/, 'validate_game_config_path: ini under server ok');
+}
+
+# Test 48: check_game_config_path soft-rejects outside tree (no &error)
+{
+    $last_error = '';
+    my $got = &check_game_config_path('/home/mc/srv', '/home/mc/Zomboid/Server/servertest.ini');
+    ok(!defined $got && $last_error eq '',
+        'check_game_config_path: outside tree returns undef without error');
+}
+
+# Test 49: manage.cgi uses soft check on GET render (not validate_game_config_path)
+{
+    open my $fh, '<', 'src/manage.cgi' or die $!;
+    local $/;
+    my $src = <$fh>;
+    close $fh;
+    like($src, qr/check_game_config_path\(\s*\$script_dir_for_cfg,\s*\$game_cfg_path/,
+        'manage.cgi: GET render uses check_game_config_path');
+    unlike($src, qr/eval\s*\{\s*\$game_cfg_path\s*=\s*&?validate_game_config_path/,
+        'manage.cgi: GET render does not eval validate_game_config_path');
+}
+
+# Test 50: PZ home-based INI allowed when home root is passed
+{
+    $last_error = '';
+    my $tmp = tempdir(CLEANUP => 1);
+    my $home = "$tmp/gs_pz";
+    my $server = "$home/pz-1";
+    require File::Path;
+    File::Path::make_path("$home/Zomboid/Server");
+    File::Path::make_path($server);
+    my $ini = "$home/Zomboid/Server/pzserver.ini";
+    open my $fh, '>', $ini or die $!;
+    print $fh "PublicName=Test\n";
+    close $fh;
+    my $got = &check_game_config_path($server, $ini, $home);
+    ok($got && $got =~ /pzserver\.ini$/, 'check_game_config_path: PZ home INI allowed with home arg');
+}
+
+# Test 51: resolve home-based game_config_path for pzserver
+{
+    our ($module_root, $config_directory);
+    $module_root = 'src';
+    $config_directory = tempdir(CLEANUP => 1);
+    require 'src/lib/games_meta.pl';
+    &_reset_meta_cache() if defined &_reset_meta_cache;
+    my $tmp = tempdir(CLEANUP => 1);
+    my $home = "$tmp/gs_pz";
+    my $server = "$home/pz-1";
+    require File::Path;
+    File::Path::make_path($server);
+    is(&get_game_config_path_base('pzserver'), 'home', 'pzserver game_config_path_base is home');
+    my $path = &resolve_game_server_config_path(
+        $server, 'pzserver', {}, &get_game_config_path('pzserver'),
+        { home => $home, selfname => 'pzserver' });
+    like($path, qr{\Q$home\E/Zomboid/Server/pzserver\.ini$},
+        'resolve: PZ game config under home');
+}
+
+# Test 52: ensure_pz_lgsm_startparameters wires adminpassword into startparameters
+{
+    our ($module_root, $config_directory);
+    $module_root = 'src';
+    $config_directory = tempdir(CLEANUP => 1);
+    require 'src/lib/games_meta.pl';
+    &_reset_meta_cache() if defined &_reset_meta_cache;
+    my %v = (adminpassword => 's3cret');
+    ok(&ensure_pz_lgsm_startparameters('pzserver', \%v), 'ensure_pz: mutates when password set');
+    like($v{'startparameters'}, qr/-adminpassword/, 'ensure_pz: startparameters includes adminpassword');
+    like($v{'startparameters'}, qr/\\"\$\{adminpassword\}\\"/,
+        'ensure_pz: startparameters uses LGSM-escaped adminpassword ref');
+    my %empty = (adminpassword => 'CHANGE_ME');
+    ok(!&ensure_pz_lgsm_startparameters('pzserver', \%empty), 'ensure_pz: skips CHANGE_ME');
+    my %qm = (querymode => '2');
+    ok(&ensure_pz_lgsm_querymode('pzserver', \%qm), 'ensure_pz: sets querymode=1');
+    is($qm{'querymode'}, '1', 'ensure_pz: querymode is session-only');
+    ok(!&ensure_pz_lgsm_querymode('pzserver', \%qm), 'ensure_pz: querymode idempotent');
+}
+
+# Test 53: PZ key=value .ini resolves as properties (not Palworld OptionSettings)
+{
+    no warnings 'redefine';
+    *main::get_game_config_format = sub { return 'properties' };
+    my $raw = "PublicName=MyPZ\nMaxPlayers=32\nPassword=secret\nMods=Foo;Bar\n";
+    is(&resolve_game_config_format('pzserver', '/home/u/Zomboid/Server/pzserver.ini', $raw),
+        'properties', 'resolve: PZ .ini is properties');
+    my ($vals, $order, $fmt) = &parse_game_config_values(
+        'pzserver', '/home/u/Zomboid/Server/pzserver.ini', $raw);
+    is($fmt, 'properties', 'parse: PZ format properties');
+    is($vals->{'PublicName'}, 'MyPZ', 'parse: PZ PublicName');
+    is($vals->{'MaxPlayers'}, '32', 'parse: PZ MaxPlayers');
+    is(scalar(@$order), 4, 'parse: PZ all keys present');
+}
+
+# Test 54: comments with apostrophes must not break brace extract (real PZ files)
+{
+    my $raw = <<'LUA';
+SandboxVars = {
+    VERSION = 6,
+    -- Changing this also sets the "Population Multiplier" option.
+    Zombies = 4,
+    -- How often events during the player's sleep occur.
+    SleepingEvent = 1,
+    -- If a piece of media hasn't been fully seen, show "???".
+    MetaKnowledge = 3,
+    Map = {
+        -- If enabled, the world map can be accessed.
+        AllowWorldMap = true,
+    },
+}
+LUA
+    my ($vals, $order) = &parse_sandboxvars_lua($raw);
+    is($vals->{'VERSION'}, '6', 'sandbox apostrophe-comments: VERSION');
+    is($vals->{'Zombies'}, '4', 'sandbox apostrophe-comments: Zombies');
+    is($vals->{'SleepingEvent'}, '1', 'sandbox apostrophe-comments: SleepingEvent');
+    is($vals->{'MetaKnowledge'}, '3', 'sandbox apostrophe-comments: MetaKnowledge');
+    is($vals->{'Map.AllowWorldMap'}, 'true', 'sandbox apostrophe-comments: nested');
+    ok(scalar(@$order) >= 5, 'sandbox apostrophe-comments: fields found');
+}
+
+# Test 55: parse_sandboxvars_lua flattens nested tables
+{
+    my $raw = <<'LUA';
+SandboxVars = {
+    VERSION = 5,
+    Zombies = 4,
+    ZombieLore = {
+        Speed = 2,
+        Strength = 3,
+    },
+    AllowExteriorGenerator = true,
+}
+LUA
+    my ($vals, $order) = &parse_sandboxvars_lua($raw);
+    is($vals->{'VERSION'}, '5', 'sandbox parse: VERSION');
+    is($vals->{'Zombies'}, '4', 'sandbox parse: Zombies');
+    is($vals->{'ZombieLore.Speed'}, '2', 'sandbox parse: nested Speed');
+    is($vals->{'ZombieLore.Strength'}, '3', 'sandbox parse: nested Strength');
+    is($vals->{'AllowExteriorGenerator'}, 'true', 'sandbox parse: bool true');
+    ok(scalar(@$order) >= 5, 'sandbox parse: order has leaves');
+}
+
+# Test 55: update_sandboxvars_lua changes nested leaf and round-trips
+{
+    my $raw = <<'LUA';
+SandboxVars = {
+    Zombies = 4,
+    ZombieLore = {
+        Speed = 2,
+    },
+    AllowExteriorGenerator = false,
+}
+LUA
+    my $out = &update_sandboxvars_lua($raw, {
+        'ZombieLore.Speed' => '1',
+        'AllowExteriorGenerator' => 'true',
+        'Zombies' => '3',
+    });
+    my ($vals) = &parse_sandboxvars_lua($out);
+    is($vals->{'ZombieLore.Speed'}, '1', 'sandbox update: nested Speed');
+    is($vals->{'AllowExteriorGenerator'}, 'true', 'sandbox update: bool');
+    is($vals->{'Zombies'}, '3', 'sandbox update: Zombies');
+    like($out, qr/SandboxVars\s*=/, 'sandbox update: keeps SandboxVars assignment');
+}
+
+# Test 56: check_game_config_path allows *_SandboxVars.lua under home
+{
+    my $home = tempdir(CLEANUP => 1);
+    my $server = "$home/pzserver";
+    require File::Path;
+    File::Path::make_path("$home/Zomboid/Server");
+    File::Path::make_path($server);
+    my $lua = "$home/Zomboid/Server/pzserver_SandboxVars.lua";
+    open my $fh, '>', $lua or die $!;
+    print $fh "SandboxVars = {\n    VERSION = 5,\n}\n";
+    close $fh;
+    my $got = &check_game_config_path($server, $lua, $home);
+    ok($got && $got =~ /_SandboxVars\.lua$/,
+        'check_game_config_path: SandboxVars under home allowed');
+    my $bad = &check_game_config_path($server, "$home/evil_SandboxVars.lua", $home);
+    ok(!defined $bad, 'check_game_config_path: SandboxVars outside Zomboid/Server rejected');
+}
+
+# Test 57: get_game_sandbox_path / manage sandbox tab wiring
+{
+    our ($module_root, $config_directory);
+    $module_root = 'src';
+    $config_directory = tempdir(CLEANUP => 1);
+    require 'src/lib/games_meta.pl';
+    &_reset_meta_cache() if defined &_reset_meta_cache;
+    my $sp = &get_game_sandbox_path('pzserver');
+    like($sp, qr/_SandboxVars\.lua$/, 'get_game_sandbox_path: pzserver');
+    my $lab = &get_game_sandbox_label('pzserver', 'de');
+    like($lab, qr/SandboxVars|Welt/i, 'get_game_sandbox_label: de');
+    open my $mf, '<', 'src/manage.cgi' or die $!;
+    local $/;
+    my $src = <$mf>;
+    close $mf;
+    like($src, qr/cfg_btn_sandbox/, 'manage.cgi: sandbox tab button');
+    like($src, qr/config_file", "sandbox"/, 'manage.cgi: sandbox save config_file');
+    like($src, qr/parse_sandboxvars_lua/, 'manage.cgi: parses SandboxVars');
+    like($src, qr/update_sandboxvars_lua/, 'manage.cgi: saves via update_sandboxvars_lua');
+}
+
+# Test 58: checkbox multi-value / "false true" heal
+{
+    is(&normalize_config_form_value("false\0true"), 'true',
+        'normalize: Webmin false\\0true → true');
+    is(&normalize_config_form_value("false"), 'false',
+        'normalize: plain false');
+    is(&normalize_config_form_value("false true"), 'true',
+        'normalize: space-joined false true → true');
+    my $raw = <<'LUA';
+SandboxVars = {
+    AllowExteriorGenerator = "false true",
+    StarterKit = false,
+}
+LUA
+    my $out = &update_sandboxvars_lua($raw, {
+        'AllowExteriorGenerator' => "false\0true",
+        'StarterKit' => 'true',
+    });
+    my ($vals) = &parse_sandboxvars_lua($out);
+    is($vals->{'AllowExteriorGenerator'}, 'true', 'heal: AllowExteriorGenerator');
+    is($vals->{'StarterKit'}, 'true', 'heal: StarterKit');
+}
+
+# Test 59: heal_sandboxvars_lua_text rewrites false\0true in raw Lua
+{
+    my $raw = "SandboxVars = {\n    Foo = false\0true,\n    Bar = \"false true\",\n    Ok = false,\n}\n";
+    my $healed = &heal_sandboxvars_lua_text($raw);
+    unlike($healed, qr/\0/, 'heal text: no NUL left');
+    like($healed, qr/Foo = true,/, 'heal text: Foo → true');
+    like($healed, qr/Bar = true,/, 'heal text: Bar → true');
+    like($healed, qr/Ok = false,/, 'heal text: Ok unchanged');
 }

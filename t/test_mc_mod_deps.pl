@@ -238,4 +238,23 @@ subtest 'write_mod_install_plan_job_meta writes plan files' => sub {
     is($plan->{'install_order'}[1], 'mod_meta.json', 'primary last');
 };
 
+# Regression: Webmin ReadParse multi-value install_deps must not disable deps.
+subtest 'mod_install_deps_flag_from_form handles Webmin multi-value POST' => sub {
+    # Preview form with checkbox checked: historically emitted hidden=0 + checkbox=1.
+    is(mod_install_deps_flag_from_form(['0', '1'], '1'), 1,
+        'arrayref 0+1 with present → install deps');
+    is(mod_install_deps_flag_from_form("0\0" . '1', '1'), 1,
+        'null-joined 0+1 with present → install deps');
+    is(mod_install_deps_flag_from_form('1', '1'), 1,
+        'plain 1 with present → install deps');
+    is(mod_install_deps_flag_from_form(undef, '1'), 0,
+        'unchecked checkbox (absent) with present → skip deps');
+    is(mod_install_deps_flag_from_form('0', '1'), 0,
+        'explicit 0 with present → skip deps');
+    is(mod_install_deps_flag_from_form(undef, undef), 1,
+        'legacy form without checkbox defaults to install deps');
+    is(mod_install_deps_flag_from_form(['0'], '1'), 0,
+        'arrayref only 0 with present → skip deps');
+};
+
 done_testing;

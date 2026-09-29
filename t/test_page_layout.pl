@@ -16,7 +16,7 @@ sub slurp {
     return $raw;
 }
 
-my %page = map { $_ => slurp("$src/$_.cgi") } qw(manage mods);
+my %page = map { $_ => slurp("$src/$_.cgi") } qw(manage mods workshop);
 
 sub id_pos {
     my ($text, $id) = @_;
@@ -38,6 +38,8 @@ for my $name (sort keys %page) {
         ok($starts > 0, "$name.cgi uses collapsible sections");
         is($ends, $starts, 'every opened section is closed');
         like($text, qr/ui_collapsible_state_script/, 'state script is emitted');
+        unlike($text, qr/\bui_success\b/,
+            "$name.cgi must not call non-existent ui_success");
 
         my @ids = $text =~ /ui_collapsible_start\([^;]*?id\s*=>\s*'([a-z0-9_-]+)'/gs;
         ok(scalar(@ids) >= $starts - 1, 'sections carry ids for state and deep links');

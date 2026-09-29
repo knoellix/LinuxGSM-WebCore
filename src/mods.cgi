@@ -821,7 +821,10 @@ sub _mods_render_dependency_table {
 sub _mods_install_deps_checkbox {
     my ($checked) = @_;
     $checked = 1 unless defined $checked;
-    my $out = &ui_hidden('install_deps', '0');
+    # Do not emit ui_hidden('install_deps','0') alongside the checkbox — Webmin
+    # ReadParse then yields an arrayref / "\0"-joined value and bare eq '1' fails,
+    # which silently disables dependency auto-install. Use a separate present flag.
+    my $out = &ui_hidden('install_deps_present', '1');
     $out .= &ui_checkbox(
         'install_deps',
         '1',
@@ -872,6 +875,11 @@ sub _mods_launch_mod_install {
         unless (ref($meta) eq 'HASH') {
             _mods_mod_install_error('invalid');
         }
+        # Cached plans are built with install_deps=1; if the user unchecked the
+        # box, drop resolved deps and enforce the missing-required guard.
+        if (!$install_deps) {
+            $plan->{'dependencies'} = [];
+        }
     } elsif (_mods_source_has_dep_preview($source)) {
         ($ok, $plan, $err) = &build_mod_install_plan(
             $source, $ids_ref, $profile, $server_dir, \%prepare_opts);
@@ -879,6 +887,16 @@ sub _mods_launch_mod_install {
             _mods_mod_install_error($err);
         }
         $meta = $plan->{'primary'};
+    } else {
+        ($ok, $meta, $err) = &prepare_mod_install_meta(
+            $source, $ids_ref, $profile, $server_dir,
+            $replace_basename ne '' ? { force_replace => 1 } : undef);
+        unless ($ok) {
+            _mods_mod_install_error($err);
+        }
+    }
+
+    if (_mods_source_has_dep_preview($source) && ref($plan) eq 'HASH') {
         my $status = $plan->{'status'} // {};
         my @missing_required = grep {
             (&normalize_mod_dependency_type($_->{'dependency_type'} // '') eq 'required')
@@ -886,13 +904,6 @@ sub _mods_launch_mod_install {
         if (@missing_required && !$install_deps) {
             &error($text{'mc_mod_deps_missing_blocked'}
                 || 'Install blocked: missing required dependencies.');
-        }
-    } else {
-        ($ok, $meta, $err) = &prepare_mod_install_meta(
-            $source, $ids_ref, $profile, $server_dir,
-            $replace_basename ne '' ? { force_replace => 1 } : undef);
-        unless ($ok) {
-            _mods_mod_install_error($err);
         }
     }
 
@@ -1400,7 +1411,8 @@ if ($action eq 'mc_mod_install') {
     $ids{'hangar_owner'} =~ s/[^a-zA-Z0-9_-]//g if $ids{'hangar_owner'};
     $ids{'hangar_slug'} =~ s/[^a-zA-Z0-9_-]//g if $ids{'hangar_slug'};
 
-    $launch_opts{'install_deps'} = ($in{'install_deps'} // '1') eq '1' ? 1 : 0;
+    $launch_opts{'install_deps'} = &mod_install_deps_flag_from_form(
+        $in{'install_deps'}, $in{'install_deps_present'});
 
     my $preview_token = $in{'mod_preview_token'} // '';
     $preview_token =~ s/[^0-9a-f]//g;

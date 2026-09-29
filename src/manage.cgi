@@ -38,6 +38,7 @@ require './lib/mc_upgrade.pl';
 require './lib/mc_mods.pl';
 require './lib/mc_modpack.pl';
 require './lib/module_config.pl';
+require './lib/pz_workshop.pl';
 require './lib/instance_profile.pl';
 require './lib/live_log.pl';
 require './lib/server_log.pl';
@@ -917,6 +918,26 @@ sub _manage_render_mods_page_link {
     print &ui_form_end();
 }
 
+sub _manage_render_workshop_page_link {
+    my ($inst, $instance_id) = @_;
+    my (undef, $script_name) = _parse_script_info($inst);
+    return unless $script_name;
+    return unless defined &game_has_workshop_support
+        && &game_has_workshop_support($script_name);
+
+    my $safe_id = &html_escape($instance_id);
+    print "<h3>" . &html_escape($text{'workshop_title'} || 'Steam Workshop') . "</h3>\n";
+    print "<p>" . &html_escape($text{'manage_workshop_page_desc'}
+        || 'Search and subscribe Steam Workshop mods for this server.')
+        . "</p>\n";
+    print &ui_form_start('workshop.cgi', 'get');
+    print &ui_hidden('instance_id', $safe_id);
+    print &ui_hidden('xnavigation', '1');
+    print &ui_submit($text{'manage_workshop_page_btn'} || 'Open workshop page',
+        undef, undef, undef, 'btn-default');
+    print &ui_form_end();
+}
+
 sub _manage_inline_action_btn {
     my ($html, $class) = @_;
     $class //= 'btn-default';
@@ -1289,6 +1310,8 @@ sub _enqueue_install_game_job {
 
 # One-time ROOT dependency bootstrap (apt) for a new instance. After this the
 # whole runtime is user-native and never touches apt. See provision_deps.sh.
+# Optional games_meta apt_deps are for non-LGSM / overrides only — LGSM games
+# get their package list via lgsm_deps_install.sh (./script install as root).
 sub _manage_launch_provision_deps {
     my ($instance_id, $inst, $unix_user) = @_;
     my (undef, $script_name, $server_dir) = _parse_script_info($inst);
@@ -1319,6 +1342,55 @@ sub _manage_launch_provision_deps {
         return undef;
     }
     return $job_id;
+}
+
+# ROOT: LGSM "./script install" installs distro deps only (no game files).
+# Called after setup_lgsm so the game script exists under $server_dir.
+sub _manage_launch_lgsm_deps {
+    my ($instance_id, $inst, $unix_user) = @_;
+    my (undef, $script_name, $server_dir) = _parse_script_info($inst);
+    $script_name =~ s/[^a-zA-Z0-9_-]//g;
+    return undef unless $script_name ne '' && $server_dir =~ m{^/};
+    return undef unless -x "$server_dir/$script_name";
+
+    my $job_id = &create_job($unix_user);
+    my $job_dir = _shell_safe_job_dir($job_id);
+    &write_job_meta($job_id, $instance_id, 'lgsm_deps_install', $unix_user)
+        or do { &job_mark_launch_failed($job_id); return undef; };
+    &log_action('job_started', $job_id, {
+        instance_id => $instance_id,
+        action      => 'lgsm_deps_install',
+    });
+    my $cmd = "MODULE_ROOT='$module_root' setsid nohup bash "
+        . "'$module_root/scripts/lgsm_deps_install.sh' "
+        . "'$job_dir' '$unix_user' '$server_dir' '$script_name' &";
+    &log_debug("lgsm_deps_install: script=$script_name dir=$server_dir");
+    my $rc = &system_logged($cmd);
+    if ($rc != 0 || !&job_dispatch_verified($job_id)) {
+        &job_mark_launch_failed($job_id);
+        return undef;
+    }
+    return $job_id;
+}
+
+# After setup_lgsm succeeds, chain the root LGSM deps install (once).
+sub _manage_maybe_launch_lgsm_deps_after_setup {
+    my ($instance_id, $inst, $unix_user, $setup_job_id) = @_;
+    return 0 if &user_is_readonly($instance_id);
+    return 0 unless &user_can_operate($instance_id);
+    my $source = _effective_instance_source($inst);
+    return 0 if $source eq 'steamcmd';
+    my (undef, $script_name, $server_dir) = _parse_script_info($inst);
+    return 0 unless $script_name && -x "$server_dir/$script_name";
+    return 0 if -f "$server_dir/.webcore_lgsm_deps_ok";
+
+    # Avoid re-entry if deps already running.
+    return 0 if &find_running_job_for_instance($instance_id, 'lgsm_deps_install');
+
+    my $deps_job = &_manage_launch_lgsm_deps($instance_id, $inst, $unix_user);
+    return 0 unless $deps_job;
+    &_manage_redirect_poll_job($deps_job, $instance_id, next_status => 'lgsm_ready');
+    return 1; # never returns on success (redirect)
 }
 
 # --- Pending modpack-first chain -----------------------------------------
@@ -1466,16 +1538,21 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|monitor|job_log
         &_manage_redirect_section($instance_id, 'controls');
     }
     elsif ($action eq 'fix_config') {
-        my $script_name = (split('/', $inst->{'script'}))[-1];
-        my $script_dir  = $inst->{'script'};
-        $script_dir =~ s|/[^/]+$||;
+        my (undef, $script_name, $script_dir) = _parse_script_info($inst);
+        $script_name = _manage_executable_script_name($script_dir, $script_name)
+            if $script_dir && $script_name;
+        $script_name =~ s/[^a-zA-Z0-9_-]//g;
+        ($script_dir && $script_dir =~ m|^/| && $script_name ne '')
+            or &error($text{'err_invalid_input'});
 
         my $config_file = "$script_dir/lgsm/config-lgsm/$script_name/$script_name.cfg";
         my $default_cfg = "$script_dir/lgsm/config-default/config-lgsm/$script_name/_default.cfg";
 
         &validate_config_target($config_file);
-        &error("Invalid default path") unless
-            $default_cfg =~ m|^/[a-zA-Z0-9_./()\-]+/lgsm/config-default/config-lgsm/[a-zA-Z0-9_-]+/_default\.cfg$|;
+        unless ($default_cfg =~ m|^/[a-zA-Z0-9_./()\- ]+/lgsm/config-default/config-lgsm/[a-zA-Z0-9_-]+/_default\.cfg$|) {
+            &error($text{'manage_fix_config_invalid_default'}
+                || 'Default config path is invalid.');
+        }
 
         # Build form overrides from all games_meta fields.
         # Each field type drives validation; missing values fall back to games_meta defaults.
@@ -1496,21 +1573,62 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|monitor|job_log
                 my $n = int($raw || 0);
                 # port/queryport/beaconport must be > 0; other ints can be 0.
                 if ($t eq 'port') {
-                    $n > 0 or &error($text{'err_invalid_input'});
+                    if ($n <= 0 && defined $f->{'default'} && int($f->{'default'} || 0) > 0) {
+                        $n = int($f->{'default'});
+                    }
+                    $n > 0 or &error($text{'manage_fix_config_bad_port'}
+                        || $text{'err_invalid_input'}
+                        || 'Port must be greater than 0.');
                 }
                 $form_overrides{$k} = $n;
             } elsif ($t eq 'bool') {
                 $form_overrides{$k} = $raw ? 1 : 0;
+            } elsif ($t eq 'password') {
+                my $v = $raw // '';
+                $v =~ s/[\r\n\0]//g;
+                $v =~ s/[\\"<>]//g;
+                if ($v eq '' && defined $f->{'default'} && $f->{'default'} =~ /\S/) {
+                    $v = $f->{'default'};
+                    $v =~ s/[\r\n\0]//g;
+                    $v =~ s/[\\"<>]//g;
+                }
+                $form_overrides{$k} = $v;
             } else {
                 my $v = $raw // '';
-                $v =~ s/[^a-zA-Z0-9 ._\-:\/]//g;
+                # adminpassword: visible text field — keep password-safe chars, not gamename strip
+                if ($k eq 'adminpassword') {
+                    $v =~ s/[\r\n\0]//g;
+                    $v =~ s/[\\"<>]//g;
+                } else {
+                    $v =~ s/[^a-zA-Z0-9 ._\-:\/]//g;
+                }
+                if ($v eq '' && defined $f->{'default'} && $f->{'default'} =~ /\S/) {
+                    $v = $f->{'default'};
+                    if ($k eq 'adminpassword') {
+                        $v =~ s/[\r\n\0]//g;
+                        $v =~ s/[\\"<>]//g;
+                    } else {
+                        $v =~ s/[^a-zA-Z0-9 ._\-:\/]//g;
+                    }
+                }
                 $form_overrides{$k} = $v;
             }
         }
         # gamename always required (LGSM convention) when present in form.
         if (exists $form_overrides{'gamename'}) {
-            length($form_overrides{'gamename'}) or &error($text{'err_invalid_input'});
+            length($form_overrides{'gamename'}) or &error($text{'manage_fix_config_bad_gamename'}
+                || $text{'err_invalid_input'}
+                || 'Game name is required.');
         }
+        if (($script_name eq 'pzserver' || $script_name =~ /^pz/)
+            && exists $form_overrides{'adminpassword'}) {
+            my $ap = $form_overrides{'adminpassword'} // '';
+            ($ap ne '' && $ap ne 'CHANGE_ME')
+                or &error($text{'manage_fix_config_bad_adminpassword'}
+                    || 'Admin password is required for Project Zomboid.');
+        }
+        &ensure_pz_lgsm_startparameters($script_name, \%form_overrides);
+        &ensure_pz_lgsm_querymode($script_name, \%form_overrides);
 
         # Read _default.cfg preserving section comments and all assignments.
         # Form values override whatever was in the file.
@@ -1596,39 +1714,73 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|monitor|job_log
         $script_dir =~ s|/[^/]+$||;
 
         my $cfg_file_key = $in{'config_file'} // '';
-        $cfg_file_key = ($cfg_file_key eq 'instance' || $cfg_file_key eq 'common' || $cfg_file_key eq 'game')
+        $cfg_file_key = ($cfg_file_key eq 'instance' || $cfg_file_key eq 'common'
+                || $cfg_file_key eq 'game' || $cfg_file_key eq 'sandbox')
             ? $cfg_file_key : 'common';
         my $cfg_view_key = $in{'config_view'} // '';
-        $cfg_view_key = ($cfg_view_key eq 'instance' || $cfg_view_key eq 'common' || $cfg_view_key eq 'game')
+        $cfg_view_key = ($cfg_view_key eq 'instance' || $cfg_view_key eq 'common'
+                || $cfg_view_key eq 'game' || $cfg_view_key eq 'sandbox')
             ? $cfg_view_key : $cfg_file_key;
         my $cfg_path;
+        my $ghome = '';
         if ($cfg_file_key eq 'instance') {
             $cfg_path = "$script_dir/lgsm/config-lgsm/$script_name/$script_name.cfg";
-        } elsif ($cfg_file_key eq 'game') {
+        } elsif ($cfg_file_key eq 'game' || $cfg_file_key eq 'sandbox') {
             my %cfg_ctx = &_parse_lgsm_config($script_dir, $script_name);
-            my $hint    = &get_game_config_path($script_name);
-            $cfg_path = &resolve_game_server_config_path($script_dir, $script_name, \%cfg_ctx, $hint);
-            $cfg_path = &validate_game_config_path($script_dir, $cfg_path);
+            $ghome = &resolve_game_config_home($unix_user, $script_dir);
+            my $hint = ($cfg_file_key eq 'sandbox')
+                ? &get_game_sandbox_path($script_name)
+                : &get_game_config_path($script_name);
+            $cfg_path = &resolve_game_server_config_path(
+                $script_dir, $script_name, \%cfg_ctx, $hint,
+                { home => $ghome, selfname => $script_name });
+            $cfg_path = &validate_game_config_path($script_dir, $cfg_path, $ghome);
         } else {
             $cfg_path = "$script_dir/lgsm/config-lgsm/common.cfg";
         }
-        &validate_config_target($cfg_path) unless $cfg_file_key eq 'game';
+        &validate_config_target($cfg_path)
+            unless $cfg_file_key eq 'game' || $cfg_file_key eq 'sandbox';
 
         # Ensure the parent directory exists (combined with write below)
         (my $cfg_dir = $cfg_path) =~ s|/[^/]+$||;
 
-        if ($cfg_file_key eq 'game') {
+        if ($cfg_file_key eq 'game' || $cfg_file_key eq 'sandbox') {
             unless (-f $cfg_path) {
+                if ($cfg_file_key eq 'sandbox') {
+                    &error($text{'config_editor_sandbox_missing'}
+                        || 'SandboxVars file not found — start the server once to generate it.');
+                }
                 if ($effective_source eq 'steamcmd') {
                     &error($text{'config_editor_game_missing_steamcmd'}
                         || $text{'config_editor_game_missing'});
                 }
                 &_manage_dispatch_game_config_bootstrap($instance_id, $inst, $unix_user);
             }
-            -f $cfg_path or &error($text{'config_editor_game_missing'});
+            -f $cfg_path or &error(
+                $cfg_file_key eq 'sandbox'
+                    ? ($text{'config_editor_sandbox_missing'} || 'SandboxVars missing')
+                    : $text{'config_editor_game_missing'});
             my $new_content;
             if (int($in{'raw_mode'} || 0)) {
                 $new_content = $in{'game_config_raw'} // '';
+                if ($cfg_file_key eq 'sandbox') {
+                    # In-place heal only — do not re-serialize (keeps PZ comments).
+                    $new_content = &heal_sandboxvars_lua_text(
+                        &normalize_game_config_text($new_content));
+                }
+            } elsif ($cfg_file_key eq 'sandbox') {
+                my $raw_base = &read_game_config_raw($cfg_path);
+                if ($raw_base eq '' && ($in{'game_config_original'} // '') ne '') {
+                    $raw_base = &normalize_game_config_text($in{'game_config_original'});
+                }
+                my %updates;
+                for my $param (keys %in) {
+                    next unless $param =~ /^field_(.+)$/;
+                    my $key = $1;
+                    $updates{$key} = &normalize_config_form_value(
+                        defined $in{$param} ? $in{$param} : '');
+                }
+                $new_content = &update_sandboxvars_lua($raw_base, \%updates);
             } else {
                 my $raw_base = &read_game_config_raw($cfg_path);
                 if ($raw_base eq '' && ($in{'game_config_original'} // '') ne '') {
@@ -1643,7 +1795,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|monitor|job_log
                         my $key = $1;
                         my $val = $in{$param};
                         $val = '' unless defined $val;
-                        $updates{$key} = $val;
+                        $updates{$key} = &normalize_config_form_value($val);
                     }
                     $new_content = &update_json_config($raw_base, \%updates);
                 }
@@ -1652,7 +1804,8 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|monitor|job_log
                     for my $param (keys %in) {
                         next unless $param =~ /^field_(.+)$/;
                         my $key = $1;
-                        $prop_vals{$key} = $in{$param} if exists $in{$param};
+                        next unless exists $in{$param};
+                        $prop_vals{$key} = &normalize_config_form_value($in{$param});
                     }
                     $new_content = &update_properties_file($raw_base, \%prop_vals);
                 } else {
@@ -1661,7 +1814,7 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|monitor|job_log
                     for my $param (keys %in) {
                         next unless $param =~ /^field_(\w+)$/;
                         my $key = $1;
-                        my $val = $in{$param} // '';
+                        my $val = &normalize_config_form_value($in{$param} // '');
                         $opt_vals{$key} = $val;
                         push @opt_order, $key unless grep { $_ eq $key } @opt_order;
                     }
@@ -1685,6 +1838,14 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|monitor|job_log
                 $val =~ s/[<>"\\]//g;   # basic sanitize
                 $cur_vals->{$key} = $val;
                 push @$cur_order, $key unless grep { $_ eq $key } @$cur_order;
+            }
+            if (&ensure_pz_lgsm_startparameters($script_name, $cur_vals)) {
+                push @$cur_order, 'startparameters'
+                    unless grep { $_ eq 'startparameters' } @$cur_order;
+            }
+            if (&ensure_pz_lgsm_querymode($script_name, $cur_vals)) {
+                push @$cur_order, 'querymode'
+                    unless grep { $_ eq 'querymode' } @$cur_order;
             }
 
             my $form_content = join('', map { exists $cur_vals->{$_} ? "$_=\"$cur_vals->{$_}\"\n" : () } @$cur_order);
@@ -1864,7 +2025,8 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|monitor|job_log
                 );
             },
         );
-        &_manage_redirect_poll_job($job_id, $instance_id, next_status => 'lgsm_ready');
+        # Do not set lgsm_ready yet — poll/chain starts root LGSM deps next.
+        &_manage_redirect_poll_job($job_id, $instance_id);
     }
     elsif ($action eq 'mc_java_setup') {
         &_manage_redirect_if_job_running($instance_id, 'mc_java_setup');
@@ -1981,6 +2143,14 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|monitor|job_log
             unless (-x "$server_dir/$exec") {
                 &error($text{'setup_lgsm_required'}
                     || 'LGSM-Skript fehlt — bitte zuerst „LGSM einrichten“ ausführen.');
+            }
+            # Existing instances / skipped chain: install LGSM deps as root first.
+            unless (-f "$server_dir/.webcore_lgsm_deps_ok") {
+                &_manage_redirect_if_job_running($instance_id, 'lgsm_deps_install');
+                my $deps_job = &_manage_launch_lgsm_deps($instance_id, $reg, $unix_user);
+                $deps_job or _manage_job_launch_failed();
+                # After deps, user clicks Install again (status stays until install).
+                &_manage_redirect_poll_job($deps_job, $instance_id, next_status => 'lgsm_ready');
             }
         }
         my $job_id = _enqueue_install_game_job($instance_id, $reg, $unix_user);
@@ -2103,8 +2273,11 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|monitor|job_log
         $script_dir =~ s|/[^/]+$||;
         my %cfg_ctx  = &_parse_lgsm_config($script_dir, $script_name);
         my $hint     = &get_game_config_path($script_name);
-        my $cfg_path = &resolve_game_server_config_path($script_dir, $script_name, \%cfg_ctx, $hint);
-        $cfg_path = &validate_game_config_path($script_dir, $cfg_path) if $cfg_path ne '';
+        my $ghome    = &resolve_game_config_home($unix_user, $script_dir);
+        my $cfg_path = &resolve_game_server_config_path(
+            $script_dir, $script_name, \%cfg_ctx, $hint,
+            { home => $ghome, selfname => $script_name });
+        $cfg_path = &validate_game_config_path($script_dir, $cfg_path, $ghome) if $cfg_path ne '';
 
         # Bootstrap is only safe for LGSM scripts (which return immediately).
         # For SteamCMD/Wine games './<script> start' would launch wine in the
@@ -2322,9 +2495,19 @@ if (($in{'action'} // '') eq 'poll_job') {
     }
 
     if ($status eq 'ok' && !$json_poll) {
+        my $meta_ok = &get_job_meta($job_id);
+        my $act_ok  = $meta_ok->{'action'} // '';
+        if ($act_ok eq 'setup_lgsm') {
+            # Chain root LGSM deps before marking lgsm_ready.
+            if (&_manage_maybe_launch_lgsm_deps_after_setup(
+                    $instance_id, $inst, $unix_user, $job_id)) {
+                # redirect inside helper
+            }
+            # If chain skipped (marker present / steamcmd), fall through to ready.
+            $next_status = 'lgsm_ready' unless $next_status;
+        }
         unless ($next_status) {
-            my $meta = &get_job_meta($job_id);
-            $next_status = _manage_next_status_for_action($meta->{'action'});
+            $next_status = _manage_next_status_for_action($act_ok || '');
         }
         &_manage_poll_job_on_ok($instance_id, $inst, $unix_user, $next_status, $next_action);
     }
@@ -2505,6 +2688,7 @@ if (($in{'action'} // '') eq 'monitor') {
 }
 
 # Modpack-first chain: after verified provision_deps success, auto-start stashed import.
+# LGSM setup chain: after setup_lgsm success, auto-start root deps install.
 if (!&user_is_readonly($instance_id)) {
     my $chain_job = $in{'action_result'} // '';
     $chain_job =~ s/[^0-9a-f]//g;
@@ -2512,8 +2696,13 @@ if (!&user_is_readonly($instance_id)) {
     if ($chain_job ne '' && &validate_job_for_instance($chain_job, $instance_id)) {
         my $chain_meta = &get_job_meta($chain_job);
         my $chain_st   = &get_job_status($chain_job) // '';
-        if ($chain_st eq 'ok' && ($chain_meta->{'action'} // '') eq 'provision_deps') {
+        my $chain_act  = $chain_meta->{'action'} // '';
+        if ($chain_st eq 'ok' && $chain_act eq 'provision_deps') {
             &_manage_maybe_launch_pending_modpack($instance_id, $inst, $unix_user);
+        }
+        if ($chain_st eq 'ok' && $chain_act eq 'setup_lgsm') {
+            &_manage_maybe_launch_lgsm_deps_after_setup(
+                $instance_id, $inst, $unix_user, $chain_job);
         }
     }
 }
@@ -2627,6 +2816,7 @@ if ($is_fresh) {
     unless (&user_is_readonly($instance_id)) {
         &_manage_render_instance_jobs_table($instance_id, 5);
         &_manage_render_mods_page_link($inst, $instance_id);
+        &_manage_render_workshop_page_link($inst, $instance_id);
     }
 
     &footer('', '');
@@ -2637,8 +2827,9 @@ my $safe_id = &html_escape($instance_id);
 
 &header("$text{'manage_title'}: $safe_id", '');
 
-my $script_dir_for_cfg = $inst->{'script'};
-$script_dir_for_cfg =~ s|/[^/]+$||;
+my (undef, $script_name_for_cfg, $script_dir_for_cfg) = _parse_script_info($inst);
+$script_name_for_cfg = _manage_executable_script_name($script_dir_for_cfg, $script_name_for_cfg)
+    if $script_dir_for_cfg && $script_name_for_cfg;
 &sync_monitor_job_pointers();
 my $mon_state = &read_monitor_state($script_dir_for_cfg, $config_directory, $instance_id);
 
@@ -2699,13 +2890,19 @@ if ($job_aborted_id ne ''
             . "</div>\n";
     }
     if ($flash_id ne '' && &module_config_flash_consume("cfg_save_$flash_id")) {
-        print &ui_success($text{'manage_config_saved_ok'} || 'Configuration saved.');
+        print "<div class='alert alert-success'>"
+            . &html_escape($text{'manage_config_saved_ok'} || 'Configuration saved.')
+            . "</div>\n";
     }
     if ($flash_id ne '' && &module_config_flash_consume("cfg_fix_$flash_id")) {
-        print &ui_success($text{'manage_config_fix_ok'} || 'Configuration repaired.');
+        print "<div class='alert alert-success'>"
+            . &html_escape($text{'manage_config_fix_ok'} || 'Configuration repaired.')
+            . "</div>\n";
     }
     if ($flash_id ne '' && &module_config_flash_consume("cfg_migrate_$flash_id")) {
-        print &ui_success($text{'manage_config_migrate_ok'} || 'Configuration migrated.');
+        print "<div class='alert alert-success'>"
+            . &html_escape($text{'manage_config_migrate_ok'} || 'Configuration migrated.')
+            . "</div>\n";
     }
 }
 
@@ -2732,12 +2929,11 @@ unless ($silent_polling) {
 }
 
 # Parse LGSM config to check _has_user_config
-my $script_name_for_cfg = (split('/', $inst->{'script'}))[-1];
 my %cfg = &_parse_lgsm_config($script_dir_for_cfg, $script_name_for_cfg);
 my $source_for_status = $effective_source;
 my $runtime_status = _manage_runtime_status($inst, $source_for_status, light => 1);
 
-my (undef, undef, $server_dir_info) = _parse_script_info($inst);
+my $server_dir_info = $script_dir_for_cfg;
 my $mc_info = $server_dir_info ? &read_mc_profile($server_dir_info) : undef;
 
 # Ports and firewall state up front — the status line needs both, and the
@@ -2745,7 +2941,9 @@ my $mc_info = $server_dir_info ? &read_mc_profile($server_dir_info) : undef;
 my $info_ports = _collect_instance_ports($script_name_for_cfg, \%cfg);
 my $all_open = 1;
 for my $p (@$info_ports) {
-    $all_open = 0 unless &firewall_status($p->{port});
+    # Manage opens tcp+udp; both must be present or the badge lies (PZ needs UDP).
+    $all_open = 0 unless &firewall_status($p->{port}, 'tcp')
+        && &firewall_status($p->{port}, 'udp');
 }
 
 # Game fields misplaced in common.cfg — needed for the warning block below.
@@ -2952,8 +3150,9 @@ my $monitor_link = "<a href=\"manage.cgi?instance_id=$safe_id&amp;action=monitor
 print &_manage_inline_action_btn($monitor_link);
 print "</div>\n";
 
-# Mods page link (below server controls)
+# Mods / Workshop page links (below server controls)
 &_manage_render_mods_page_link($inst, $instance_id);
+&_manage_render_workshop_page_link($inst, $instance_id);
 print &ui_collapsible_end();
 
 if (&user_can_operate($instance_id)) {
@@ -3226,7 +3425,16 @@ if (!$cfg{_has_instance_config}) {
             elsif ($key eq 'gamename')   { $val = (($inst->{'game'} // 'unknown') eq 'unknown') ? ($f->{'default'} // '') : $inst->{'game'}; }
             else                         { $val = $f->{'default'} // ''; }
         }
-        print &ui_table_row(&html_escape($label), &ui_textbox($key, $val, 30));
+        if ($val eq 'CHANGE_ME' && $key eq 'adminpassword') {
+            $val = '';
+        }
+        my $widget;
+        if ($type eq 'password') {
+            $widget = &ui_password($key, $val, 30);
+        } else {
+            $widget = &ui_textbox($key, $val, 30);
+        }
+        print &ui_table_row(&html_escape($label), $widget);
     }
     print &ui_table_end();
     print &ui_submit($text{'manage_fix_config_btn'}, undef, undef, undef, 'btn-primary');
@@ -3236,21 +3444,47 @@ if (!$cfg{_has_instance_config}) {
 # Config editor section
 {
     my $cfg_file_key = $in{'config_file'} // '';
-    $cfg_file_key = ($cfg_file_key eq 'common' || $cfg_file_key eq 'instance' || $cfg_file_key eq 'game')
+    $cfg_file_key = ($cfg_file_key eq 'common' || $cfg_file_key eq 'instance'
+            || $cfg_file_key eq 'game' || $cfg_file_key eq 'sandbox')
         ? $cfg_file_key : 'common';
     my $cfg_view_key = $in{'config_view'} // '';
-    if ($cfg_view_key ne 'common' && $cfg_view_key ne 'instance' && $cfg_view_key ne 'game') {
+    if ($cfg_view_key ne 'common' && $cfg_view_key ne 'instance'
+            && $cfg_view_key ne 'game' && $cfg_view_key ne 'sandbox') {
         $cfg_view_key = $cfg_file_key;
     }
     my $common_path   = "$script_dir_for_cfg/lgsm/config-lgsm/common.cfg";
     my $instance_path = "$script_dir_for_cfg/lgsm/config-lgsm/$script_name_for_cfg/$script_name_for_cfg.cfg";
     my $game_cfg_hint = &get_game_config_path($script_name_for_cfg);
+    my $game_cfg_home = &resolve_game_config_home($unix_user, $script_dir_for_cfg);
     my $game_cfg_path = &resolve_game_server_config_path(
-        $script_dir_for_cfg, $script_name_for_cfg, \%cfg, $game_cfg_hint);
+        $script_dir_for_cfg, $script_name_for_cfg, \%cfg, $game_cfg_hint,
+        { home => $game_cfg_home, selfname => $script_name_for_cfg });
+    # Soft check only: validate_game_config_path calls Webmin &error which
+    # exits (eval cannot catch). PZ lives under $HOME/Zomboid/Server/ — allow
+    # that home root without aborting the manage page mid-render.
     if ($game_cfg_path ne '') {
-        eval { $game_cfg_path = &validate_game_config_path($script_dir_for_cfg, $game_cfg_path); 1 }
-            or do { $game_cfg_path = ''; };
+        $game_cfg_path = &check_game_config_path(
+            $script_dir_for_cfg, $game_cfg_path, $game_cfg_home) // '';
     }
+    my $sandbox_hint = &get_game_sandbox_path($script_name_for_cfg);
+    my $sandbox_cfg_path = '';
+    my $sandbox_cfg_exists = 0;
+    my $sandbox_raw = '';
+    if ($sandbox_hint ne '') {
+        $sandbox_cfg_path = &resolve_game_server_config_path(
+            $script_dir_for_cfg, $script_name_for_cfg, \%cfg, $sandbox_hint,
+            { home => $game_cfg_home, selfname => $script_name_for_cfg });
+        if ($sandbox_cfg_path ne '') {
+            $sandbox_cfg_path = &check_game_config_path(
+                $script_dir_for_cfg, $sandbox_cfg_path, $game_cfg_home) // '';
+        }
+        if ($sandbox_cfg_path ne '' && -f $sandbox_cfg_path) {
+            $sandbox_cfg_exists = 1;
+            $sandbox_raw = &heal_sandboxvars_lua_text(
+                &read_game_config_raw($sandbox_cfg_path));
+        }
+    }
+    my $show_sandbox_tab = ($sandbox_hint ne '');
     my $server_root_path = $script_dir_for_cfg;
     my $fileman_path = $server_root_path;
     $fileman_path =~ s/([^A-Za-z0-9\-_.~\/])/sprintf("%%%02X", ord($1))/ge;
@@ -3269,6 +3503,9 @@ if (!$cfg{_has_instance_config}) {
     my $lang = $current_lang // 'en';
     my $game_tab_label = &get_game_config_label($script_name_for_cfg, $lang);
     $game_tab_label = $text{'config_editor_game_btn'} unless $game_tab_label ne '';
+    my $sandbox_tab_label = &get_game_sandbox_label($script_name_for_cfg, $lang);
+    $sandbox_tab_label = $text{'config_editor_sandbox_btn'}
+        unless defined $sandbox_tab_label && $sandbox_tab_label ne '';
     # Config editor (opened via deep link when config_file is set)
     print "<h4 id=\"config-editor\">" . &html_escape($text{'config_editor_title'}) . "</h4>\n";
     print "<p>" . &html_escape($text{'config_editor_profile'}) . " <b>" .
@@ -3285,6 +3522,10 @@ if (!$cfg{_has_instance_config}) {
           &html_escape($instance_path) . "</code><br>\n";
     print "<b>" . &html_escape($text{'config_editor_game_path'}) . "</b> <code>" .
           &html_escape($game_cfg_path) . "</code><br>\n";
+    if ($show_sandbox_tab) {
+        print "<b>" . &html_escape($text{'config_editor_sandbox_path'}) . "</b> <code>" .
+              &html_escape($sandbox_cfg_path) . "</code><br>\n";
+    }
     print "<b>" . &html_escape($text{'config_editor_server_root'}) . "</b> <code>" .
           &html_escape($server_root_path) . "</code> &nbsp;" .
           "<a href='" . &html_escape($fileman_url) . "'>" .
@@ -3294,7 +3535,7 @@ if (!$cfg{_has_instance_config}) {
     print <<'JS';
 <script>
 function lgsmShowConfigView(view) {
-    var views = ['common', 'instance', 'game'];
+    var views = ['common', 'instance', 'game', 'sandbox'];
     for (var i = 0; i < views.length; i++) {
         var id = views[i];
         var panel = document.getElementById('cfg_panel_' + id);
@@ -3323,6 +3564,11 @@ JS
     print "<input type='button' class='ui_submit' id='cfg_btn_game' ".
           "onclick=\"lgsmShowConfigView('game')\" value='" .
           &html_escape($game_tab_label) . "'>";
+    if ($show_sandbox_tab) {
+        print " <input type='button' class='ui_submit' id='cfg_btn_sandbox' ".
+              "onclick=\"lgsmShowConfigView('sandbox')\" value='" .
+              &html_escape($sandbox_tab_label) . "'>";
+    }
     print "</p>\n";
 
     # Common LGSM config panel
@@ -3394,6 +3640,9 @@ JS
             my $no  = $text{'no'}  || 'Nein';
             $widget = &ui_radio("field_$key", ($val && $val ne '0') ? 1 : 0,
                                 [[1, $yes], [0, $no]]);
+        } elsif ($type eq 'password') {
+            my $width = 40;
+            $widget = &ui_password("field_$key", &html_escape($val), $width);
         } else {
             my $width = ($type eq 'port' || $type eq 'int') ? 10 : 40;
             $widget = &ui_textbox("field_$key", &html_escape($val), $width);
@@ -3434,13 +3683,14 @@ JS
     } else {
         my ($game_vals, $game_order, undef) =
             &parse_game_config_values($script_name_for_cfg, $game_cfg_path, $game_raw);
-        # Known fields from games_meta (game config section) for labelled display
+        # Meta fields only supply labels/types — every key present in the file is editable.
         my @gcf = &get_game_config_fields($script_name_for_cfg);
         my %gcf_map = map { $_->{'key'} => $_ } @gcf;
-        my @known_shown = @gcf ? @gcf : ();
-        my %known_keys  = map { $_->{'key'} => 1 } @gcf;
-        # Unknown keys: present in file but not in game_config_fields
-        my @extra_keys  = @gcf ? (grep { !$known_keys{$_} } @$game_order) : @$game_order;
+        my @keys_to_show = @{$game_order || []};
+        # If the file is empty but meta defines labelled fields, still offer those.
+        if (!@keys_to_show && @gcf) {
+            @keys_to_show = map { $_->{'key'} } @gcf;
+        }
 
         print &ui_form_start("manage.cgi", "post");
         print &ui_hidden("instance_id", $safe_id);
@@ -3464,40 +3714,28 @@ JS
         print "$text{'config_editor_raw_mode'}</label></p>\n";
         print "<div id='cfg_form_div_game'>\n";
         print &ui_table_start($game_tab_label, "width=100%", 2);
-        if (@known_shown || @extra_keys) {
-            # Labelled known fields first
-            for my $f (@known_shown) {
-                my $key   = $f->{'key'};
-                my $label = (($lang eq 'de') ? $f->{'label_de'} : $f->{'label_en'}) // $key;
-                my $type  = $f->{'type'} // 'text';
+        if (@keys_to_show) {
+            for my $key (@keys_to_show) {
+                my $f     = $gcf_map{$key};
+                my $label = $f
+                    ? ((($lang eq 'de') ? $f->{'label_de'} : $f->{'label_en'}) // $key)
+                    : $key;
+                my $type  = $f ? ($f->{'type'} // 'text') : 'text';
                 my $val   = exists $game_vals->{$key} ? $game_vals->{$key} : '';
                 my $width = ($type eq 'port' || $type eq 'int') ? 10 : 40;
                 my $widget;
                 if ($type eq 'bool') {
-                    # Hidden zero-marker so an unchecked box still submits a value
-                    # (browsers omit unchecked checkboxes entirely otherwise).
                     my $is_true = ($val =~ /^\s*(?:1|true|on|yes|ja)\s*$/i) ? 1 : 0;
-                    $widget = "<input type='hidden' name='field_$key' value='false'>"
-                            . "<input type='checkbox' name='field_$key' value='true'"
-                            . ($is_true ? " checked='checked'" : '') . ">";
-                }
-                elsif ($type eq 'password') {
-                    $widget = &ui_password("field_$key", &html_escape($val), $width);
+                    my $yes = $text{'yes'} || 'Ja';
+                    my $no  = $text{'no'}  || 'Nein';
+                    $widget = &ui_radio("field_$key", $is_true ? 'true' : 'false',
+                                        [['true', $yes], ['false', $no]]);
                 }
                 else {
+                    # Always visible text — passwords in game configs must remain readable.
                     $widget = &ui_textbox("field_$key", &html_escape($val), $width);
                 }
                 print &ui_table_row(&html_escape($label), $widget);
-            }
-            # Remaining / unlabelled keys
-            if (@extra_keys) {
-                print &ui_table_row("<b>$text{'config_editor_unknown_fields'}</b>", "")
-                    if @known_shown;
-                for my $key (@extra_keys) {
-                    my $val = $game_vals->{$key} // '';
-                    print &ui_table_row(&html_escape($key),
-                                        &ui_textbox("field_$key", &html_escape($val), 40));
-                }
             }
         } else {
             print &ui_table_row(&html_escape($text{'config_editor_game_no_fields'}), '-');
@@ -3511,6 +3749,63 @@ JS
         print &ui_form_end();
     }
     print "</div>\n";
+
+    # SandboxVars panel (PZ world settings)
+    if ($show_sandbox_tab) {
+        print "<div id='cfg_panel_sandbox' style='display:none'>\n";
+        if (!$sandbox_cfg_exists) {
+            print "<p><b>" . &html_escape(
+                $text{'config_editor_sandbox_missing'}
+                    || 'SandboxVars file not found — start the server once to generate it.'
+            ) . "</b></p>\n";
+        } else {
+            my ($sv_vals, $sv_order) = &parse_sandboxvars_lua($sandbox_raw);
+            print &ui_form_start("manage.cgi", "post");
+            print &ui_hidden("instance_id", $safe_id);
+            print &ui_hidden("action",      "save_config");
+            print &ui_hidden("config_file", "sandbox");
+            print &ui_hidden("config_view", "sandbox");
+            print &ui_hidden("game_config_original", $sandbox_raw);
+            print "<p>" . &html_escape($text{'config_editor_sandbox_notice'}) . "</p>\n";
+            print "<p><em>" . &html_escape($text{'config_editor_sandbox_stop_hint'}) . "</em></p>\n";
+            print "<p><label>";
+            print "<input type='checkbox' id='raw_mode_cb_sandbox' name='raw_mode' value='1' ";
+            print "onchange=\"lgsmToggleRaw('sandbox', this)\"> ";
+            print "$text{'config_editor_raw_mode'}</label></p>\n";
+            print "<div id='cfg_form_div_sandbox'>\n";
+            print &ui_table_start($sandbox_tab_label, "width=100%", 2);
+            my @sv_keys = @{$sv_order || []};
+            if (@sv_keys) {
+                for my $key (@sv_keys) {
+                    my $val = exists $sv_vals->{$key} ? $sv_vals->{$key} : '';
+                    my $widget;
+                    if ($val =~ /^\s*(?:true|false)\s*$/i) {
+                        my $is_true = ($val =~ /^\s*true\s*$/i) ? 1 : 0;
+                        my $yes = $text{'yes'} || 'Ja';
+                        my $no  = $text{'no'}  || 'Nein';
+                        $widget = &ui_radio("field_$key", $is_true ? 'true' : 'false',
+                                            [['true', $yes], ['false', $no]]);
+                    } else {
+                        my $width = ($val =~ /^-?\d+(?:\.\d+)?$/) ? 10 : 40;
+                        $widget = &ui_textbox("field_$key", &html_escape($val), $width);
+                    }
+                    print &ui_table_row(&html_escape($key), $widget);
+                }
+            } else {
+                print &ui_table_row(
+                    &html_escape($text{'config_editor_sandbox_no_fields'}
+                        || $text{'config_editor_game_no_fields'}), '-');
+            }
+            print &ui_table_end();
+            print "</div>\n";
+            print "<div id='cfg_raw_div_sandbox' style='display:none'>\n";
+            print &ui_textarea("game_config_raw", $sandbox_raw, 22, 90);
+            print "</div>\n";
+            print &ui_submit($text{'config_editor_save'}, undef, undef, undef, 'btn-primary');
+            print &ui_form_end();
+        }
+        print "</div>\n";
+    }
 
     print "<script>lgsmShowConfigView('" . &html_escape($cfg_view_key) . "');</script>\n";
 }

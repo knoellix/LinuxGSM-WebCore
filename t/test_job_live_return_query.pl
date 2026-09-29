@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 use strict;
 use warnings;
-use Test::More tests => 7;
+use Test::More tests => 10;
 
 chdir "$ENV{PWD}" if defined $ENV{PWD};
 chdir '/mnt/Lager/github/LinuxGSM-WebCore' if -d '/mnt/Lager/github/LinuxGSM-WebCore';
@@ -45,7 +45,7 @@ is(_job_live_safe_return_query('mods.cgi?instance_id=mc2&q=test', 'mc1'),
     '', 'rejects foreign instance id');
 
 is(_job_live_safe_return_query('manage.cgi?instance_id=mc1', 'mc1'),
-    '', 'rejects non-mods return target');
+    '', 'rejects non-allowlisted return target');
 
 is(_job_live_safe_return_query('mods.cgi?instance_id=mc1&evil=1', 'mc1'),
     '', 'rejects unknown query key');
@@ -65,3 +65,16 @@ my $dupe = _job_live_safe_return_query(
 is($dupe,
     'mods.cgi?instance_id=mc1&q=first&xnavigation=1',
     'ignores duplicated keys after first value');
+
+my $ws = _job_live_safe_return_query(
+    'workshop.cgi?instance_id=pz1&xnavigation=1',
+    'pz1'
+);
+is($ws, 'workshop.cgi?instance_id=pz1&xnavigation=1',
+    'accepts workshop return for same instance');
+
+is(_job_live_safe_return_query('workshop.cgi?instance_id=pz1&q=evil', 'pz1'),
+    '', 'rejects workshop keys outside allowlist');
+
+is(_job_live_safe_return_query('workshop.cgi?instance_id=pz2&xnavigation=1', 'pz1'),
+    '', 'rejects workshop return for foreign instance');

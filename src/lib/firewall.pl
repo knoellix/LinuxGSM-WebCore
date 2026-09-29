@@ -34,19 +34,27 @@ sub _firewall_webmin_close {
     return 0;
 }
 
-# Open a UDP+TCP port for a game server. Returns 1 on success.
+sub _firewall_normalize_proto {
+    my ($proto) = @_;
+    return 'udp' if defined $proto && $proto eq 'udp';
+    return 'tcp' if defined $proto && $proto eq 'tcp';
+    return undef;
+}
+
+# Open a port for a game server (one protocol). Returns 1 on success.
+# Callers that need both must open tcp and udp separately (manage.cgi does).
 sub firewall_open_port {
     my ($port, $proto) = @_;
     $port  = int($port);
     return 0 unless $port > 0;
-    $proto = ($proto && $proto eq 'udp') ? 'udp' : 'tcp';
+    $proto = _firewall_normalize_proto($proto) // 'tcp';
 
-    # Idempotent: port already visible in status → OK.
-    return 1 if &firewall_status($port);
+    # Idempotent per protocol — must not treat "tcp open" as "udp open".
+    return 1 if &firewall_status($port, $proto);
 
     my $rc = 0;
     if (&_firewall_webmin_open($port, $proto)) {
-        return &firewall_status($port) ? 1 : 0;
+        return &firewall_status($port, $proto) ? 1 : 0;
     }
     if (&has_ufw()) {
         $rc = &system_logged("ufw allow $port/$proto");
@@ -54,7 +62,7 @@ sub firewall_open_port {
         $rc = &system_logged("iptables -A INPUT -p $proto --dport $port -j ACCEPT");
     }
     return 0 if $rc != 0;
-    return &firewall_status($port) ? 1 : 0;
+    return &firewall_status($port, $proto) ? 1 : 0;
 }
 
 # Close a port when a game server is deprovisioned. Returns 1 on success.
@@ -62,13 +70,13 @@ sub firewall_close_port {
     my ($port, $proto) = @_;
     $port  = int($port);
     return 0 unless $port > 0;
-    $proto = ($proto && $proto eq 'udp') ? 'udp' : 'tcp';
+    $proto = _firewall_normalize_proto($proto) // 'tcp';
 
-    return 1 unless &firewall_status($port);
+    return 1 unless &firewall_status($port, $proto);
 
     my $rc = 0;
     if (&_firewall_webmin_close($port, $proto)) {
-        return &firewall_status($port) ? 0 : 1;
+        return &firewall_status($port, $proto) ? 0 : 1;
     }
     if (&has_ufw()) {
         $rc = &system_logged("ufw delete allow $port/$proto");
@@ -76,7 +84,7 @@ sub firewall_close_port {
         $rc = &system_logged("iptables -D INPUT -p $proto --dport $port -j ACCEPT");
     }
     return 0 if $rc != 0;
-    return &firewall_status($port) ? 0 : 1;
+    return &firewall_status($port, $proto) ? 0 : 1;
 }
 
 sub has_ufw {
@@ -89,20 +97,36 @@ sub _ufw_status_output {
 }
 
 # Check if a port is open in the firewall.
+# Optional 2nd arg $proto ('tcp'|'udp'): check that protocol only.
+# Without $proto: 1 if either tcp or udp (or bare port) is ALLOW — legacy UI.
 # Returns 1 if open, 0 if closed or unknown.
 sub firewall_status {
-    my ($port) = @_;
+    my ($port, $proto) = @_;
     $port = int($port);
+    return 0 unless $port > 0;
+    $proto = _firewall_normalize_proto($proto);
+
     if (&has_ufw()) {
         my $out = &_ufw_status_output();
+        if ($proto) {
+            return 1 if $out =~ /^$port\/$proto\b[^\n]*ALLOW/m;
+            # Bare "25565 ALLOW" matches any-protocol rules
+            return 1 if $out =~ /^$port\s+[^\n]*ALLOW/m;
+            return 0;
+        }
         return 1 if $out =~ /^$port\b[^\n]*ALLOW/m;
         return 1 if $out =~ /^$port\/(?:tcp|udp)\b[^\n]*ALLOW/m;
         return 0;
-    } else {
-        # iptables: check rule via system_logged (Webmin handles privilege escalation)
-        my $rc = &system_logged("timeout 2 iptables -C INPUT -p tcp --dport $port -j ACCEPT 2>/dev/null");
-        return $rc == 0 ? 1 : 0;
     }
+
+    # iptables: check rule via system_logged
+    my @check = $proto ? ($proto) : ('tcp', 'udp');
+    for my $p (@check) {
+        my $rc = &system_logged(
+            "timeout 2 iptables -C INPUT -p $p --dport $port -j ACCEPT 2>/dev/null");
+        return 1 if $rc == 0;
+    }
+    return 0;
 }
 
 1;

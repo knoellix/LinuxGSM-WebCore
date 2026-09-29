@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 use strict;
 use warnings;
-use Test::More tests => 70;
+use Test::More tests => 72;
 use File::Temp qw(tempdir);
 use FindBin qw($Bin);
 
@@ -320,6 +320,10 @@ is(job_action_label('custom_action', {}), 'custom_action', 'job_action_label: fa
 is(job_next_instance_status('mc_java_setup'), 'mc_ready', 'job_next_instance_status: mc_java_setup');
 is(job_next_instance_status('reinstall'), 'installed', 'job_next_instance_status: reinstall');
 is(job_next_instance_status('update'), '', 'job_next_instance_status: unknown empty');
+is(job_next_instance_status('setup_lgsm'), '',
+    'setup_lgsm does not advance status (deps chain follows)');
+is(job_next_instance_status('lgsm_deps_install'), 'lgsm_ready',
+    'lgsm_deps_install advances to lgsm_ready');
 
 subtest 'user_worker_launch_cmd' => sub {
     ok(!defined user_worker_launch_cmd(worker => '/x/w.sh'),

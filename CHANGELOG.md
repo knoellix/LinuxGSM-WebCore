@@ -5,6 +5,35 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.4] - 2026-09-29
+
+### Added
+
+- **Project Zomboid Workshop** (`workshop.cgi`): Steam Web API search, SteamCMD subscribe worker, `servertest`/`pzserver.ini` WorkshopItems/Mods patching
+- PZ LGSM field **Admin-Passwort** (`adminpassword`) with auto-wired `startparameters` so first start does not hang on the interactive password prompt
+- PZ **Server-INI** game-config tab rooted at `$HOME/Zomboid/Server/pzserver.ini` (LGSM default layout)
+- PZ **SandboxVars** world-settings tab (`*_SandboxVars.lua`): all flattened keys as form fields + raw mode
+- Root **LGSM deps install** worker (`./script install` as root after `setup_lgsm`) instead of maintaining full per-game `apt_deps` for LGSM titles
+- Module config **Steam Web API key** on Integrations
+
+### Changed
+
+- **Workshop inventory** (`workshop.cgi`): installed list merges disk scan with INI — shows mod.info metadata, Steam titles (with API key), and per-item enable / disable / delete actions
+- **Workshop subscribe dependencies:** Subscribe pulls transitive Steam Required items automatically (cap 20 workshop IDs including the selected mod); `Mods=` order places dependencies before dependents
+- PZ stop uses a short direct/force path (like Minecraft) so a hung admin-password prompt no longer waits ~90s on LGSM `quit`
+- Config editor GET render uses soft path checks (`check_game_config_path`) so paths outside `$script_dir` no longer abort the manage page via Webmin `&error`
+- Collapsible section chevrons/borders made theme-visible
+
+### Fixed
+
+- After Workshop subscribe, job live view returns to `workshop.cgi` (not manage)
+- Firewall open/close is **protocol-aware**: opening UDP no longer skips when TCP is already allowed (broke PZ — only `16261/tcp` was opened). Manage firewall badge requires both tcp and udp
+- PZ monitor: force LGSM `querymode=1` (session-only) so GameDig query FAIL no longer stop→start loops; longer monitor wait after PZ start
+- Quick Fix create config when `lgsm/config-lgsm/<script>/` does not exist yet (realpath parent walk)
+- Manage success banners no longer call nonexistent `ui_success` (HTTP 500 after Quick Fix)
+- PZ `adminpassword` now wired into LGSM `startparameters` with correct escaped quotes; synced automatically before start (`pz_sync_lgsm_cfg.pl`)
+- PZ Server-INI tab parses as key=value properties (was misread as Palworld OptionSettings) and lists **all** keys from the file
+
 ## [0.2.3] - 2026-09-02
 
 ### Added

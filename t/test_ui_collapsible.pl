@@ -14,7 +14,10 @@ subtest 'collapsible markup' => sub {
     like($html, qr/<details[^>]*class="lgsm-section"/, 'details carries the section class');
     like($html, qr/id="sec-controls"/, 'id kept for anchors and state');
     like($html, qr{<summary><span class="lgsm-section-chevron"}, 'chevron marker in summary');
+    like($html, qr/lgsm-chevron-closed/, 'closed chevron text in markup');
+    like($html, qr/lgsm-chevron-open/, 'open chevron text in markup');
     like($html, qr/class="lgsm-section-title"/, 'title wrapper in summary');
+    like($html, qr/<style>.*border:\s*1px solid #888/s, 'styles emit solid border fallback early');
     unlike($html, qr/<details[^>]*\sopen/, 'closed by default');
     like($html, qr{<summary>.*</summary>}, 'summary element');
     is(ui_collapsible_end(), "</details>\n", 'closing tag');
@@ -48,9 +51,13 @@ subtest 'forced sections ignore the stored state' => sub {
 };
 
 subtest 'state script and styles' => sub {
+    # Reset early-emit flag so footer path can be tested in isolation.
+    $main::_ui_collapsible_styles_emitted = 0;
     my $js = ui_collapsible_state_script();
     like($js, qr/<style>.*details\.lgsm-section/s, 'section frame styles included');
+    like($js, qr/border:\s*1px solid #888/, 'solid border fallback in CSS');
     like($js, qr/lgsm-section-chevron/, 'chevron styles included');
+    like($js, qr/lgsm-chevron-closed/, 'markup chevron toggle styles');
     like($js, qr/localStorage/, 'persists via localStorage');
     like($js, qr/details\.lgsm-section\[id\]/, 'only tracks identified sections');
     like($js, qr/data-lgsm-force/, 'skips forced sections');

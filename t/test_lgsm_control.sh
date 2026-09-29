@@ -30,6 +30,18 @@ echo "$out" | grep -qi 'Already offline' || { echo "fail: already offline messag
 out="$(lgsm_stop_reliable "$TMP/mc-a" mcserver 2>&1)"
 echo "$out" | grep -qi 'direct' || { echo "fail: expected direct stop path: $out"; exit 1; }
 
+# --- Project Zomboid detection + direct stop path ---
+mkdir -p "$TMP/pz/lgsm/config-default/config-lgsm/pzserver"
+printf 'gamename="Project Zomboid"\nengine="projectzomboid"\n' \
+    >"$TMP/pz/lgsm/config-default/config-lgsm/pzserver/_default.cfg"
+lgsm_is_project_zomboid_instance "$TMP/pz" pzserver || { echo "fail: pz detect"; exit 1; }
+if lgsm_is_project_zomboid_instance "$TMP/other" pwserver; then
+    echo "fail: non-pz should be false"
+    exit 1
+fi
+out="$(lgsm_stop_reliable "$TMP/pz" pzserver 2>&1)"
+echo "$out" | grep -qi 'Project Zomboid' || { echo "fail: expected PZ direct stop: $out"; exit 1; }
+
 # --- start when "online" via mocked lgsm_tmux_is_online ---
 lgsm_tmux_is_online() { return 0; }
 out="$(lgsm_start_reliable "$TMP/mc-a" mcserver 5 2>&1)"

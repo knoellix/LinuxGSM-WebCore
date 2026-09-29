@@ -762,6 +762,7 @@ sub job_action_label {
     $text_ref ||= {};
     my %labels = (
         provision_deps  => $text_ref->{'jobs_action_provision_deps'}  || 'Abhängigkeiten installieren',
+        lgsm_deps_install => $text_ref->{'jobs_action_lgsm_deps_install'} || 'LGSM-Abhängigkeiten',
         install_game    => $text_ref->{'jobs_action_install_game'}    || 'Spiel installieren',
         setup_lgsm      => $text_ref->{'jobs_action_setup_lgsm'}      || 'LGSM einrichten',
         mc_java_setup   => $text_ref->{'jobs_action_mc_java_setup'}  || 'Minecraft Java-Setup',
@@ -770,6 +771,7 @@ sub job_action_label {
         mc_upgrade_mc     => $text_ref->{'jobs_action_mc_upgrade_mc'}     || 'MC-Version-Upgrade',
         modpack_import  => $text_ref->{'jobs_action_modpack_import'}  || 'Modpack importieren',
         mc_mod_install  => $text_ref->{'jobs_action_mc_mod_install'}  || 'Mod installieren',
+        pz_workshop_subscribe => $text_ref->{'jobs_action_pz_workshop_subscribe'} || 'Workshop abonnieren',
         update          => $text_ref->{'jobs_action_update'}         || 'Update',
         validate        => $text_ref->{'jobs_action_validate'}       || 'Dateien prüfen',
         reinstall       => $text_ref->{'jobs_action_reinstall'}      || 'Neu installieren',
@@ -789,6 +791,7 @@ sub job_action_labels_hash {
     $text_ref ||= {};
     return {
         provision_deps  => job_action_label('provision_deps',  $text_ref),
+        lgsm_deps_install => job_action_label('lgsm_deps_install', $text_ref),
         install_game    => job_action_label('install_game',    $text_ref),
         setup_lgsm      => job_action_label('setup_lgsm',      $text_ref),
         mc_java_setup   => job_action_label('mc_java_setup',   $text_ref),
@@ -797,6 +800,7 @@ sub job_action_labels_hash {
         mc_upgrade_mc     => job_action_label('mc_upgrade_mc',     $text_ref),
         modpack_import  => job_action_label('modpack_import',  $text_ref),
         mc_mod_install  => job_action_label('mc_mod_install',  $text_ref),
+        pz_workshop_subscribe => job_action_label('pz_workshop_subscribe', $text_ref),
         update          => job_action_label('update',          $text_ref),
         validate        => job_action_label('validate',        $text_ref),
         reinstall       => job_action_label('reinstall',       $text_ref),
@@ -823,10 +827,12 @@ sub job_status_label {
 }
 
 # Registry instance_status after a successful setup/install job.
+# setup_lgsm alone does not advance status — root lgsm_deps_install follows and
+# then marks lgsm_ready (LGSM deps must be installed before the user install).
 sub job_next_instance_status {
     my ($action) = @_;
     my %map = (
-        setup_lgsm      => 'lgsm_ready',
+        lgsm_deps_install => 'lgsm_ready',
         mc_java_setup   => 'mc_ready',
         mc_loader_setup => 'installed',
         install_game    => 'installed',
