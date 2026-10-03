@@ -5,6 +5,42 @@ use warnings;
 
 our (%text);
 
+# Status badge with solid/pulsing CSS dots (caller prints job_status_pulse_css once).
+sub server_runtime_status_badge_html {
+    my ($status) = @_;
+    $status //= 'unknown';
+    if ($status eq 'starting') {
+        my $label = $text{'manage_status_starting'}
+            // $text{'mc_mods_page_status_starting'}
+            // 'Starting…';
+        return '<span class="lgsm-job-pulse" aria-hidden="true"></span>'
+            . &html_escape($label);
+    }
+    my %labels = (
+        online     => ($text{'mc_mods_page_status_online'}  // 'Running'),
+        running    => ($text{'mc_mods_page_status_online'}  // 'Running'),
+        offline    => ($text{'mc_mods_page_status_offline'} // 'Not started'),
+        stopped    => ($text{'mc_mods_page_status_offline'} // 'Not started'),
+        fresh      => ($text{'mc_mods_page_status_fresh'}   // 'Provisioning pending'),
+        lgsm_ready => ($text{'mc_mods_page_status_lgsm'}    // 'Installation pending'),
+        mc_ready   => ($text{'mc_mods_page_status_mc'}      // 'Minecraft prepared'),
+        unknown    => ($text{'mc_mods_page_status_unknown'} // 'Unknown'),
+    );
+    my $label = $labels{$status} // ($text{'mc_mods_page_status_unknown'} // 'Unknown');
+    my $dot_class = 'lgsm-status-dot';
+    if ($status eq 'online' || $status eq 'running') {
+        # solid green
+    }
+    elsif ($status eq 'offline' || $status eq 'stopped') {
+        $dot_class .= ' lgsm-status-dot-off';
+    }
+    else {
+        $dot_class .= ' lgsm-status-dot-warn';
+    }
+    return '<span class="' . $dot_class . '" aria-hidden="true"></span>'
+        . &html_escape($label);
+}
+
 # Inline form wrapper (same pattern as mods.cgi / manage.cgi toolbars).
 sub server_control_bar_inline_btn {
     my ($html) = @_;
@@ -36,6 +72,9 @@ sub server_control_bar_html {
 
     my $readonly = $opts{'readonly'} ? 1 : 0;
     my $runtime_html = $opts{'runtime_status_html'} // '';
+    if ($runtime_html =~ /\S/ && $runtime_html !~ /js-runtime-status/) {
+        $runtime_html = '<span class="js-runtime-status">' . $runtime_html . '</span>';
+    }
     my $extra = $opts{'extra_status_parts'};
     $extra = [] unless ref($extra) eq 'ARRAY';
 

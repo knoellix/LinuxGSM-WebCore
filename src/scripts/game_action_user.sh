@@ -108,7 +108,11 @@ if [ "$ACTION" = "start" ] || [ "$ACTION" = "stop" ] || [ "$ACTION" = "restart" 
             _MODULE_ROOT="$(cd "$(dirname "$0")"/.. && pwd)"
         fi
         if [[ -f "$_MODULE_ROOT/scripts/monitor_mark_ready.pl" ]]; then
-            perl "$_MODULE_ROOT/scripts/monitor_mark_ready.pl" "$SERVER_DIR" || true
+            if ! perl "$_MODULE_ROOT/scripts/monitor_mark_ready.pl" "$SERVER_DIR"; then
+                echo "WARNING: monitor_mark_ready.pl failed (UI may keep blinking until grace expires)" >&2
+            fi
+        else
+            echo "WARNING: monitor_mark_ready.pl missing under $_MODULE_ROOT/scripts" >&2
         fi
     fi
     echo "=== '$ACTION' successfully completed ==="

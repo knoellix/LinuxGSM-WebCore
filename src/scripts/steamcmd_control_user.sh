@@ -31,8 +31,16 @@ _SCRIPT_LIB="$(cd "$(dirname "$0")"/lib && pwd)"
 . "$_SCRIPT_LIB/job_log.sh"
 job_log_init_as_user "$JOB_DIR"
 
+# Lifecycle helpers (ready wait / stop phases) — shared with LGSM twin.
+# shellcheck source=lib/lgsm_control.sh
+. "$_SCRIPT_LIB/lgsm_control.sh"
+
 # Process priority helpers — game-server tree gets PRIO_HIGH on launch,
 # any in-worker maintenance gets PRIO_LOW. See lib/prio.sh for details.
+if [[ -z "${MODULE_ROOT:-}" ]]; then
+    MODULE_ROOT="$(cd "$(dirname "$0")"/.. && pwd)"
+fi
+export MODULE_ROOT
 _PRIO_LIB_DIR="${MODULE_ROOT:-}/scripts/lib"
 if [ ! -f "$_PRIO_LIB_DIR/prio.sh" ]; then
     _PRIO_LIB_DIR="$(cd "$(dirname "$0")"/lib && pwd)" 2>/dev/null || _PRIO_LIB_DIR=""
@@ -80,7 +88,11 @@ _finalize_detach_ok() {
             _MODULE_ROOT="$(cd "$(dirname "$0")"/.. && pwd)"
         fi
         if [[ -f "$_MODULE_ROOT/scripts/monitor_mark_ready.pl" ]]; then
-            perl "$_MODULE_ROOT/scripts/monitor_mark_ready.pl" "$SERVER_DIR" || true
+            if ! perl "$_MODULE_ROOT/scripts/monitor_mark_ready.pl" "$SERVER_DIR"; then
+                echo "WARNING: monitor_mark_ready.pl failed (UI may keep blinking until grace expires)" >&2
+            fi
+        else
+            echo "WARNING: monitor_mark_ready.pl missing under $_MODULE_ROOT/scripts" >&2
         fi
     fi
     set_final_status "ok"
@@ -252,6 +264,154 @@ _wait_server_stopped() {
     return 1
 }
 
+# Resolve script key for lifecycle meta (WEBCORE_SCRIPT_NAME > launch cmd > config-lgsm).
+_resolve_script_name() {
+    local binary bin_base name
+    if [[ -n "${WEBCORE_SCRIPT_NAME:-}" ]]; then
+        name="${WEBCORE_SCRIPT_NAME//[^a-zA-Z0-9_-]/}"
+        [[ -n "$name" ]] && { printf '%s\n' "$name"; return 0; }
+    fi
+    if [[ -f "$LAUNCH_CMD_FILE" ]]; then
+        binary="$(cat "$LAUNCH_CMD_FILE" 2>/dev/null || true)"
+        bin_base="$(basename "${binary:-}")"
+        if [[ "$bin_base" == "WindroseServer-Win64-Shipping.exe" \
+            || "$bin_base" == "WindroseServer.exe" ]]; then
+            printf 'windrose\n'
+            return 0
+        fi
+    fi
+    if [[ -d "$SERVER_DIR/lgsm/config-lgsm" ]]; then
+        for _d in "$SERVER_DIR"/lgsm/config-lgsm/*/; do
+            [[ -d "$_d" ]] || continue
+            name="$(basename "$_d")"
+            name="${name//[^a-zA-Z0-9_-]/}"
+            [[ -n "$name" ]] && { printf '%s\n' "$name"; return 0; }
+        done
+    fi
+    return 1
+}
+
+# Soft TERM (no KILL) so games can enter a saving phase before force.
+_soft_term_running() {
+    local pid
+    if [[ -f "$PIDFILE" ]]; then
+        pid="$(cat "$PIDFILE" 2>/dev/null || true)"
+        if [[ -n "${pid:-}" ]] && kill -0 "$pid" 2>/dev/null; then
+            kill -TERM "$pid" 2>/dev/null || true
+        fi
+    fi
+    while IFS= read -r pid; do
+        [[ -n "$pid" ]] || continue
+        kill -TERM "$pid" 2>/dev/null || true
+    done < <(_list_windrose_pids)
+}
+
+# Save-aware stop grace: wait up to stop_force while phase=saving; else force after grace.
+# Returns 0 if process gone; 1 if still running (caller must hard-kill).
+_steamcmd_stop_grace_wait() {
+    local script_name="$1"
+    local stop_grace="${WEBCORE_LC_STOP_GRACE:-60}"
+    local stop_force="${WEBCORE_LC_STOP_FORCE:-120}"
+    local elapsed=0 last_save_msg=-999 phase="" phase_hit=""
+    local log="" offset=0 size=0 chunk=""
+
+    [[ "$stop_grace" =~ ^[0-9]+$ ]] || stop_grace=60
+    [[ "$stop_force" =~ ^[0-9]+$ ]] || stop_force=120
+    (( stop_force < stop_grace )) && stop_force=$stop_grace
+
+    if ! _server_process_running; then
+        echo "Already offline (no game PID)"
+        return 0
+    fi
+
+    log="$(lgsm_lifecycle_stop_log "$SERVER_DIR" "$script_name" 2>/dev/null || true)"
+    if [[ -z "$log" || ! -f "$log" ]]; then
+        log="$(lgsm_lifecycle_log_path "$SERVER_DIR" "$script_name" \
+            "${WEBCORE_LC_READY_LOG:-live_log}" 2>/dev/null || true)"
+    fi
+    if [[ -n "$log" && -f "$log" ]]; then
+        size=$(wc -c <"$log" 2>/dev/null | tr -d ' ') || size=0
+        offset=$size
+        local seed_skip=0
+        (( size > 8192 )) && seed_skip=$((size - 8192))
+        if (( size > seed_skip )); then
+            chunk="$(mktemp)"
+            dd if="$log" bs=1 skip="$seed_skip" count=$((size - seed_skip)) of="$chunk" 2>/dev/null || true
+            phase_hit="$(lgsm_lifecycle_detect_stop_phase "$chunk")"
+            rm -f "$chunk"
+            [[ -n "$phase_hit" ]] && phase="$phase_hit"
+        fi
+    fi
+
+    echo "Stop wait: grace=${stop_grace}s force_cap=${stop_force}s"
+    while (( elapsed < stop_force )); do
+        if ! _server_process_running; then
+            echo "Stopped gracefully"
+            return 0
+        fi
+        if [[ -n "$log" && -f "$log" ]]; then
+            size=$(wc -c <"$log" 2>/dev/null | tr -d ' ') || size=0
+            if (( size > offset )); then
+                chunk="$(mktemp)"
+                dd if="$log" bs=1 skip="$offset" count=$((size - offset)) of="$chunk" 2>/dev/null || true
+                phase_hit="$(lgsm_lifecycle_detect_stop_phase "$chunk")"
+                rm -f "$chunk"
+                [[ -n "$phase_hit" ]] && phase="$phase_hit"
+                offset=$size
+            fi
+        fi
+        if [[ "$phase" == "saving" ]]; then
+            if (( elapsed - last_save_msg >= 5 )); then
+                echo "Stop: still saving…"
+                last_save_msg=$elapsed
+            fi
+        elif (( elapsed >= stop_grace )); then
+            echo "Stop grace expired (${stop_grace}s, phase=${phase:-none}) — forcing"
+            return 1
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    echo "Stop force cap reached (${stop_force}s, phase=${phase:-none}) — forcing"
+    return 1
+}
+
+# After PID alive: lifecycle ready wait when meta has READY_REGEX (Windrose GenlandiaMulty).
+# Returns 0 on ready/warn-ok; 1 on hard failure.
+# Sets USED_LC_READY=1 when wait ran; READY_SOFT=1 when warn-only (no marker).
+_steamcmd_wait_ready_if_configured() {
+    local pid="$1" script_name="$2" allow_existing="${3:-0}"
+    local log="" log_offset=0 regex ready_secs out
+    USED_LC_READY=0
+    READY_SOFT=0
+    [[ -n "$script_name" ]] || return 0
+    lgsm_lifecycle_eval_meta "$script_name" "$UNIX_USER" "$SERVER_DIR" || true
+    regex="${WEBCORE_LC_READY_REGEX:-}"
+    [[ -n "$regex" ]] || return 0
+    USED_LC_READY=1
+    ready_secs="${WEBCORE_LC_READY_SECS:-900}"
+    if log=$(lgsm_lifecycle_log_path "$SERVER_DIR" "$script_name" \
+        "${WEBCORE_LC_READY_LOG:-live_log}" 2>/dev/null); then
+        log_offset=$(wc -c <"$log" 2>/dev/null | tr -d ' ') || log_offset=0
+    else
+        # Preferred live_log (R5) may not exist yet — wait_ready refreshes until it appears.
+        log=""
+        log_offset=0
+    fi
+    export WEBCORE_LC_ALIVE_PID="$pid"
+    set +e
+    out="$(lgsm_lifecycle_wait_ready "$SERVER_DIR" "$script_name" \
+        "$log" "$log_offset" "$regex" "$ready_secs" "$allow_existing" 2>&1)"
+    local rc=$?
+    set -e
+    unset WEBCORE_LC_ALIVE_PID
+    printf '%s\n' "$out"
+    if echo "$out" | grep -q 'WARNING: no ready marker'; then
+        READY_SOFT=1
+    fi
+    return "$rc"
+}
+
 case "$ACTION" in
     start)
         echo "steamcmd_control action=start"
@@ -359,6 +519,13 @@ case "$ACTION" in
                 echo "Windrose already running (PID $EXISTING_PID); start is a no-op."
                 echo "start no-op: existing PID $EXISTING_PID matches WINEPREFIX" >>"$DIAG_LOG" 2>&1
                 _write_pidfile "$EXISTING_PID"
+                # Still wait for ready marker when meta configures one (allow existing).
+                if ! _steamcmd_wait_ready_if_configured "$EXISTING_PID" "${SCRIPT_NAME:-windrose}" 1; then
+                    echo "ERROR: Windrose ready wait failed for existing PID $EXISTING_PID" >&2
+                    echo "hint_server_process_exited" > "$JOB_DIR/error_hint"
+                    set_final_status "failed"
+                    exit 1
+                fi
                 _finalize_detach_ok
                 exit 0
             fi
@@ -472,7 +639,30 @@ case "$ACTION" in
                 set_final_status "failed"
                 exit 1
             fi
-            # Windrose-specific readiness gate: PID alive is not enough.
+            # Lifecycle ready wait (GenlandiaMulty via R5.log) when meta has READY_REGEX.
+            # Replaces soft "readiness files pending → ok" when regex is configured.
+            if ! _steamcmd_wait_ready_if_configured "$PID" "${SCRIPT_NAME:-windrose}" 0; then
+                echo "ERROR: Windrose ready marker wait failed (PID $PID)." >&2
+                echo "--- windrose-debug.log tail (last 120 lines) ---"
+                tail -n 120 "$DIAG_LOG" 2>/dev/null || true
+                echo "--- end windrose-debug.log tail ---"
+                echo "--- server.log tail (last 80 lines) ---"
+                tail -n 80 "$LOGFILE" 2>/dev/null || true
+                echo "--- end server.log tail ---"
+                echo "hint_server_process_exited" > "$JOB_DIR/error_hint"
+                set_final_status "failed"
+                exit 1
+            fi
+            if [[ "${USED_LC_READY:-0}" -eq 1 ]]; then
+                if [[ "${READY_SOFT:-0}" -eq 1 ]]; then
+                    echo "Server started (PID $PID, ready marker pending)"
+                else
+                    echo "Server started (PID $PID, lifecycle ready)"
+                fi
+                _finalize_detach_ok
+                exit 0
+            fi
+            # Fallback when meta has no ready regex: legacy readiness-file probe.
             READY=0
             CONFIG_FILE="$SERVERFILES/R5/ServerDescription.json"
             LOGS_DIR="$SERVERFILES/R5/Saved/Logs"
@@ -604,37 +794,63 @@ case "$ACTION" in
             fi
             rm -f "$XVFB_PIDFILE"
         fi
-        if [ -f "$PIDFILE" ]; then
-            PID=$(cat "$PIDFILE")
-            if kill "$PID" 2>/dev/null; then
-                echo "Server stopped (PID $PID)"
-                STOP_DONE=1
-            else
-                echo "Process from PID file not running"
-            fi
-            rm -f "$PIDFILE"
+
+        # Load stop grace / force / phases from meta when script key is known.
+        SCRIPT_NAME="$(_resolve_script_name 2>/dev/null || true)"
+        if [[ -n "${SCRIPT_NAME:-}" ]]; then
+            lgsm_lifecycle_eval_meta "$SCRIPT_NAME" "$UNIX_USER" "$SERVER_DIR" || true
         fi
-        # Explicit Windrose/Wine termination (PID file may be stale).
-        while IFS= read -r wp; do
-            [ -n "$wp" ] || continue
-            _terminate_pid "$wp"
+
+        # Soft TERM first so saving phase can match; wait up to stop_force while saving.
+        if _server_process_running; then
+            echo "Stop: soft TERM, then save-aware grace"
+            _soft_term_running
+            if _steamcmd_stop_grace_wait "${SCRIPT_NAME:-windrose}"; then
+                STOP_DONE=1
+            fi
+        else
+            echo "No game PID — already offline (pre-force)"
             STOP_DONE=1
-        done < <(_list_windrose_pids)
-        if [ "$STOP_DONE" -eq 0 ] && [ -f "$LAUNCH_CMD_FILE" ]; then
-            BINARY=$(cat "$LAUNCH_CMD_FILE" 2>/dev/null || true)
-            if [ -n "${BINARY:-}" ]; then
-                BIN_BASE=$(basename "$BINARY")
-                BIN_STEM="${BIN_BASE%.exe}"
-                pkill -u "$UNIX_USER" -f "$BIN_BASE" 2>/dev/null || true
-                if [ "$BIN_STEM" != "$BIN_BASE" ]; then
-                    pkill -u "$UNIX_USER" -f "$BIN_STEM" 2>/dev/null || true
+        fi
+
+        # Hard kill if still running after grace / force cap.
+        if _server_process_running; then
+            if [ -f "$PIDFILE" ]; then
+                PID=$(cat "$PIDFILE")
+                if [ -n "${PID:-}" ] && kill -0 "$PID" 2>/dev/null; then
+                    _terminate_pid "$PID"
+                    echo "Server stopped (PID $PID, forced)"
+                    STOP_DONE=1
+                else
+                    echo "Process from PID file not running"
                 fi
-                echo "Issued fallback stop signals for server processes"
-            else
+                rm -f "$PIDFILE"
+            fi
+            # Explicit Windrose/Wine termination (PID file may be stale).
+            while IFS= read -r wp; do
+                [ -n "$wp" ] || continue
+                _terminate_pid "$wp"
+                STOP_DONE=1
+            done < <(_list_windrose_pids)
+            if [ "$STOP_DONE" -eq 0 ] && [ -f "$LAUNCH_CMD_FILE" ]; then
+                BINARY=$(cat "$LAUNCH_CMD_FILE" 2>/dev/null || true)
+                if [ -n "${BINARY:-}" ]; then
+                    BIN_BASE=$(basename "$BINARY")
+                    BIN_STEM="${BIN_BASE%.exe}"
+                    pkill -u "$UNIX_USER" -f "$BIN_BASE" 2>/dev/null || true
+                    if [ "$BIN_STEM" != "$BIN_BASE" ]; then
+                        pkill -u "$UNIX_USER" -f "$BIN_STEM" 2>/dev/null || true
+                    fi
+                    echo "Issued fallback stop signals for server processes"
+                    STOP_DONE=1
+                else
+                    echo "No PID file — server may not be running"
+                fi
+            elif [ "$STOP_DONE" -eq 0 ]; then
                 echo "No PID file — server may not be running"
             fi
-        elif [ "$STOP_DONE" -eq 0 ]; then
-            echo "No PID file — server may not be running"
+        else
+            rm -f "$PIDFILE" 2>/dev/null || true
         fi
         # Final cleanup: ensure no Wine prefix remains locked
         WINEPREFIX="$SERVER_DIR/.wine-windrose" /usr/bin/wineserver -k 2>/dev/null || true
@@ -676,8 +892,19 @@ case "$ACTION" in
 
     restart)
         echo "steamcmd_control action=restart"
-        WEBCORE_SKIP_FINAL=1 bash "$0" stop "$JOB_DIR" "$UNIX_USER" "$SERVER_DIR" || true
+        echo "=== Restart: stop ==="
+        if ! WEBCORE_SKIP_FINAL=1 bash "$0" stop "$JOB_DIR" "$UNIX_USER" "$SERVER_DIR"; then
+            echo "ERROR: restart aborted — stop did not reach offline" >&2
+            set_final_status "failed"
+            exit 1
+        fi
+        if _server_process_running; then
+            echo "ERROR: restart aborted — still online after stop" >&2
+            set_final_status "failed"
+            exit 1
+        fi
         sleep 3
+        echo "=== Restart: start ==="
         WEBCORE_APPEND_LOG=1 WEBCORE_SKIP_FINAL=0 bash "$0" start "$JOB_DIR" "$UNIX_USER" "$SERVER_DIR"
         ;;
 

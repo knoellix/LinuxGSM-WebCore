@@ -50,7 +50,7 @@ grep -q '^last_skip_at=' "$SERVER_DIR/.monitor/schedule" || { echo "missing last
 [[ ! -d "$JOBS_HOME/jobs" ]] || [[ -z "$(ls -A "$JOBS_HOME/jobs" 2>/dev/null || true)" ]] \
     || { echo "job created on offline skip"; exit 1; }
 
-# --- online: stop/start + job -----------------------------------------------
+# --- online: lgsm_restart_reliable + job ------------------------------------
 touch "$SERVER_DIR/.mock_running"
 bash "$WORKER" "pw_test" lgsm "$SERVER_DIR" pwserver "$MODULE_ROOT" >/dev/null
 [[ -f "$SERVER_DIR/.mock_running" ]] || { echo "server not running after scheduled restart"; exit 1; }
@@ -61,6 +61,8 @@ jid="$(grep '^last_schedule_job=' "$SERVER_DIR/.monitor/schedule" | tail -1 | cu
 [[ -f "$JOBS_HOME/jobs/$jid/meta" ]] || { echo "schedule job meta missing"; exit 1; }
 grep -q '^action=scheduled_restart$' "$JOBS_HOME/jobs/$jid/meta" || { echo "wrong job action"; exit 1; }
 grep -qx 'ok' "$JOBS_HOME/jobs/$jid/status" || { echo "job not ok"; exit 1; }
+grep -q '=== Restart: stop ===' "$JOBS_HOME/jobs/$jid/output" \
+    || { echo "job output missing restart lifecycle"; exit 1; }
 grep -q '^last_run=' "$SERVER_DIR/.monitor/schedule" || { echo "missing last_run"; exit 1; }
 
 echo "ok test_schedule_restart.sh"

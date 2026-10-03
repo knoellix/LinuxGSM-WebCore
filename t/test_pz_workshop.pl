@@ -33,6 +33,28 @@ subtest 'normalize workshop id' => sub {
     is(pz_workshop_normalize_item_id('abc'), '', 'rejects junk');
 };
 
+subtest 'normalize mod id allows PZ free-form ids' => sub {
+    is(pz_workshop_normalize_mod_id('[B42] 815Tatra'), '[B42] 815Tatra',
+        'brackets + space (Tatra 815)');
+    is(pz_workshop_normalize_mod_id('  SimpleMod  '), 'SimpleMod', 'trim');
+    is(pz_workshop_normalize_mod_id('Bad;Id'), '', 'rejects semicolon');
+    is(pz_workshop_normalize_mod_id(''), '', 'rejects empty');
+    is(pz_workshop_normalize_mod_id('Mod_Name-1.0'), 'Mod_Name-1.0', 'underscore/dot/hyphen');
+};
+
+subtest 'enable_mod accepts bracket Mod ID' => sub {
+    my $tmp = tempdir(CLEANUP => 1);
+    my $ini = "$tmp/servertest.ini";
+    open my $fh, '>', $ini or die $!;
+    print $fh "WorkshopItems=3404869345\nMods=\n";
+    close $fh;
+    my ($ok, $err) = pz_workshop_enable_mod($ini, '3404869345', '[B42] 815Tatra');
+    ok($ok, 'enable_mod ok') or diag($err);
+    my ($vals) = pz_workshop_read_ini($ini);
+    is($vals->{Mods}, '[B42] 815Tatra', 'Mods= contains bracket id');
+    like($vals->{WorkshopItems}, qr/3404869345/, 'WorkshopItems kept');
+};
+
 subtest 'INI WorkshopItems/Mods patch round-trip' => sub {
     my $tmp = tempdir(CLEANUP => 1);
     my $ini = "$tmp/servertest.ini";
@@ -315,6 +337,36 @@ subtest 'delete item removes content under roots and ini entry' => sub {
     my ($vals) = pz_workshop_read_ini($ini);
     is($vals->{WorkshopItems}, '', 'workshop id removed from ini');
     is($vals->{Mods}, '', 'mod id removed from ini');
+};
+
+subtest 'delete item removes duplicates under all content roots' => sub {
+    my $tmp = tempdir(CLEANUP => 1);
+    my $root_a = "$tmp/home/Steam/steamapps/workshop/content/108600";
+    my $root_b = "$tmp/server/serverfiles/steamapps/workshop/content/108600";
+    my $wid = '3404869345';
+    make_path("$root_a/$wid/mods");
+    make_path("$root_b/$wid/mods");
+    open my $fh, '>', "$root_a/$wid/mods/mod.info" or die $!;
+    print $fh "id=[B42] 815Tatra\n";
+    close $fh;
+    open $fh, '>', "$root_b/$wid/mods/mod.info" or die $!;
+    print $fh "id=[B42] 815Tatra\n";
+    close $fh;
+
+    my $ini = "$tmp/pzserver.ini";
+    open $fh, '>', $ini or die $!;
+    print $fh "WorkshopItems=$wid\nMods=[B42] 815Tatra\n";
+    close $fh;
+
+    # Inventory content_dir is only the second root (scan overwrite scenario).
+    my ($ok, $err) = pz_workshop_delete_item(
+        '', $ini, $wid, "$root_b/$wid", ['[B42] 815Tatra'], [$root_a, $root_b]);
+    ok($ok, 'delete duplicate ok') or diag($err);
+    ok(!-d "$root_a/$wid", 'home Steam copy removed');
+    ok(!-d "$root_b/$wid", 'serverfiles copy removed');
+    my ($vals) = pz_workshop_read_ini($ini);
+    is($vals->{WorkshopItems}, '', 'ini cleared');
+    is($vals->{Mods}, '', 'mods cleared');
 };
 
 subtest 'delete item rejects path outside roots' => sub {

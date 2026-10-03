@@ -135,11 +135,207 @@ sub _ws_redirect_job_live {
     exit;
 }
 
+# Stay on workshop.cgi with banner poll (same UX as manage start/stop/restart).
+sub _ws_redirect_silent_job {
+    my ($job_id, $instance_id, %opts) = @_;
+    $job_id or _ws_launch_failed();
+    my %extra = (silent_job => $job_id);
+    $extra{next_status}   = $opts{'next_status'}   if ($opts{'next_status'} // '') ne '';
+    $extra{notice_action} = $opts{'notice_action'} if ($opts{'notice_action'} // '') ne '';
+    my $na = $opts{'notice_action'} // '';
+    $na =~ s/[^a-z_]//g;
+    if (!$opts{'start_log'}
+        && ($na eq 'start' || $na eq 'restart')
+        && &server_log_start_log_enabled())
+    {
+        $opts{'start_log'} = 1;
+    }
+    if ($opts{'start_log'}) {
+        if (&server_log_start_log_flash_mark($instance_id)) {
+            $extra{start_log} = 1;
+        }
+        else {
+            &module_config_flash_mark('start_log_embed_warn')
+                if defined &module_config_flash_mark;
+            $extra{start_log_warn} = 1;
+        }
+    }
+    &redirect(_ws_page_url($instance_id, %extra));
+    exit;
+}
+
+sub _ws_module_cgi_path {
+    my ($query) = @_;
+    my $mn = $module_name // $main::module_name // 'linuxgsm-webcore';
+    $mn =~ s/[^a-zA-Z0-9_-]//g;
+    $query //= '';
+    $query =~ s{^\./}{};
+    return "/$mn/$query";
+}
+
+sub _ws_action_result_text {
+    my ($notice_action, $status) = @_;
+    $notice_action //= '';
+    $notice_action =~ s/[^a-z_]//g;
+    return '' unless $notice_action ne '';
+    my $suffix = ($status eq 'ok') ? '_ok' : '_failed';
+    my $key = "manage_action_${notice_action}${suffix}";
+    return $text{$key} // ($status eq 'ok'
+        ? ($text{'job_ok'} // 'OK')
+        : ($text{'manage_action_failed'} // 'Action failed.'));
+}
+
+sub _ws_render_silent_job_poll {
+    my ($instance_id, $job_id, %opts) = @_;
+    $job_id =~ s/[^0-9a-f]//g;
+    return unless length($job_id) == 16;
+    &validate_job_for_instance($job_id, $instance_id) or return;
+
+    my $notice_action = $opts{'notice_action'} // '';
+    $notice_action =~ s/[^a-z_]//g;
+    unless ($notice_action) {
+        my $meta = &get_job_meta($job_id);
+        $notice_action = $meta->{'action'} // '';
+        $notice_action =~ s/[^a-z_]//g;
+    }
+
+    my $poll_q = "workshop.cgi?instance_id=" . &urlize($instance_id)
+        . "&action=poll_job&job=" . &urlize($job_id)
+        . "&poll_format=json&silent=1";
+    $poll_q .= "&next_status=" . &urlize($opts{'next_status'}) if ($opts{'next_status'} // '') ne '';
+    $poll_q .= "&notice_action=" . &urlize($notice_action) if $notice_action ne '';
+    my $poll_cfg = job_log_json_for_script({
+        pollUrl        => _ws_module_cgi_path($poll_q),
+        runtimePollUrl => _ws_module_cgi_path(
+            "workshop.cgi?instance_id=" . &urlize($instance_id) . "&action=poll_runtime"),
+        runningMsg     => $text{'manage_action_running'} || 'Aktion läuft…',
+        pollInterval   => 500,
+        pollErrorMsg   => $text{'manage_action_poll_error'}
+            || 'Statusabfrage fehlgeschlagen — Seite neu laden.',
+        startBlink     => ($notice_action =~ /^(?:start|restart)$/ ? 1 : 0),
+    });
+
+    print "<div id=\"silent_job_banner\" class=\"alert alert-info\">"
+        . "<strong>" . &html_escape($text{'manage_action_running'} || 'Aktion läuft…')
+        . "</strong></div>\n";
+    # JS mirrors manage.cgi silent poll (trusted JSON notice_msg from our poll_job).
+    print <<"EOF";
+<script>
+(function () {
+  var C = $poll_cfg;
+  var banner = document.getElementById("silent_job_banner");
+  var timer = null;
+  var failCount = 0;
+  var runtimeTimer = null;
+  function setRuntimeHtml(html) {
+    if (!html) return;
+    if (window.__lgsmStartReadySeen && html.indexOf("lgsm-job-pulse") >= 0) return;
+    var nodes = document.querySelectorAll(".js-runtime-status");
+    for (var i = 0; i < nodes.length; i++) {
+      nodes[i].innerHTML = html;
+    }
+  }
+  function pollRuntimeUntilReady() {
+    if (!C.runtimePollUrl) return;
+    if (runtimeTimer) return;
+    function once() {
+      if (window.__lgsmStartReadySeen) { runtimeTimer = null; return; }
+      fetch(C.runtimePollUrl, { credentials: "same-origin", cache: "no-store" })
+        .then(function (r) { if (!r.ok) throw new Error("http"); return r.json(); })
+        .then(function (d) {
+          if (window.__lgsmStartReadySeen) { runtimeTimer = null; return; }
+          if (d.runtime_html) setRuntimeHtml(d.runtime_html);
+          if (d.starting) {
+            runtimeTimer = window.setTimeout(once, 2000);
+          } else {
+            runtimeTimer = null;
+          }
+        })
+        .catch(function () {
+          runtimeTimer = window.setTimeout(once, 3000);
+        });
+    }
+    once();
+  }
+  function finish(d) {
+    if (timer) {
+      clearInterval(timer);
+      timer = null;
+    }
+    var markUrl = C.pollUrl + (C.pollUrl.indexOf("?") >= 0 ? "&" : "?") + "mark_result=1";
+    fetch(markUrl, { credentials: "same-origin", cache: "no-store" }).catch(function () {});
+    if (banner) {
+      if (d.status === "ok") {
+        banner.className = "alert alert-success";
+        banner.innerHTML = "<strong>" + (d.notice_msg || "") + "</strong>";
+      } else if (d.status === "aborted") {
+        banner.className = "alert alert-info";
+        banner.innerHTML = "<strong>" + (d.notice_msg || "") + "</strong>";
+      } else {
+        banner.className = "alert alert-danger";
+        banner.innerHTML = "<strong>" + (d.notice_msg || "") + "</strong>";
+      }
+    }
+    if (d.runtime_html) setRuntimeHtml(d.runtime_html);
+    if (d.starting || (C.startBlink && d.status === "ok" && d.runtime_status === "starting")) {
+      pollRuntimeUntilReady();
+    }
+    window.setTimeout(function () {
+      if (banner) banner.style.display = "none";
+    }, 4500);
+  }
+  function pollOnce() {
+    fetch(C.pollUrl, { credentials: "same-origin", cache: "no-store" })
+      .then(function (r) {
+        if (!r.ok) throw new Error("http " + r.status);
+        return r.json();
+      })
+      .then(function (d) {
+        failCount = 0;
+        if (d.status === "running") {
+          if (banner) {
+            banner.className = "alert alert-info";
+            banner.innerHTML = "<strong>" + C.runningMsg + "</strong>";
+          }
+          if (d.runtime_html) setRuntimeHtml(d.runtime_html);
+          return;
+        }
+        finish(d);
+      })
+      .catch(function () {
+        failCount++;
+        if (banner && failCount >= 6) {
+          banner.className = "alert alert-warning";
+          banner.innerHTML = "<strong>" + (C.pollErrorMsg || "Poll failed") + "</strong>";
+        }
+      });
+  }
+  pollOnce();
+  timer = setInterval(pollOnce, C.pollInterval);
+})();
+</script>
+EOF
+}
+
 sub _ws_redirect_if_job_running {
     my ($instance_id, $action) = @_;
     my $job_id = &find_running_job_for_instance($instance_id, $action);
     $job_id ||= &find_running_job_for_instance($instance_id);
     return 0 unless $job_id;
+    my $act = $action // '';
+    $act =~ s/[^a-z_]//g;
+    unless ($act) {
+        my $meta = &get_job_meta($job_id);
+        $act = $meta->{'action'} // '';
+        $act =~ s/[^a-z_]//g;
+    }
+    if ($act =~ /^(?:start|stop|restart)$/) {
+        _ws_redirect_silent_job(
+            $job_id, $instance_id,
+            notice_action => $act,
+            next_status   => &job_next_instance_status($act),
+        );
+    }
     _ws_redirect_job_live($job_id, $instance_id);
 }
 
@@ -170,18 +366,7 @@ sub _ws_steamcmd_worker_cmd {
 
 sub _ws_runtime_badge_html {
     my ($status) = @_;
-    my %map = (
-        online     => $text{'mc_mods_page_status_online'}  || 'Online',
-        running    => $text{'mc_mods_page_status_online'}  || 'Online',
-        offline    => $text{'mc_mods_page_status_offline'} || 'Offline',
-        stopped    => $text{'mc_mods_page_status_offline'} || 'Offline',
-        fresh      => $text{'mc_mods_page_status_fresh'}   || 'Provisioning pending',
-        lgsm_ready => $text{'mc_mods_page_status_lgsm'}    || 'Installation pending',
-        mc_ready   => $text{'mc_mods_page_status_mc'}      || 'Minecraft prepared',
-        unknown    => $text{'mc_mods_page_status_unknown'} || 'Unknown',
-    );
-    my $label = $map{$status} || ($text{'mc_mods_page_status_unknown'} || 'Unknown');
-    return &html_escape($label);
+    return &server_runtime_status_badge_html($status);
 }
 
 sub _ws_redirect_with_flash {
@@ -437,10 +622,10 @@ my (undef, $script_name, $server_dir) = _ws_parse_script_info($inst);
 my $action = $in{'action'} // '';
 $action =~ s/[^a-z_]//g;
 
-if ($action ne '' && $action !~ /^(?:search|subscribe|enable|disable|delete|enable_mod|disable_mod|start|stop|restart|monitor|poll_monitor)$/) {
+if ($action ne '' && $action !~ /^(?:search|subscribe|enable|disable|delete|enable_mod|disable_mod|start|stop|restart|monitor|poll_monitor|poll_runtime|poll_job)$/) {
     &error($text{'err_invalid_action'} || 'Invalid action');
 }
-if ($action ne '' && $action !~ /^(?:search|monitor|poll_monitor)$/ && &user_is_readonly($instance_id)) {
+if ($action ne '' && $action !~ /^(?:search|monitor|poll_monitor|poll_runtime|poll_job)$/ && &user_is_readonly($instance_id)) {
     &error($text{'err_readonly'} || 'This server is read-only for your account');
 }
 
@@ -495,18 +680,12 @@ if ($action eq 'start' || $action eq 'stop' || $action eq 'restart') {
     }
     _ws_rebuild_monitor_cron();
     my $next_status = &job_next_instance_status($action);
-    if (($action eq 'start' || $action eq 'restart') && &server_log_start_log_enabled()) {
-        if (&server_log_start_log_flash_mark($instance_id)) {
-            &redirect(_ws_page_url($instance_id) . '&start_log=1');
-            exit;
-        }
-        # Job already launched — soft-warn, do not claim job launch failed.
-        &module_config_flash_mark('start_log_embed_warn')
-            if defined &module_config_flash_mark;
-        &redirect(_ws_page_url($instance_id) . '&start_log_warn=1');
-        exit;
-    }
-    _ws_redirect_job_live($job_id, $instance_id, next_status => $next_status);
+    # Embedded silent poll on workshop page (like manage) — no job_live redirect.
+    _ws_redirect_silent_job(
+        $job_id, $instance_id,
+        next_status   => $next_status,
+        notice_action => $action,
+    );
 }
 
 if ($action eq 'poll_monitor') {
@@ -518,11 +697,110 @@ if ($action eq 'poll_monitor') {
         minecraft   => 0,
         log_file    => $in{'log_file'},
     );
+    if (($payload->{started} // 0) && $server_dir ne '') {
+        &set_monitor_ready_after_start($server_dir, $config_directory, $instance_id);
+    }
     $main::headerprinted = 1;
     print "Content-type: application/json; charset=utf-8\n\n";
     print job_log_json_utf8($payload);
     exit;
 }
+
+if ($action eq 'poll_runtime') {
+    my $rs = &instance_runtime_status($inst, light => 1);
+    my $mon = &read_monitor_state($server_dir, $config_directory, $instance_id);
+    my $job_inflight = 0;
+    if (defined &find_running_job_for_instance) {
+        $job_inflight = &find_running_job_for_instance($instance_id, 'start')
+            || &find_running_job_for_instance($instance_id, 'restart') ? 1 : 0;
+    }
+    if (&monitor_heal_starting_if_ready(
+            $server_dir, $config_directory, $instance_id, $rs,
+            job_in_flight => $job_inflight))
+    {
+        $mon = &read_monitor_state($server_dir, $config_directory, $instance_id);
+    }
+    $rs = &monitor_runtime_display_status($rs, $mon);
+    $main::headerprinted = 1;
+    print "Content-type: application/json; charset=utf-8\n\n";
+    print job_log_json_utf8({
+        runtime_status => $rs,
+        runtime_html   => _ws_runtime_badge_html($rs),
+        starting       => ($rs eq 'starting') ? 1 : 0,
+    });
+    exit;
+}
+
+if ($action eq 'poll_job') {
+    my $job_id = $in{'job'} // '';
+    $job_id =~ s/[^0-9a-f]//g;
+    $job_id = substr($job_id, 0, 16);
+    my $next_status = $in{'next_status'} // '';
+    $next_status =~ s/[^a-z_]//g;
+    &timeout_check_job($job_id);
+    &validate_job_for_instance($job_id, $instance_id)
+        or &error($text{'err_not_found'});
+    my $status = &get_job_status($job_id) // 'unknown';
+    my $all_out = &get_job_output_display($job_id);
+
+    if ($status eq 'ok') {
+        my $apply = $next_status;
+        unless ($apply) {
+            my $meta = &get_job_meta($job_id);
+            $apply = &job_next_instance_status($meta->{'action'} // '');
+        }
+        &set_instance_status($instance_id, $apply) if $apply;
+    }
+    if (($in{'mark_result'} // '') eq '1' && $status =~ /^(?:ok|failed|aborted)$/) {
+        &module_config_flash_mark("jobres_$job_id") if defined &module_config_flash_mark;
+    }
+
+    my $notice_action = $in{'notice_action'} // '';
+    $notice_action =~ s/[^a-z_]//g;
+    unless ($notice_action) {
+        my $meta = &get_job_meta($job_id);
+        $notice_action = $meta->{'action'} // '';
+        $notice_action =~ s/[^a-z_]//g;
+    }
+
+    my %payload = (
+        status => $status,
+        output => (defined $all_out ? $all_out : ''),
+        done   => ($status ne 'running' ? 1 : 0),
+    );
+    if (($in{'silent'} // '') eq '1') {
+        if ($status eq 'running' && $notice_action =~ /^(?:start|restart)$/) {
+            $payload{runtime_status} = 'starting';
+            $payload{runtime_html}   = _ws_runtime_badge_html('starting');
+            $payload{starting}       = 1;
+        }
+        elsif ($status ne 'running') {
+            $payload{notice_msg} = _ws_action_result_text($notice_action, $status);
+            my $retries = 0;
+            if ($status eq 'ok') {
+                $retries = 5 if $notice_action =~ /^(?:start|restart)$/;
+                $retries = 3 if $notice_action eq 'stop';
+            }
+            my $rs = &instance_runtime_status($inst, light => 1, retries => $retries);
+            my $mon = &read_monitor_state($server_dir, $config_directory, $instance_id);
+            if ($status eq 'ok' && $notice_action =~ /^(?:start|restart)$/) {
+                &monitor_heal_starting_if_ready(
+                    $server_dir, $config_directory, $instance_id, $rs,
+                    job_in_flight => 0);
+                $mon = &read_monitor_state($server_dir, $config_directory, $instance_id);
+            }
+            $rs = &monitor_runtime_display_status($rs, $mon);
+            $payload{runtime_status} = $rs;
+            $payload{runtime_html}   = _ws_runtime_badge_html($rs);
+            $payload{starting}       = ($rs eq 'starting') ? 1 : 0;
+        }
+    }
+    $main::headerprinted = 1;
+    print "Content-type: application/json; charset=utf-8\n\n";
+    print job_log_json_utf8(\%payload);
+    exit;
+}
+
 
 if ($action eq 'monitor') {
     my $source = &instance_effective_source($inst);
@@ -664,16 +942,45 @@ if (($action eq 'search' || length($q) >= 2) && length($q) >= 2) {
 
 &header($text{'workshop_title'} || 'Steam Workshop', '');
 
-my $runtime_status = &instance_runtime_status($inst);
+my $silent_job_id = $in{'silent_job'} // '';
+$silent_job_id =~ s/[^0-9a-f]//g;
+$silent_job_id = substr($silent_job_id, 0, 16);
+my $silent_polling = ($silent_job_id ne '');
+my $silent_notice_action = '';
+if ($silent_polling) {
+    my $na = $in{'notice_action'} // '';
+    $na =~ s/[^a-z_]//g;
+    unless ($na) {
+        my $meta = &get_job_meta($silent_job_id);
+        $na = $meta->{'action'} // '';
+        $na =~ s/[^a-z_]//g;
+    }
+    $silent_notice_action = $na;
+    my %silent_opts = (notice_action => $na);
+    my $ns = $in{'next_status'} // '';
+    $ns =~ s/[^a-z_]//g;
+    $silent_opts{next_status} = $ns if $ns ne '';
+    &_ws_render_silent_job_poll($instance_id, $silent_job_id, %silent_opts);
+}
+
+# Match manage/index: light = tmux/PID only. Full LGSM `details` is heavy and can
+# false-positive "online" (broad STARTED/RUNNING match) while the instance page
+# correctly shows offline after stop.
+my $runtime_status = &instance_runtime_status($inst, light => 1);
 my @ws_extra;
 {
     &sync_monitor_job_pointers();
     my $mon_state = &read_monitor_state($server_dir, $config_directory, $instance_id);
+    $runtime_status = &monitor_runtime_display_status($runtime_status, $mon_state);
+    $runtime_status = 'starting'
+        if (($silent_polling && $silent_notice_action =~ /^(?:start|restart)$/)
+            || &server_log_start_log_should_show(\%in, $instance_id));
     my $mon_status_key = 'monitor_status_' . ($mon_state->{'status'} // 'disabled');
     my $mon_label = $text{$mon_status_key} || ($mon_state->{'status'} // 'disabled');
     push @ws_extra, &ui_instance_status_part($text{'monitor_col'} || 'Monitor',
         &html_escape($mon_label));
 }
+print &job_status_pulse_css();
 print &server_control_bar_html(
     cgi                 => 'workshop.cgi',
     instance_id         => $instance_id,
@@ -683,6 +990,13 @@ print &server_control_bar_html(
     back_cgi            => 'manage.cgi',
     back_label          => ($text{'workshop_back_manage'} || 'Back to instance'),
 );
+if ($runtime_status eq 'starting') {
+    my $mn = $module_name // $main::module_name // 'linuxgsm-webcore';
+    $mn =~ s/[^a-zA-Z0-9_-]//g;
+    print &server_runtime_starting_poll_js(
+        "/$mn/workshop.cgi?instance_id=" . &urlize($instance_id)
+            . '&action=poll_runtime');
+}
 
 print "<h2>" . &html_escape($text{'workshop_title'} || 'Steam Workshop') . "</h2>\n";
 print "<p>" . &html_escape($inst->{'name'} // $script_name) . " &middot; "

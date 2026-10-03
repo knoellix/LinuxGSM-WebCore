@@ -51,18 +51,7 @@ sub _parse_script_info {
 
 sub _mods_status_badge_html {
     my ($status) = @_;
-    my %map = (
-        online     => $text{'mc_mods_page_status_online'}  || 'Online',
-        running    => $text{'mc_mods_page_status_online'}  || 'Online',
-        offline    => $text{'mc_mods_page_status_offline'} || 'Offline',
-        stopped    => $text{'mc_mods_page_status_offline'} || 'Offline',
-        fresh      => $text{'mc_mods_page_status_fresh'}   || 'Provisioning pending',
-        lgsm_ready => $text{'mc_mods_page_status_lgsm'}    || 'Installation pending',
-        mc_ready   => $text{'mc_mods_page_status_mc'}      || 'Minecraft prepared',
-        unknown    => $text{'mc_mods_page_status_unknown'} || 'Unknown',
-    );
-    my $label = $map{$status} || ($text{'mc_mods_page_status_unknown'} || 'Unknown');
-    return &html_escape($label);
+    return &server_runtime_status_badge_html($status);
 }
 
 # Same pattern as manage.cgi: keep action forms/links side-by-side with spacing.
@@ -1104,10 +1093,10 @@ $mods_compat_loader =~ s/[^0-9.]//g;
 &user_can_manage($instance_id)
     or &error($text{'err_acl_admin_only'} || 'Access denied');
 
-if ($action ne '' && $action !~ /^(?:monitor|poll_monitor|job_log_card|monitor_disable|monitor_reset|start|stop|restart|mod_enable|mod_disable|mod_delete|mod_versions|mod_search_versions|mod_install_preview|mc_mod_install|modpack_import|modpack_import_path|modpack_import_remote|modpack_import_resume|mod_compat_scan|upgrade_check|upgrade_versions)$/) {
+if ($action ne '' && $action !~ /^(?:monitor|poll_monitor|poll_runtime|job_log_card|monitor_disable|monitor_reset|start|stop|restart|mod_enable|mod_disable|mod_delete|mod_versions|mod_search_versions|mod_install_preview|mc_mod_install|modpack_import|modpack_import_path|modpack_import_remote|modpack_import_resume|mod_compat_scan|upgrade_check|upgrade_versions)$/) {
     &error($text{'err_invalid_action'} || 'Invalid action');
 }
-if ($action ne '' && $action !~ /^(?:monitor|poll_monitor|job_log_card)$/ && &user_is_readonly($instance_id)) {
+if ($action ne '' && $action !~ /^(?:monitor|poll_monitor|poll_runtime|job_log_card)$/ && &user_is_readonly($instance_id)) {
     &error($text{'err_readonly'} || 'This server is read-only for your account');
 }
 
@@ -1910,9 +1899,37 @@ if ($action eq 'poll_monitor') {
         minecraft   => 1,
         log_file    => $in{'log_file'},
     );
+    if (($payload->{started} // 0) && $server_dir ne '') {
+        &set_monitor_ready_after_start($server_dir, $config_directory, $instance_id);
+    }
     $main::headerprinted = 1;
     print "Content-type: application/json; charset=utf-8\n\n";
     print job_log_json_utf8($payload);
+    exit;
+}
+
+if ($action eq 'poll_runtime') {
+    my $rs = &instance_runtime_status($inst, light => 1);
+    my $mon = &read_monitor_state($server_dir, $config_directory, $instance_id);
+    my $job_inflight = 0;
+    if (defined &find_running_job_for_instance) {
+        $job_inflight = &find_running_job_for_instance($instance_id, 'start')
+            || &find_running_job_for_instance($instance_id, 'restart') ? 1 : 0;
+    }
+    if (&monitor_heal_starting_if_ready(
+            $server_dir, $config_directory, $instance_id, $rs,
+            job_in_flight => $job_inflight))
+    {
+        $mon = &read_monitor_state($server_dir, $config_directory, $instance_id);
+    }
+    $rs = &monitor_runtime_display_status($rs, $mon);
+    $main::headerprinted = 1;
+    print "Content-type: application/json; charset=utf-8\n\n";
+    print job_log_json_utf8({
+        runtime_status => $rs,
+        runtime_html   => _mods_status_badge_html($rs),
+        starting       => ($rs eq 'starting') ? 1 : 0,
+    });
     exit;
 }
 
@@ -1974,7 +1991,8 @@ unless (&mc_mod_ui_ready($profile, $server_dir)) {
     exit;
 }
 
-my $runtime_status = &instance_runtime_status($inst);
+# Match manage/index badges: light detection only (see workshop.cgi).
+my $runtime_status = &instance_runtime_status($inst, light => 1);
 if (($in{'mod_enabled'} // '') eq '1' && &module_config_flash_consume('mod_enabled')) {
     _mods_print_success($text{'mc_mods_page_enabled_ok'} || 'Mod enabled.');
 }
@@ -2019,6 +2037,9 @@ print "<h3>" . &html_escape($text{'mc_mods_page_header'} || 'Minecraft mods') . 
 
 &sync_monitor_job_pointers();
 my $mon_state = &read_monitor_state($server_dir, $config_directory, $instance_id);
+$runtime_status = &monitor_runtime_display_status($runtime_status, $mon_state);
+$runtime_status = 'starting'
+    if &server_log_start_log_should_show(\%in, $instance_id);
 my $after_status = '';
 {
     my $mon_status_key = 'monitor_status_' . ($mon_state->{'status'} // 'disabled');
@@ -2068,6 +2089,7 @@ my $after_status = '';
         }
         $after_status .= "</div>\n";
     }
+    print &job_status_pulse_css();
     print &server_control_bar_html(
         cgi                 => 'mods.cgi',
         instance_id         => $instance_id,
@@ -2077,6 +2099,13 @@ my $after_status = '';
         after_status_html   => $after_status,
         back_cgi            => 'manage.cgi',
     );
+    if ($runtime_status eq 'starting') {
+        my $mn = $module_name // $main::module_name // 'linuxgsm-webcore';
+        $mn =~ s/[^a-zA-Z0-9_-]//g;
+        print &server_runtime_starting_poll_js(
+            "/$mn/mods.cgi?instance_id=" . &urlize($instance_id)
+                . '&action=poll_runtime');
+    }
 }
 
 if (&server_log_start_log_should_show(\%in, $instance_id)) {

@@ -608,9 +608,12 @@ sub pz_workshop_normalize_mod_id {
     $raw //= '';
     $raw =~ s/[\t\n\r\0]//g;
     $raw =~ s/^\s+|\s+$//g;
-    $raw =~ s/[;]//g;
-    return '' unless length($raw) && length($raw) <= 128;
-    return ($raw =~ /\A[A-Za-z0-9_.\-]+\z/) ? $raw : '';
+    # PZ Mod IDs are free-form in mod.info (e.g. "[B42] 815Tatra"). Only ";" is
+    # forbidden — it separates entries in the Mods= INI list.
+    return '' if $raw eq '' || index($raw, ';') >= 0;
+    return '' if length($raw) > 128;
+    # Printable ASCII (space through ~); reject control / non-ASCII for INI safety.
+    return ($raw =~ /\A[\x20-\x7E]+\z/ && $raw =~ /[A-Za-z0-9]/) ? $raw : '';
 }
 
 sub _pz_workshop_http_get_json {
@@ -1318,8 +1321,25 @@ sub pz_workshop_delete_item {
     $workshop_id = pz_workshop_normalize_item_id($workshop_id);
     return (0, 'bad_id') unless length $workshop_id;
 
-    if (defined $content_dir && $content_dir ne '' && -e $content_dir) {
-        unless (pz_workshop_path_under_content_roots($content_dir, $roots)) {
+    # Build candidate dirs: every $root/$id (Steam may leave duplicates under
+    # home Steam tree and serverfiles), plus the inventory content_dir if set.
+    my @candidates;
+    my %seen;
+    for my $root (@{ $roots // [] }) {
+        next unless defined $root && $root ne '';
+        my $cand = "$root/$workshop_id";
+        next unless -d $cand;
+        my $key = _pz_workshop_realpath_allow_missing($cand) // $cand;
+        next if $seen{$key}++;
+        push @candidates, $cand;
+    }
+    if (defined $content_dir && $content_dir ne '' && -d $content_dir) {
+        my $key = _pz_workshop_realpath_allow_missing($content_dir) // $content_dir;
+        push @candidates, $content_dir unless $seen{$key}++;
+    }
+
+    for my $cand (@candidates) {
+        unless (pz_workshop_path_under_content_roots($cand, $roots)) {
             return (0, 'path_rejected');
         }
     }
@@ -1327,17 +1347,16 @@ sub pz_workshop_delete_item {
     my ($ok, $err) = pz_workshop_disable_item($ini, $workshop_id, $mod_ids // []);
     return (0, $err) unless $ok;
 
-    if (defined $content_dir && $content_dir ne '' && -e $content_dir) {
-        if (-d $content_dir) {
-            unless (_pz_workshop_rmtree_as_user($unix_user, $content_dir)) {
-                return (0, 'delete_failed');
-            }
+    for my $cand (@candidates) {
+        next unless -d $cand;
+        unless (_pz_workshop_rmtree_as_user($unix_user, $cand)) {
+            return (0, 'delete_failed');
+        }
+        if (-d $cand) {
+            return (0, 'verify_failed');
         }
     }
 
-    if (defined $content_dir && $content_dir ne '' && -d $content_dir) {
-        return (0, 'verify_failed');
-    }
     my ($vals) = pz_workshop_read_ini($ini);
     my $wi = $vals->{WorkshopItems} // '';
     return (0, 'verify_failed') if $wi =~ /(?:^|;)\Q$workshop_id\E(?:;|$)/;

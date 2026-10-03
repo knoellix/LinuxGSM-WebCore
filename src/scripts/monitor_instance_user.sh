@@ -121,6 +121,7 @@ _lgsm_details_online() {
 # LGSM monitor may restart internally even when tmux looked alive:
 # - session FAIL → start
 # - query FAIL (gamedig) → graceful stop → start  (Minecraft false positives)
+# WebCore recovery after that uses lgsm_restart_reliable (hard-gate).
 _lgsm_monitor_showed_restart() {
     local run_log="$1"
     [[ -f "$run_log" ]] || return 1
@@ -224,10 +225,11 @@ if [[ "$KIND" == "lgsm" ]]; then
         _LGSM_RESTART_COUNT=0
         _LGSM_WINDOW_START=$(date +%s)
         if _lgsm_restart_backoff_ready; then
-            _log "LGSM: still offline after monitor — start attempt $_LGSM_RESTART_COUNT/$MAX_RESTARTS"
+            _log "LGSM: still offline after monitor — restart attempt $_LGSM_RESTART_COUNT/$MAX_RESTARTS"
             _write_state "restarting" "$_LGSM_RESTART_COUNT" "$_LGSM_WINDOW_START"
             mc_java_env_apply "$SERVER_DIR"
-            lgsm_start_reliable "$SERVER_DIR" "$SCRIPT_NAME" 2>&1 | tee -a "$LOG_FILE" >>"$MONITOR_RUN_LOG" || true
+            # Full lifecycle: stop hard-gate then start (offline stop is no-op).
+            lgsm_restart_reliable "$SERVER_DIR" "$SCRIPT_NAME" 2>&1 | tee -a "$LOG_FILE" >>"$MONITOR_RUN_LOG" || true
             _lgsm_wait_online "$WAIT_TRIES" "$WAIT_DELAY" 0 || true
         else
             exit 0
@@ -244,7 +246,7 @@ if [[ "$KIND" == "lgsm" ]]; then
         _write_state "running" "0" "$(date +%s)"
     else
         _write_state "failed" "${_LGSM_RESTART_COUNT:-1}" "${_LGSM_WINDOW_START:-$(date +%s)}"
-        _log "LGSM: server offline after monitor+start (will retry next cron run)"
+        _log "LGSM: server offline after monitor+restart (will retry next cron run)"
     fi
     exit 0
 fi
@@ -324,27 +326,15 @@ if [[ "$RESTART_COUNT" -ge "$MAX_RESTARTS" ]]; then
 fi
 
 RESTART_COUNT=$((RESTART_COUNT + 1))
-_log "Restart attempt $RESTART_COUNT/$MAX_RESTARTS — dispatching steamcmd_control_user.sh start"
+_log "Restart attempt $RESTART_COUNT/$MAX_RESTARTS — dispatching steamcmd_control_user.sh restart"
 _write_state "restarting" "$RESTART_COUNT" "$WINDOW_START"
 
-# Kill stale process (game-user can kill own processes)
-if [[ "${server_pid:-0}" -gt 0 ]]; then
-    kill -TERM "$server_pid" 2>/dev/null || true
-    sleep 2
-    kill -KILL "$server_pid" 2>/dev/null || true
-fi
-
-# Wineserver cleanup (own WINEPREFIX, no root needed)
-for _pfx in "$SERVER_DIR/.wine-windrose" "$SERVER_DIR/.wine"; do
-    [ -d "$_pfx" ] || continue
-    WINEPREFIX="$_pfx" /usr/bin/wineserver -k 2>/dev/null || true
-done
-
+# One lifecycle path owns stop grace + offline hard-gate (no parallel kill).
 THIS_USER="$(id -un)"
 RESTART_JOB_DIR=""
 if RESTART_JOB_DIR="$(mktemp -d "$STATE_DIR/restart.XXXXXX" 2>/dev/null)"; then
     chmod 700 "$RESTART_JOB_DIR" 2>/dev/null || true
-    if bash "$MODULE_ROOT/scripts/steamcmd_control_user.sh" start \
+    if bash "$MODULE_ROOT/scripts/steamcmd_control_user.sh" restart \
         "$RESTART_JOB_DIR" "$THIS_USER" "$SERVER_DIR" >>"$LOG_FILE" 2>&1; then
         _log "Monitor restart completed (user-native)"
         _write_state "running" "$RESTART_COUNT" "$WINDOW_START"

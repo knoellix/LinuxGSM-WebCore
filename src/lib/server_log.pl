@@ -206,18 +206,26 @@ sub server_log_monitor_poll_payload {
             binary   => 0,
         };
     }
-    return {
+    my $ready_hit = (defined $tail && $tail =~ /(?:\*\*\* SERVER STARTED \*\*\*\*|Done\s*\()/m) ? 1 : 0;
+    my %payload = (
         ok       => 1,
         error    => '',
         output   => $tail,
         log_file => basename($log_file),
         binary   => server_log_looks_binary($tail) ? 1 : 0,
         # Hint for start-log embed: show ready banner when tail looks online/started.
-        started  => (defined $tail && $tail =~ /(?:\*\*\* SERVER STARTED \*\*\*\*|Done\s*\()/m) ? 1 : 0,
-        status   => (defined $tail && $tail =~ /(?:\*\*\* SERVER STARTED \*\*\*\*|Done\s*\()/m)
-            ? 'online'
-            : '',
-    };
+        started  => $ready_hit,
+        status   => $ready_hit ? 'online' : '',
+    );
+    # When ready marker is in the tail, hand the client a solid online badge so the
+    # Startet… blink stops immediately (monitor starting grace may still be armed
+    # until the start job finishes / monitor_mark_ready runs).
+    if ($ready_hit && defined &server_runtime_status_badge_html) {
+        $payload{runtime_status} = 'online';
+        $payload{runtime_html}   = server_runtime_status_badge_html('online');
+        $payload{starting}       = 0;
+    }
+    return \%payload;
 }
 
 # Percent-encode path for filemin query strings (same rules as config editor).

@@ -4,7 +4,21 @@
     "steam_required": false,
     "start_ready_log": "latest_log",
     "start_ready_regex": "Done \\([0-9.]+s\\)!",
-    "start_ready_secs": 900,
+    "start_ready_secs": 600,
+    "start_stall_secs": 120,
+    "start_stall_fail_secs": 300,
+    "start_phases": [
+      {"id": "mod_loader", "label_de": "Mod-Loader", "label_en": "Mod loader", "match": "Starting FancyModLoader|Forge Mod Loader|Fabric Loader|Loading Minecraft"},
+      {"id": "mod_list", "label_de": "Mod-Liste", "label_en": "Mod list", "match": "Mod List:"},
+      {"id": "preparing", "label_de": "Welt vorbereiten", "label_en": "Preparing world", "match": "Preparing level|Preparing spawn area"},
+      {"id": "ready", "label_de": "Bereit", "label_en": "Ready", "match": "Done \\([0-9.]+s\\)!"}
+    ],
+    "stop_grace_secs": 120,
+    "stop_force_secs": 180,
+    "stop_phases": [
+      {"id": "saving", "label_de": "Speichern", "label_en": "Saving", "match": "Saving chunks|Saving the game|[Ss]aving"},
+      {"id": "stopped", "label_de": "Gestoppt", "label_en": "Stopped", "match": "All dimensions are saved|Server stopped|Stopping the server"}
+    ],
     "variants": ["mcserver", "mc-paper", "mc-forge", "mc-neoforge", "mc-fabric"],
     "game_config_format": "properties",
     "game_config_fields": [
@@ -75,6 +89,23 @@
     "name": "Palworld",
     "steam_required": true,
     "query_port_field": "queryport",
+    "start_ready_log": "console",
+    "start_ready_regex": "Running Palworld dedicated server on",
+    "start_ready_secs": 900,
+    "start_stall_secs": 120,
+    "start_stall_fail_secs": 300,
+    "start_phases": [
+      {"id": "breakpad", "label_de": "Breakpad", "label_en": "Breakpad", "match": "Setting breakpad minidump AppID"},
+      {"id": "version", "label_de": "Version", "label_en": "Version", "match": "Game version is"},
+      {"id": "ready", "label_de": "Bereit", "label_en": "Ready", "match": "Running Palworld dedicated server on"}
+    ],
+    "stop_grace_secs": 120,
+    "stop_force_secs": 180,
+    "stop_phases": [
+      {"id": "saving", "label_de": "Speichern", "label_en": "Saving", "match": "[Ss]aving"},
+      {"id": "exiting", "label_de": "Beenden", "label_en": "Exiting", "match": "RequestExit|Exiting abnormally"},
+      {"id": "stopped", "label_de": "Gestoppt", "label_en": "Stopped", "match": "Shutdown handler: cleanup"}
+    ],
     "game_config_format": "ini_option_settings",
     "game_config_path": "serverfiles/Pal/Saved/Config/LinuxServer/PalWorldSettings.ini",
     "game_config_label_de": "Servereinstellungen",
@@ -157,6 +188,24 @@
       "windrose-debug.log",
       "serverfiles/server.log"
     ],
+    "start_ready_log": "live_log",
+    "start_ready_regex": "Start preloading GenlandiaMulty",
+    "start_ready_secs": 900,
+    "start_stall_secs": 120,
+    "start_stall_fail_secs": 300,
+    "start_phases": [
+      {"id": "pak_mount", "label_de": "Pak mounten", "label_en": "Mounting paks", "match": "Mounted Pak file|Mounted IoStore container"},
+      {"id": "engine_init", "label_de": "Engine", "label_en": "Engine init", "match": "Game Engine Initialized\\."},
+      {"id": "engine_ready", "label_de": "Engine bereit", "label_en": "Engine ready", "match": "Engine is initialized\\. Leaving FEngineLoop::Init\\(\\)"},
+      {"id": "lobby", "label_de": "Lobby", "label_en": "Lobby", "match": "Start preloading R5ServerLobby"},
+      {"id": "ready", "label_de": "Bereit", "label_en": "Ready", "match": "Start preloading GenlandiaMulty"}
+    ],
+    "stop_grace_secs": 60,
+    "stop_force_secs": 120,
+    "stop_phases": [
+      {"id": "saving", "label_de": "Speichern", "label_en": "Saving", "match": "[Ss]aving|makebak"},
+      {"id": "stopped", "label_de": "Gestoppt", "label_en": "Stopped", "match": "Windrose:.*stopped|Server stopped"}
+    ],
     "game_config_path": "serverfiles/R5/ServerDescription.json",
     "game_config_format": "json",
     "game_config_fields": [
@@ -210,6 +259,21 @@
     "start_ready_log": "console",
     "start_ready_regex": "\\*\\*\\* SERVER STARTED \\*\\*\\*\\*",
     "start_ready_secs": 900,
+    "start_stall_secs": 120,
+    "start_stall_fail_secs": 300,
+    "start_phases": [
+      {"id": "workshop_download", "label_de": "Workshop-Download", "label_en": "Workshop download", "match": "Waiting for response from Steam servers|DownloadPending|Workshop: download |Workshop: onItemDownloaded|Workshop: onItemQueryCompleted"},
+      {"id": "loading_mods", "label_de": "Mods laden", "label_en": "Loading mods", "match": "Initialising Server Systems|Start making backup"},
+      {"id": "loading_assets", "label_de": "Assets laden", "label_en": "Loading assets", "match": "LOADING ASSETS"},
+      {"id": "loading_world", "label_de": "Welt laden", "label_en": "Loading world", "match": "Loading world|LOADING WORLD"},
+      {"id": "ready", "label_de": "Bereit", "label_en": "Ready", "match": "\\*\\*\\* SERVER STARTED \\*\\*\\*\\*"}
+    ],
+    "stop_grace_secs": 120,
+    "stop_force_secs": 180,
+    "stop_phases": [
+      {"id": "saving", "label_de": "Speichern", "label_en": "Saving", "match": "[Ss]aving"},
+      {"id": "stopped", "label_de": "Gestoppt", "label_en": "Stopped", "match": "[Ss]topped|Shutdown complete|Server stopped"}
+    ],
     "fields": [
       {"key": "port",          "type": "port",     "label_de": "Port",            "label_en": "Port",            "default": "16261"},
       {"key": "queryport",     "type": "port",     "label_de": "Query Port",      "label_en": "Query Port",      "default": "16262"},

@@ -5,6 +5,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Start/Stop/Restart: shared lifecycle — sliding log stall (warn/fail), meta start/stop phases, stop save-grace, restart offline hard-gate; Windrose ready = GenlandiaMulty; Palworld ready = Running Palworld dedicated server on; MC ready/stall scaled by enabled mod count; workshop games (PZ) scale by WorkshopItems + no stall-fail during workshop download phase
+
+### Fixed
+
+- Workshop delete: remove the workshop ID under **all** content roots (home Steam tree and `serverfiles`), not only the inventory `content_dir` — leftover copies no longer reappear in the list
+- Start blink / hung start job: detect console log truncate/rotate after offset capture so PZ ready wait sees `*** SERVER STARTED ****`; stop forcing Startet… solely because the start-log embed is open; clear monitor starting on abort; sticky UI badge once start-log sees ready
+
 ## [0.2.4] - 2026-09-29
 
 ### Added

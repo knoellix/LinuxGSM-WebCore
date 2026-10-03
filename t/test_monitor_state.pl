@@ -6,7 +6,7 @@ use FindBin qw($Bin);
 use lib "$Bin/..";
 chdir "$Bin/.." or die "Cannot chdir: $!";
 
-print "1..21\n";
+print "1..24\n";
 sub pass { print "ok - $_[0]\n" }
 sub fail { print "not ok - $_[0]\n" }
 sub is {
@@ -233,4 +233,43 @@ require './src/lib/monitor.pl';
     ($until >= $lo && $until <= $hi)
         ? pass('monitor_starting_until(900) ≈ time()+1080')
         : fail("monitor_starting_until(900)=$until expected [$lo,$hi]");
+}
+
+# 21. heal: online + starting + no job → clear to running
+{
+    my $server_dir = "$tmp/heal_ok";
+    set_monitor_running($server_dir, $tmp, 'heal_ok');
+    set_monitor_starting($server_dir, $tmp, 'heal_ok', time() + 600);
+    my $healed = monitor_heal_starting_if_ready(
+        $server_dir, $tmp, 'heal_ok', 'online', job_in_flight => 0);
+    my $s = read_monitor_state($server_dir, $tmp, 'heal_ok');
+    ($healed && $s->{status} eq 'running' && !monitor_is_starting($s))
+        ? pass('heal_starting: clears when online and no job')
+        : fail("heal_ok: healed=$healed status=$s->{status}");
+}
+
+# 22. heal: skip while start job still in flight
+{
+    my $server_dir = "$tmp/heal_job";
+    set_monitor_running($server_dir, $tmp, 'heal_job');
+    set_monitor_starting($server_dir, $tmp, 'heal_job', time() + 600);
+    my $healed = monitor_heal_starting_if_ready(
+        $server_dir, $tmp, 'heal_job', 'online', job_in_flight => 1);
+    my $s = read_monitor_state($server_dir, $tmp, 'heal_job');
+    (!$healed && monitor_is_starting($s))
+        ? pass('heal_starting: skips while job in flight')
+        : fail("heal_job: healed=$healed status=$s->{status}");
+}
+
+# 23. heal: offline does not clear starting
+{
+    my $server_dir = "$tmp/heal_off";
+    set_monitor_running($server_dir, $tmp, 'heal_off');
+    set_monitor_starting($server_dir, $tmp, 'heal_off', time() + 600);
+    my $healed = monitor_heal_starting_if_ready(
+        $server_dir, $tmp, 'heal_off', 'offline', job_in_flight => 0);
+    my $s = read_monitor_state($server_dir, $tmp, 'heal_off');
+    (!$healed && monitor_is_starting($s))
+        ? pass('heal_starting: skips when offline')
+        : fail("heal_off: healed=$healed status=$s->{status}");
 }

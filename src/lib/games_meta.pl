@@ -401,6 +401,177 @@ sub get_start_ready_config {
     return { log => "$log", regex => "$re", secs => $secs };
 }
 
+# Find parent meta key that lists $script in variants[] (for stubs without ready fields).
+# Returns '' when no parent found.
+sub _lifecycle_parent_key {
+    my ($script, $meta_ref) = @_;
+    $script //= '';
+    return '' unless length($script) && ref($meta_ref) eq 'HASH';
+    for my $key (sort keys %$meta_ref) {
+        next if $key eq $script;
+        my $entry = $meta_ref->{$key};
+        next unless ref($entry) eq 'HASH';
+        my @variants = @{ $entry->{'variants'} // [] };
+        return $key if grep { $_ eq $script } @variants;
+    }
+    return '';
+}
+
+# Full start/stop lifecycle config (ready + stall + phases + stop grace).
+# Variant stubs without start_ready_regex inherit from the parent that lists them
+# in variants[] (e.g. mc-neoforge → mcserver).
+# Defaults: stall 120/300, stop grace/force 120/180, empty phase arrays.
+# Clamps secs to 0..3600; raises stall_fail to stall (and force to grace) when inverted.
+sub get_lifecycle_config {
+    my ($script) = @_;
+    my $base = get_start_ready_config($script);
+    $script //= '';
+    $script =~ s/[^a-zA-Z0-9_\-]//g;
+    my %meta = load_games_meta();
+    my $g = $meta{$script} // {};
+
+    # Stub variants exist as own keys but lack ready/lifecycle — inherit from parent.
+    if (!length($g->{start_ready_regex} // '')) {
+        my $parent = _lifecycle_parent_key($script, \%meta);
+        if (!length($parent)) {
+            my $resolved = eval { _resolve_meta_key($script) } || $script;
+            $parent = $resolved if $resolved ne $script && exists $meta{$resolved};
+        }
+        if (length($parent) && exists $meta{$parent}) {
+            $g = $meta{$parent} // {};
+            $base = get_start_ready_config($parent);
+        }
+    }
+
+    my $stall = int($g->{start_stall_secs} // 120);
+    my $stall_fail = int($g->{start_stall_fail_secs} // 300);
+    $stall = 0 if $stall < 0; $stall = 3600 if $stall > 3600;
+    $stall_fail = 0 if $stall_fail < 0; $stall_fail = 3600 if $stall_fail > 3600;
+    if ($stall > 0 && $stall_fail > 0 && $stall_fail < $stall) {
+        $stall_fail = $stall;
+    }
+    my $sg = int($g->{stop_grace_secs} // 120);
+    my $sf = int($g->{stop_force_secs} // 180);
+    $sg = 0 if $sg < 0; $sg = 3600 if $sg > 3600;
+    $sf = 0 if $sf < 0; $sf = 3600 if $sf > 3600;
+    if ($sf > 0 && $sg > 0 && $sf < $sg) { $sf = $sg; }
+
+    my @sp = ();
+    if (ref($g->{start_phases}) eq 'ARRAY') {
+        for my $p (@{ $g->{start_phases} }) {
+            next unless ref($p) eq 'HASH';
+            my $id = $p->{id} // '';
+            $id =~ s/[^a-zA-Z0-9_\-]//g;
+            next unless length($id);
+            push @sp, {
+                id => $id,
+                label_de => '' . ($p->{label_de} // $id),
+                label_en => '' . ($p->{label_en} // $id),
+                match => '' . ($p->{match} // ''),
+            };
+        }
+    }
+    my @stp = ();
+    if (ref($g->{stop_phases}) eq 'ARRAY') {
+        for my $p (@{ $g->{stop_phases} }) {
+            next unless ref($p) eq 'HASH';
+            my $id = $p->{id} // '';
+            $id =~ s/[^a-zA-Z0-9_\-]//g;
+            next unless length($id);
+            push @stp, {
+                id => $id,
+                label_de => '' . ($p->{label_de} // $id),
+                label_en => '' . ($p->{label_en} // $id),
+                match => '' . ($p->{match} // ''),
+            };
+        }
+    }
+
+    my $live = '' . ($g->{live_log_path} // $base->{live_log_path} // '');
+    $live =~ s/^\s+|\s+$//g;
+    $live = '' if $live =~ m{(?:^|/)\.\.(?:/|$)};
+    $live = '' if $live =~ m{^/};
+
+    return {
+        %$base,
+        stall_secs => $stall,
+        stall_fail_secs => $stall_fail,
+        start_phases => \@sp,
+        stop_grace_secs => $sg,
+        stop_force_secs => $sf,
+        stop_phases => \@stp,
+        live_log_path => $live,
+    };
+}
+
+# Map workshop item count → ready/stall tier (replaces meta for that start).
+# Tiers: 0–9 / 10–29 / 30–49 / ≥50.
+sub workshop_start_scale_tier {
+    my ($tier_n) = @_;
+    $tier_n = int($tier_n // 0);
+    $tier_n = 0 if $tier_n < 0;
+    if ($tier_n <= 9) {
+        return { ready_secs => 900, stall_secs => 120, stall_fail_secs => 300 };
+    }
+    if ($tier_n <= 29) {
+        return { ready_secs => 1200, stall_secs => 180, stall_fail_secs => 420 };
+    }
+    if ($tier_n <= 49) {
+        return { ready_secs => 1500, stall_secs => 240, stall_fail_secs => 480 };
+    }
+    return { ready_secs => 1800, stall_secs => 300, stall_fail_secs => 600 };
+}
+
+# Workshop start scale for games with mod_support=workshop (v1: PZ via pz_workshop.pl).
+# Returns undef for non-workshop games. Tier from max(configured INI items, pending vs disk).
+sub get_workshop_start_scale {
+    my ($script_name, $unix_user, $server_dir) = @_;
+    $script_name //= '';
+    $script_name =~ s/[^a-zA-Z0-9_\-]//g;
+    return undef unless length($script_name);
+    return undef unless get_game_mod_support($script_name) eq 'workshop';
+
+    unless (defined &pz_workshop_split_list) {
+        my $pz_lib;
+        if (defined $module_root && length($module_root) && -f "$module_root/lib/pz_workshop.pl") {
+            $pz_lib = "$module_root/lib/pz_workshop.pl";
+        }
+        else {
+            require File::Basename;
+            my $here = File::Basename::dirname(__FILE__);
+            $pz_lib = "$here/pz_workshop.pl" if -f "$here/pz_workshop.pl";
+        }
+        require $pz_lib if defined $pz_lib && length($pz_lib);
+    }
+    return undef unless defined &pz_workshop_split_list;
+
+    my $n       = 0;
+    my $pending = 0;
+    my ($ok, $ini) = pz_workshop_resolve_ini_path($unix_user // '', $script_name);
+    if ($ok) {
+        my ($vals) = pz_workshop_read_ini($ini);
+        $vals = {} unless ref($vals) eq 'HASH';
+        my @ids = pz_workshop_split_list($vals->{WorkshopItems} // '');
+        $n = scalar @ids;
+        my $appid = get_workshop_appid($script_name);
+        my $disk  = {};
+        if (defined $server_dir && $server_dir =~ m{^/} && $appid > 0) {
+            $disk = pz_workshop_scan_disk($unix_user // '', $server_dir, $appid) // {};
+        }
+        $disk = {} unless ref($disk) eq 'HASH';
+        $pending = scalar grep { !exists $disk->{$_} } @ids;
+    }
+    my $tier_n = $pending > $n ? $pending : $n;
+    my $tier   = workshop_start_scale_tier($tier_n);
+    return {
+        items           => $n,
+        pending         => $pending,
+        ready_secs      => $tier->{ready_secs},
+        stall_secs      => $tier->{stall_secs},
+        stall_fail_secs => $tier->{stall_fail_secs},
+    };
+}
+
 # Returns the query port field name for A2S-capable games.
 # For games that support A2S UDP queries, returns the LGSM config key holding the query port
 # (typically 'queryport'). Returns empty string for non-A2S games (e.g. Minecraft).

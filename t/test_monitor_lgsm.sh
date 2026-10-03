@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# LGSM monitor path: when ./script monitor does not recover, WebCore must call start.
+# LGSM monitor path: when ./script monitor does not recover, WebCore must restart.
 # Also records a monitor_restart job under $HOME/jobs for the UI.
 set -euo pipefail
 
@@ -31,6 +31,9 @@ case "${1:-}" in
     # Simulate LGSM: monitor alone does not recreate a crashed server.
     exit 0
     ;;
+  stop)
+    rm -f "$FLAG"
+    ;;
   start)
     touch "$FLAG"
     ;;
@@ -50,7 +53,8 @@ WEBCORE_MONITOR_WAIT_TRIES=1 WEBCORE_MONITOR_WAIT_DELAY=0 \
 
 [[ -f "$SERVER_DIR/.mock_running" ]] || { echo "mock server not started"; exit 1; }
 grep -q '^status=running$' "$SERVER_DIR/.monitor/state" || { echo "state not running"; exit 1; }
-grep -q "still offline after monitor" "$SERVER_DIR/logs/monitor.log" || { echo "missing start fallback log"; exit 1; }
+grep -q "still offline after monitor — restart attempt" "$SERVER_DIR/logs/monitor.log" \
+    || { echo "missing restart fallback log"; exit 1; }
 grep -q "monitor_restart job recorded" "$SERVER_DIR/logs/monitor.log" || { echo "missing monitor_restart job log"; exit 1; }
 
 jid="$(grep '^last_restart_job=' "$SERVER_DIR/.monitor/state" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '[:space:]')"

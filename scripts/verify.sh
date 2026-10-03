@@ -94,6 +94,8 @@ critical_tests=(
   "t/test_monitor_lgsm.sh"
   "t/test_monitor_query_restart.sh"
   "t/test_lgsm_control.sh"
+  "t/test_lifecycle_meta.pl"
+  "t/test_steamcmd_lifecycle.sh"
   "t/test_schedule_cron.pl"
   "t/test_schedule_restart.sh"
   "t/test_job_log.sh"

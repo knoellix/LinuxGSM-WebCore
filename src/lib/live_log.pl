@@ -213,6 +213,44 @@ sub job_log_json_utf8 {
 }
 
 # Shared scrollable log viewer (job live, poll fallback, jobs list, server monitor).
+# Compact status-dot / pulse CSS for manage/mods/workshop (no full job-log chrome).
+sub job_status_pulse_css {
+    return <<'CSS';
+<style>
+.lgsm-status-dot {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  margin-right: 8px;
+  border-radius: 50%;
+  background: #38c172;
+  vertical-align: middle;
+}
+.lgsm-status-dot-off { background: #e3342f; }
+.lgsm-status-dot-warn { background: #f2d024; }
+.lgsm-job-pulse {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  margin-right: 8px;
+  border-radius: 50%;
+  background: #38c172;
+  vertical-align: middle;
+  box-shadow: 0 0 0 0 rgba(56, 193, 114, 0.7);
+  animation: lgsm-job-pulse 2.2s ease-in-out infinite;
+}
+@keyframes lgsm-job-pulse {
+  0%   { opacity: 1;    transform: scale(1);    box-shadow: 0 0 0 0 rgba(56, 193, 114, 0.7); }
+  50%  { opacity: 0.45; transform: scale(0.7);  box-shadow: 0 0 0 5px rgba(56, 193, 114, 0); }
+  100% { opacity: 1;    transform: scale(1);    box-shadow: 0 0 0 0 rgba(56, 193, 114, 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .lgsm-job-pulse { animation: none; opacity: 0.85; }
+}
+</style>
+CSS
+}
+
 sub job_log_view_page_css {
     return <<'CSS';
 <meta charset="utf-8">
@@ -342,7 +380,7 @@ html.lgsm-job-log-lock body {
   background: #38c172;
   vertical-align: middle;
   box-shadow: 0 0 0 0 rgba(56, 193, 114, 0.7);
-  animation: lgsm-job-pulse 1.2s ease-in-out infinite;
+  animation: lgsm-job-pulse 2.2s ease-in-out infinite;
 }
 @keyframes lgsm-job-pulse {
   0%   { opacity: 1;    transform: scale(1);    box-shadow: 0 0 0 0 rgba(56, 193, 114, 0.7); }
@@ -874,6 +912,15 @@ sub server_monitor_poll_client_js {
     if (!ready) return;
     var el = document.getElementById(O.readyBannerId);
     if (el) el.style.display = "";
+    // Stop Startet… blink as soon as the ready marker is visible in the start log.
+    // Sticky: later poll_runtime/job polls must not re-apply the pulse badge.
+    window.__lgsmStartReadySeen = true;
+    if (d.runtime_html) {
+      var nodes = document.querySelectorAll(".js-runtime-status");
+      for (var i = 0; i < nodes.length; i++) {
+        nodes[i].innerHTML = d.runtime_html;
+      }
+    }
   }
 
   function currentLogFile() {
@@ -955,6 +1002,47 @@ sub server_monitor_poll_client_js {
     pollOnce();
     startPoll();
   }
+})();
+</script>
+JS
+}
+
+
+# Poll .js-runtime-status until JSON {starting:0} (server-rendered badge HTML).
+sub server_runtime_starting_poll_js {
+    my ($poll_url) = @_;
+    $poll_url //= '';
+    return '' if $poll_url eq '';
+    my $cfg = job_log_json_for_script({ pollUrl => $poll_url, pollInterval => 2000 });
+    return <<"JS";
+<script>
+(function () {
+  var C = $cfg;
+  function setRuntimeHtml(html) {
+    if (!html) return;
+    // Start-log already saw the ready marker — keep solid online badge.
+    if (window.__lgsmStartReadySeen && html.indexOf("lgsm-job-pulse") >= 0) return;
+    var nodes = document.querySelectorAll(".js-runtime-status");
+    for (var i = 0; i < nodes.length; i++) {
+      nodes[i].innerHTML = html;
+    }
+  }
+  function once() {
+    if (window.__lgsmStartReadySeen) return;
+    fetch(C.pollUrl, { credentials: "same-origin", cache: "no-store" })
+      .then(function (r) { if (!r.ok) throw new Error("http"); return r.json(); })
+      .then(function (d) {
+        if (window.__lgsmStartReadySeen) return;
+        if (d.runtime_html) setRuntimeHtml(d.runtime_html);
+        if (d.starting) {
+          window.setTimeout(once, C.pollInterval || 2000);
+        }
+      })
+      .catch(function () {
+        window.setTimeout(once, 3000);
+      });
+  }
+  once();
 })();
 </script>
 JS

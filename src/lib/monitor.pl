@@ -199,6 +199,27 @@ sub monitor_is_starting {
     return ($until > 0 && time() < $until) ? 1 : 0;
 }
 
+# UI badge vocabulary: prefer "starting" over online/offline while monitor grace is active.
+sub monitor_runtime_display_status {
+    my ($runtime_status, $mon_state) = @_;
+    return 'starting' if monitor_is_starting($mon_state);
+    return defined $runtime_status && $runtime_status ne '' ? $runtime_status : 'unknown';
+}
+
+# Heal stuck blink: process is online, monitor still "starting", but no start/restart
+# job is in flight (worker finished; monitor_mark_ready may have failed silently).
+# $job_in_flight: 1 when a start/restart job is still running for this instance.
+sub monitor_heal_starting_if_ready {
+    my ($server_dir, $config_dir, $id, $runtime_status, %opts) = @_;
+    return 0 if $opts{'job_in_flight'};
+    return 0 unless defined $server_dir && $server_dir ne '';
+    my $rs = $runtime_status // '';
+    return 0 unless $rs eq 'online' || $rs eq 'running';
+    my $s = read_monitor_state($server_dir, $config_dir, $id);
+    return 0 unless monitor_is_starting($s);
+    return set_monitor_ready_after_start($server_dir, $config_dir, $id) ? 1 : 0;
+}
+
 sub set_monitor_disabled {
     my ($server_dir, $config_dir, $id) = @_;
     my $s = read_monitor_state($server_dir, $config_dir, $id);

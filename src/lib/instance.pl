@@ -652,11 +652,20 @@ sub _detect_status_lgsm_cmd {
 }
 
 # Parse LGSM status/details output. Returns online, offline, or unknown.
+# Prefer an explicit "Status:" line — verbose details can mention STARTED/RUNNING
+# elsewhere (logs, paths) and the old unanchored match false-positived online.
 sub _parse_lgsm_details_status {
     my ($out) = @_;
     return 'unknown' unless defined $out && length $out;
-    return 'online' if $out =~ /(?:STARTED|ONLINE|RUNNING)/i;
-    return 'offline' if $out =~ /(?:STOPPED|OFFLINE|NOT\s+STARTED)/i;
+    if ($out =~ /(?:^|\n)\s*Status:\s*([^\r\n]+)/i) {
+        my $st = lc($1);
+        $st =~ s/^\s+|\s+$//g;
+        return 'online'  if $st =~ /^(?:started|online|running)\b/;
+        return 'offline' if $st =~ /^(?:stopped|offline)\b/;
+        return 'offline' if $st =~ /\bnot\s+started\b/;
+    }
+    return 'online'  if $out =~ /\b(?:STARTED|ONLINE)\b/;
+    return 'offline' if $out =~ /\b(?:STOPPED|OFFLINE|NOT\s+STARTED)\b/i;
     return 'offline' if $out =~ /\bnot\s+running\b/i;
     return 'unknown';
 }

@@ -98,7 +98,7 @@ subtest 'upgrade blocks render from cache, not from a page-load fetch' => sub {
 
 subtest 'manage.cgi job_log_card bypasses LGSM action dispatch' => sub {
     my $text = $page{'manage'};
-    like($text, qr{!\~\s*/\^\(\?:poll_job\|poll_monitor\|monitor\|job_log_card\)\$},
+    like($text, qr{!\~\s*/\^\(\?:poll_job\|poll_monitor\|poll_runtime\|monitor\|job_log_card\)\$},
         'job_log_card is exempt from the catch-all action block');
     like($text, qr/job_log_card_json_emit/,
         'job_log_card returns JSON for fetch');

@@ -142,30 +142,17 @@ _rc=0
     echo "=== Scheduled restart $(date '+%Y-%m-%d %T') ==="
     echo "instance=$INSTANCE_ID kind=$KIND"
     if [[ "$KIND" == "lgsm" ]]; then
-        echo "--- stop ---"
-        lgsm_stop_reliable "$SERVER_DIR" "$SCRIPT_NAME" || _rc=1
-        sleep 3
-        echo "--- start ---"
         mc_java_env_apply "$SERVER_DIR"
-        lgsm_start_reliable "$SERVER_DIR" "$SCRIPT_NAME" || _rc=1
+        lgsm_restart_reliable "$SERVER_DIR" "$SCRIPT_NAME" || _rc=1
     else
-        STOP_DIR="$JOB_HOME/.phase_stop"
-        START_DIR="$JOB_HOME/.phase_start"
-        mkdir -p "$STOP_DIR" "$START_DIR"
-        echo "--- stop ---"
-        if ! bash "$MODULE_ROOT/scripts/steamcmd_control_user.sh" stop \
-            "$STOP_DIR" "$(id -un)" "$SERVER_DIR"; then
+        RESTART_DIR="$JOB_HOME/.phase_restart"
+        mkdir -p "$RESTART_DIR"
+        if ! bash "$MODULE_ROOT/scripts/steamcmd_control_user.sh" restart \
+            "$RESTART_DIR" "$(id -un)" "$SERVER_DIR"; then
             _rc=1
         fi
-        sleep 3
-        echo "--- start ---"
-        if ! bash "$MODULE_ROOT/scripts/steamcmd_control_user.sh" start \
-            "$START_DIR" "$(id -un)" "$SERVER_DIR"; then
-            _rc=1
-        fi
-        [[ -f "$STOP_DIR/output" ]] && cat "$STOP_DIR/output"
-        [[ -f "$START_DIR/output" ]] && cat "$START_DIR/output"
-        rm -rf "$STOP_DIR" "$START_DIR"
+        [[ -f "$RESTART_DIR/output" ]] && cat "$RESTART_DIR/output"
+        rm -rf "$RESTART_DIR"
     fi
 } >>"$JOB_HOME/output" 2>&1 || _rc=1
 

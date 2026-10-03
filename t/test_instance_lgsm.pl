@@ -4,7 +4,7 @@
 # or the non-LGSM (steamcmd/wine) watchdog path.
 use strict;
 use warnings;
-use Test::More tests => 20;
+use Test::More tests => 23;
 use FindBin qw($Bin);
 
 require "$Bin/stubs.pl";
@@ -34,6 +34,15 @@ is(_parse_lgsm_details_status("Status: Online\n"), 'online', 'details Online => 
 is(_parse_lgsm_details_status("Status: Stopped\n"), 'offline', 'details Stopped => offline');
 is(_parse_lgsm_details_status(""), 'unknown', 'empty details => unknown');
 is(_parse_lgsm_details_status("server is STARTED\n"), 'online', 'case-insensitive STARTED');
+# Status: STOPPED must win even if console excerpt mentions SERVER STARTED
+is(_parse_lgsm_details_status(
+    "Status: STOPPED\nLOG: *** SERVER STARTED ****\n"),
+    'offline', 'Status STOPPED beats console STARTED excerpt');
+# Unanchored RUNNING must not force online when Status says stopped
+is(_parse_lgsm_details_status(
+    "Status: STOPPED\nGame binary: ProjectZomboid64 RUNNING mode\n"),
+    'offline', 'Status STOPPED beats stray RUNNING token');
+is(_parse_lgsm_details_status("Status: STARTED\n"), 'online', 'Status STARTED => online');
 is_deeply([_lgsm_tmux_session_names('pwserver')], ['pwserver', 'pw'], 'tmux names include shortname');
 
 {

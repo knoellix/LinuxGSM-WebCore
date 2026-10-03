@@ -42,6 +42,7 @@ require './lib/pz_workshop.pl';
 require './lib/instance_profile.pl';
 require './lib/live_log.pl';
 require './lib/server_log.pl';
+require './lib/server_control_bar.pl';
 
 our ($module_config_directory, $module_config_file);
 &module_config_sync_in();
@@ -452,19 +453,18 @@ sub _collect_instance_ports {
 
 sub _runtime_status_badge_html {
     my ($status) = @_;
-    # Vocabulary union: 'online'/'offline' from _detect_status* (instance.pl),
-    # plus legacy 'running'/'stopped' callers, plus provisioning states.
-    my %map = (
-        online     => '&#x1F7E2; L&auml;uft',
-        running    => '&#x1F7E2; L&auml;uft',
-        offline    => '&#x1F534; Nicht gestartet',
-        stopped    => '&#x1F534; Nicht gestartet',
-        fresh      => '&#x1F7E1; Bereitstellung offen',
-        lgsm_ready => '&#x1F7E1; Installation offen',
-        mc_ready   => '&#x1F7E1; Minecraft vorbereitet',
-        unknown    => '&#x1F7E1; Unbekannt',
-    );
-    return $map{$status} || ('&#x1F7E1; ' . &html_escape($status));
+    # Shared CSS dots: solid green when ready, pulse while starting.
+    return &server_runtime_status_badge_html($status);
+}
+
+# Prefer "starting" while monitor grace is active or a start/restart job is in flight.
+sub _manage_badge_runtime_status {
+    my ($runtime_status, $mon_state, %opts) = @_;
+    my $job_action = $opts{'job_action'} // '';
+    $job_action =~ s/[^a-z_]//g;
+    return 'starting' if $job_action =~ /^(?:start|restart)$/;
+    return 'starting' if $opts{'force_starting'};
+    return &monitor_runtime_display_status($runtime_status, $mon_state);
 }
 
 sub _manage_action_failed {
@@ -559,9 +559,10 @@ sub _manage_render_status_badges {
         );
         $profile_html = &html_escape(join(' / ', @prof)) if @prof;
     }
+    my $badge = '<span class="js-runtime-status">'
+        . _runtime_status_badge_html($runtime_status) . '</span>';
     print &ui_instance_status_line(
-        &ui_instance_status_part($text{'manage_status'} || 'Status',
-            _runtime_status_badge_html($runtime_status)),
+        &ui_instance_status_part($text{'manage_status'} || 'Status', $badge),
         &ui_instance_status_part($text{'monitor_col'} || 'Monitor',
             &html_escape($text{$mon_key} || '')),
         &ui_instance_status_part($text{'mc_profile_loader'} || 'Loader', $profile_html),
@@ -570,6 +571,17 @@ sub _manage_render_status_badges {
                 ? ($text{'manage_fw_ports_open'} || 'offen')
                 : ($text{'manage_fw_ports_closed'} || 'geschlossen'))),
     );
+}
+
+# Keep blinking status until monitor grace ends / process is ready.
+sub _manage_render_starting_status_poll {
+    my ($instance_id) = @_;
+    $instance_id =~ s/[^a-zA-Z0-9_-]//g;
+    return if $instance_id eq '';
+    my $url = _manage_poll_job_module_path(
+        "manage.cgi?instance_id=" . &html_escape($instance_id)
+            . "&action=poll_runtime&xnavigation=1");
+    print &server_runtime_starting_poll_js($url);
 }
 
 # One-line update hint from cached version lists, linking to the upgrades section.
@@ -1070,11 +1082,16 @@ sub _manage_render_silent_job_poll {
         "manage.cgi?instance_id=" . &html_escape($instance_id) . "&xnavigation=1"
         . _manage_mc_search_url_suffix(),
     );
+    my $runtime_poll = _manage_poll_job_module_path(
+        "manage.cgi?instance_id=" . &html_escape($instance_id)
+            . "&action=poll_runtime&xnavigation=1");
     my $poll_cfg = job_log_json_for_script({
-        pollUrl       => $poll_path,
-        runningMsg    => $text{'manage_action_running'} || 'Aktion läuft…',
-        pollInterval  => 500,
-        pollErrorMsg  => $text{'manage_action_poll_error'} || 'Statusabfrage fehlgeschlagen — Seite neu laden.',
+        pollUrl        => $poll_path,
+        runtimePollUrl => $runtime_poll,
+        runningMsg     => $text{'manage_action_running'} || 'Aktion läuft…',
+        pollInterval   => 500,
+        pollErrorMsg   => $text{'manage_action_poll_error'} || 'Statusabfrage fehlgeschlagen — Seite neu laden.',
+        startBlink     => ($notice_action =~ /^(?:start|restart)$/ ? 1 : 0),
     });
 
     print "<div id=\"silent_job_banner\" class=\"alert alert-info\">"
@@ -1085,9 +1102,39 @@ sub _manage_render_silent_job_poll {
 (function () {
   var C = $poll_cfg;
   var banner = document.getElementById("silent_job_banner");
-  var statusEl = document.getElementById("manage_runtime_status");
   var timer = null;
   var failCount = 0;
+  var runtimeTimer = null;
+  function setRuntimeHtml(html) {
+    if (!html) return;
+    if (window.__lgsmStartReadySeen && html.indexOf("lgsm-job-pulse") >= 0) return;
+    var nodes = document.querySelectorAll(".js-runtime-status");
+    for (var i = 0; i < nodes.length; i++) {
+      nodes[i].innerHTML = html;
+    }
+  }
+  function pollRuntimeUntilReady() {
+    if (!C.runtimePollUrl) return;
+    if (runtimeTimer) return;
+    function once() {
+      if (window.__lgsmStartReadySeen) { runtimeTimer = null; return; }
+      fetch(C.runtimePollUrl, { credentials: "same-origin", cache: "no-store" })
+        .then(function (r) { if (!r.ok) throw new Error("http"); return r.json(); })
+        .then(function (d) {
+          if (window.__lgsmStartReadySeen) { runtimeTimer = null; return; }
+          if (d.runtime_html) setRuntimeHtml(d.runtime_html);
+          if (d.starting) {
+            runtimeTimer = window.setTimeout(once, 2000);
+          } else {
+            runtimeTimer = null;
+          }
+        })
+        .catch(function () {
+          runtimeTimer = window.setTimeout(once, 3000);
+        });
+    }
+    once();
+  }
   function finish(d) {
     if (timer) {
       clearInterval(timer);
@@ -1107,8 +1154,9 @@ sub _manage_render_silent_job_poll {
         banner.innerHTML = "<strong>" + (d.notice_msg || "") + "</strong>";
       }
     }
-    if (statusEl && d.runtime_html) {
-      statusEl.innerHTML = d.runtime_html;
+    if (d.runtime_html) setRuntimeHtml(d.runtime_html);
+    if (d.starting || (C.startBlink && d.status === "ok" && d.runtime_status === "starting")) {
+      pollRuntimeUntilReady();
     }
     window.setTimeout(function () {
       if (banner) banner.style.display = "none";
@@ -1127,6 +1175,7 @@ sub _manage_render_silent_job_poll {
             banner.className = "alert alert-info";
             banner.innerHTML = "<strong>" + C.runningMsg + "</strong>";
           }
+          if (d.runtime_html) setRuntimeHtml(d.runtime_html);
           return;
         }
         finish(d);
@@ -1206,7 +1255,12 @@ sub _manage_poll_job_json {
             $notice_action = $meta->{'action'} // '';
             $notice_action =~ s/[^a-z_]//g;
         }
-        if ($status ne 'running') {
+        if ($status eq 'running' && $notice_action =~ /^(?:start|restart)$/) {
+            $payload{'runtime_status'} = 'starting';
+            $payload{'runtime_html'}   = _runtime_status_badge_html('starting');
+            $payload{'starting'}       = 1;
+        }
+        elsif ($status ne 'running') {
             $payload{'notice_msg'} = _manage_action_result_text($notice_action, $status);
             if (my $inst = $opts{'inst'}) {
                 my $retries = 0;
@@ -1221,8 +1275,25 @@ sub _manage_poll_job_json {
                 my $rs = _manage_runtime_status(
                     $inst, $opts{'effective_source'} // '',
                     retries => $retries, light => 1);
+                (my $script_dir = $inst->{'script'} // '') =~ s|/[^/]+$||;
+                my $iid = $inst->{'id'} // '';
+                $iid =~ s/[^a-zA-Z0-9_-]//g;
+                my $mon = ($script_dir ne '' && $iid ne '')
+                    ? &read_monitor_state($script_dir, $config_directory, $iid)
+                    : {};
+                if ($status eq 'ok' && $notice_action =~ /^(?:start|restart)$/) {
+                    &monitor_heal_starting_if_ready(
+                        $script_dir, $config_directory, $iid, $rs,
+                        job_in_flight => 0)
+                        if $script_dir ne '' && $iid ne '';
+                    $mon = ($script_dir ne '' && $iid ne '')
+                        ? &read_monitor_state($script_dir, $config_directory, $iid)
+                        : {};
+                    $rs = _manage_badge_runtime_status($rs, $mon);
+                }
                 $payload{'runtime_status'} = $rs;
-                $payload{'runtime_html'} = _runtime_status_badge_html($rs);
+                $payload{'runtime_html'}   = _runtime_status_badge_html($rs);
+                $payload{'starting'}       = ($rs eq 'starting') ? 1 : 0;
             }
         }
     }
@@ -1535,7 +1606,7 @@ if (($in{'action'} // '') eq 'job_log_card') {
     &_manage_job_log_card_partial($instance_id, $job_id);
 }
 
-if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|monitor|job_log_card)$/) {
+if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|poll_runtime|monitor|job_log_card)$/) {
     my $action = &sanitize_input($in{'action'});
     &log_debug("action=$action instance=$instance_id");
     if (&user_is_readonly($instance_id)) {
@@ -2277,8 +2348,27 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|monitor|job_log
         $job_id or &error($text{'err_invalid_input'});
         my $jmeta = &get_job_meta($job_id);
         my $juser = $jmeta->{'unix_user'} // $unix_user;
+        my $jact = $jmeta->{'action'} // '';
+        $jact =~ s/[^a-z_]//g;
         &append_job_log_line($job_id, '=== Job aborted by user (Webmin) ===', $juser);
         &abort_job($job_id);
+        # Aborting start/restart must not leave the status badge blinking for the
+        # remainder of monitor starting_until (worker never reached mark_ready).
+        if ($jact =~ /^(?:start|restart)$/) {
+            (my $script_dir = $inst->{'script'} // '') =~ s|/[^/]+$||;
+            if ($script_dir ne '') {
+                my $rs = _manage_runtime_status($inst, $effective_source, light => 1);
+                if ($rs eq 'online' || $rs eq 'running') {
+                    &set_monitor_ready_after_start($script_dir, $config_directory, $instance_id);
+                }
+                else {
+                    my $ms = &read_monitor_state($script_dir, $config_directory, $instance_id);
+                    if (($ms->{status} // '') eq 'starting') {
+                        &set_monitor_running($script_dir, $config_directory, $instance_id);
+                    }
+                }
+            }
+        }
         &log_action('job_aborted', $job_id, {instance_id => $instance_id});
         &module_config_flash_mark("jobabort_$job_id")
             or &error($text{'manage_job_launch_failed'} || 'Job abort failed.');
@@ -2680,9 +2770,42 @@ if (($in{'action'} // '') eq 'poll_monitor') {
         minecraft   => $is_mc,
         log_file    => $in{'log_file'},
     );
+    # Ready marker in the start-log tail: clear monitor "starting" so the badge
+    # stops blinking even if the start job is still finishing / hung on a stale offset.
+    if (($payload->{started} // 0) && $script_dir ne '') {
+        &set_monitor_ready_after_start($script_dir, $config_directory, $instance_id);
+    }
     $main::headerprinted = 1;
     print "Content-type: application/json; charset=utf-8\n\n";
     print job_log_json_utf8($payload);
+    exit;
+}
+
+# GET: poll_runtime — status badge HTML while start grace is active.
+if (($in{'action'} // '') eq 'poll_runtime') {
+    (my $script_dir = $inst->{'script'} // '') =~ s|/[^/]+$||;
+    my $source = _effective_instance_source($inst);
+    my $rs = _manage_runtime_status($inst, $source, light => 1);
+    my $mon = &read_monitor_state($script_dir, $config_directory, $instance_id);
+    my $job_inflight = 0;
+    if (defined &find_running_job_for_instance) {
+        $job_inflight = &find_running_job_for_instance($instance_id, 'start')
+            || &find_running_job_for_instance($instance_id, 'restart') ? 1 : 0;
+    }
+    if (&monitor_heal_starting_if_ready(
+            $script_dir, $config_directory, $instance_id, $rs,
+            job_in_flight => $job_inflight))
+    {
+        $mon = &read_monitor_state($script_dir, $config_directory, $instance_id);
+    }
+    $rs = _manage_badge_runtime_status($rs, $mon);
+    $main::headerprinted = 1;
+    print "Content-type: application/json; charset=utf-8\n\n";
+    print job_log_json_utf8({
+        runtime_status => $rs,
+        runtime_html   => _runtime_status_badge_html($rs),
+        starting       => ($rs eq 'starting') ? 1 : 0,
+    });
     exit;
 }
 
@@ -2948,6 +3071,7 @@ my $silent_job_id = $in{'silent_job'} // '';
 $silent_job_id =~ s/[^0-9a-f]//g;
 $silent_job_id = substr($silent_job_id, 0, 16);
 my $silent_polling = ($silent_job_id ne '');
+my $silent_notice_action = '';
 unless ($silent_polling) {
     unless (&user_is_readonly($instance_id)) {
         &_manage_render_active_job_notice($instance_id);
@@ -2956,6 +3080,12 @@ unless ($silent_polling) {
     my %silent_opts;
     my $na = $in{'notice_action'} // '';
     $na =~ s/[^a-z_]//g;
+    unless ($na) {
+        my $meta = &get_job_meta($silent_job_id);
+        $na = $meta->{'action'} // '';
+        $na =~ s/[^a-z_]//g;
+    }
+    $silent_notice_action = $na;
     $silent_opts{'notice_action'} = $na if $na ne '';
     my $ns = $in{'next_status'} // '';
     $ns =~ s/[^a-z_]//g;
@@ -2994,6 +3124,14 @@ if (&server_log_start_log_should_show(\%in, $instance_id)) {
 my %cfg = &_parse_lgsm_config($script_dir_for_cfg, $script_name_for_cfg);
 my $source_for_status = $effective_source;
 my $runtime_status = _manage_runtime_status($inst, $source_for_status, light => 1);
+# Do not force "starting" just because the start-log embed is open — that kept
+# the badge blinking after *** SERVER STARTED **** while the job was still waiting.
+# Blink comes from monitor starting grace and/or an in-flight start/restart job.
+$runtime_status = _manage_badge_runtime_status(
+    $runtime_status, $mon_state,
+    job_action => (($silent_polling && $silent_notice_action =~ /^(?:start|restart)$/)
+        ? $silent_notice_action : ''),
+);
 
 my $server_dir_info = $script_dir_for_cfg;
 my $mc_info = $server_dir_info ? &read_mc_profile($server_dir_info) : undef;
@@ -3017,6 +3155,7 @@ my $has_misplaced = scalar grep { $gkeys_chk{$_} } keys %$common_chk;
 my ($upgrade_ld_cand, $upgrade_mc_cand, $upgrade_lists_loaded) =
     _manage_upgrade_candidates($mc_info);
 
+print &job_status_pulse_css();
 _manage_render_status_badges($mc_info, $runtime_status, $mon_state, $all_open);
 _manage_render_upgrade_hint($mc_info, $upgrade_ld_cand, $upgrade_mc_cand);
 
@@ -3062,7 +3201,8 @@ if (@$info_ports == 1) {
     }
 }
 print &ui_table_row($text{'manage_status'},
-    "<span id=\"manage_runtime_status\">" . _runtime_status_badge_html($runtime_status) . "</span>");
+    "<span id=\"manage_runtime_status\" class=\"js-runtime-status\">"
+    . _runtime_status_badge_html($runtime_status) . "</span>");
 my $mon_status_key = 'monitor_status_' . ($mon_state->{'status'} // 'running');
 my $mon_label = $text{$mon_status_key} || $mon_state->{'status'};
 print &ui_table_row($text{'monitor_col'}, &html_escape($mon_label));
@@ -3071,6 +3211,11 @@ if (($mon_state->{'last_restart_at'} // 0) > 0) {
         $mon_state->{'last_restart_at'}, 'monitor_last_restart',
         $mon_state->{'last_restart_job'}, $instance_id);
     print &ui_table_row($text{'monitor_last_restart_col'}, $lr_html);
+}
+
+if ($runtime_status eq 'starting'
+    && !($silent_polling && $silent_notice_action =~ /^(?:start|restart)$/)) {
+    &_manage_render_starting_status_poll($instance_id);
 }
 
 if ($runtime_status eq 'online' || $runtime_status eq 'running') {

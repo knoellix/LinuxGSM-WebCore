@@ -184,6 +184,22 @@ like(server_log_filemin_path_urlencode('/foo bar'), qr/%20/,
     ok($payload_ready->{ok}, 'poll payload ok');
     is($payload_ready->{started}, 1, 'poll started=1 when Done in log');
     is($payload_ready->{status}, 'online', 'poll status online when Done in log');
+    # Without server_control_bar loaded, runtime_html is omitted (CGI loads it).
+    # Stub the helper and re-poll to assert blink-stop fields.
+    no warnings 'redefine';
+    *main::server_runtime_status_badge_html = sub {
+        my ($st) = @_;
+        return "BADGE:$st";
+    };
+    my $payload_badge = server_log_monitor_poll_payload(
+        server_dir  => $root,
+        script_name => 'mcserver',
+        source      => 'lgsm',
+        minecraft   => 1,
+    );
+    is($payload_badge->{runtime_status}, 'online', 'poll runtime_status online when ready');
+    is($payload_badge->{runtime_html}, 'BADGE:online', 'poll runtime_html for blink stop');
+    is($payload_badge->{starting}, 0, 'poll starting=0 when ready marker seen');
 }
 
 done_testing();
