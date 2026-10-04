@@ -72,4 +72,15 @@ if (defined $module_root && defined $config_directory) {
     };
 }
 
+# Rebuild auto-update check cron (per-instance interval lines as game user).
+if (defined $module_root && defined $config_directory) {
+    eval {
+        require "$module_root/lib/auto_update.pl";
+        if (defined &rebuild_auto_update_cron) {
+            &rebuild_auto_update_cron($module_root, $config_directory);
+        }
+        1;
+    };
+}
+
 1;

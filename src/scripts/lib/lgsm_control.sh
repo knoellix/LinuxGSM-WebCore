@@ -63,6 +63,60 @@ lgsm_run_timeout() {
     "$@"
 }
 
+# True when LGSM's local GameDig install looks complete (check_gamedig.sh marker).
+lgsm_gamedig_present() {
+    local server_dir="$1"
+    local d="$server_dir/lgsm"
+    [[ -f "$d/node_modules/gamedig/bin/gamedig.js" ]] \
+        || [[ -f "$d/node_modules/gamedig/bin/gamedig.mjs" ]] \
+        || [[ -x "$d/node_modules/.bin/gamedig" ]]
+}
+
+# Install GameDig under $server_dir/lgsm before start. LGSM's check_gamedig runs
+# `npm install` (or `npm update`) inside `./script start`; a short CLI timeout
+# kills that mid-flight (ENOENT rename / no tmux session → start failed).
+# Safe no-op when already present, lgsm/ missing, or node/npm unavailable.
+lgsm_ensure_gamedig() {
+    local server_dir="$1"
+    local secs="${WEBCORE_LGSM_GAMEDIG_INSTALL_SECS:-300}"
+    local lgsm_dir="$server_dir/lgsm"
+    local pkg_url="${WEBCORE_LGSM_PACKAGE_JSON_URL:-https://raw.githubusercontent.com/GameServerManagers/LinuxGSM/master/package.json}"
+    local rc=0
+    [[ -d "$lgsm_dir" ]] || return 0
+    if lgsm_gamedig_present "$server_dir"; then
+        return 0
+    fi
+    if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
+        echo "WARNING: Gamedig missing and node/npm unavailable — LGSM start may stall on install"
+        return 0
+    fi
+    [[ "$secs" =~ ^[0-9]+$ ]] || secs=300
+    echo "Ensuring Gamedig under lgsm/ (≤${secs}s) — avoids start timeout during npm install"
+    if [[ -d "$lgsm_dir/node_modules" ]]; then
+        echo "Removing incomplete lgsm/node_modules from prior failed install"
+        rm -rf "$lgsm_dir/node_modules"
+    fi
+    lgsm_run_timeout "$secs" bash -c '
+        set -e
+        cd "$1"
+        if command -v curl >/dev/null 2>&1; then
+            curl -fsSL -o package.json "$2"
+        elif command -v wget >/dev/null 2>&1; then
+            wget -q -O package.json "$2"
+        else
+            echo "ERROR: need curl or wget for LGSM package.json" >&2
+            exit 1
+        fi
+        npm install --no-audit --no-fund
+    ' bash "$lgsm_dir" "$pkg_url" || rc=$?
+    if [[ "$rc" -ne 0 ]] || ! lgsm_gamedig_present "$server_dir"; then
+        echo "WARNING: Gamedig preflight failed (rc=${rc}) — LGSM start may retry install" >&2
+        return 0
+    fi
+    echo "Gamedig ready"
+    return 0
+}
+
 # True when this instance is Minecraft (profile or LGSM cfg).
 lgsm_is_minecraft_instance() {
     local server_dir="$1" script_name="${2:-}"
@@ -779,6 +833,7 @@ lgsm_start_minecraft() {
     fi
 
     echo "Minecraft start: LGSM CLI (timeout ${cli_secs}s), then wait session≤${spawn_secs}s, Done≤${ready_secs}s"
+    lgsm_ensure_gamedig "$server_dir" || true
     local rc=0
     lgsm_run_timeout "$cli_secs" bash -c "cd \"\$1\" && \"./\$2\" start" bash "$server_dir" "$script_name" || rc=$?
     if [[ "$rc" -ne 0 ]]; then
@@ -811,9 +866,11 @@ lgsm_start_minecraft() {
 }
 
 # Public start: MC uses spawn+Done wait; PZ session + SERVER STARTED; others session only.
+# CLI timeout default 180s (was 90): LGSM may still run a short npm update even when
+# Gamedig is present; override with WEBCORE_LGSM_START_CLI_SECS.
 lgsm_start_reliable() {
     local server_dir="$1" script_name="$2"
-    local wait_secs="${3:-90}"
+    local wait_secs="${3:-${WEBCORE_LGSM_START_CLI_SECS:-180}}"
     script_name="${script_name//[^a-zA-Z0-9_-]/}"
     local is_pz=0
     local pz_log="" pz_offset=0
@@ -870,6 +927,10 @@ lgsm_start_reliable() {
         return 0
     fi
 
+    # Pre-install GameDig so `./script start` is not killed mid-npm by CLI timeout.
+    lgsm_ensure_gamedig "$server_dir" || true
+
+    [[ "$wait_secs" =~ ^[0-9]+$ ]] || wait_secs=180
     echo "Start path: LGSM CLI (timeout ${wait_secs}s)"
     local rc=0
     lgsm_run_timeout "$wait_secs" bash -c "cd \"\$1\" && \"./\$2\" start" bash "$server_dir" "$script_name" || rc=$?

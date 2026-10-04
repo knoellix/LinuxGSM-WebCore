@@ -450,6 +450,16 @@ sub server_log_start_log_enabled {
     return &module_config_bool($config{'manage_show_start_log'});
 }
 
+# True when Integrations default is on, or the per-click Dev-Start checkbox (dev_start=1).
+sub server_log_start_log_wanted {
+    my ($in_href) = @_;
+    $in_href = \%main::in unless ref($in_href) eq 'HASH';
+    return 1 if server_log_start_log_enabled();
+    my $dev = $in_href->{'dev_start'} // '';
+    return 1 if $dev eq '1' || lc($dev) eq 'yes' || lc($dev) eq 'on';
+    return 0;
+}
+
 sub server_log_start_log_flash_name {
     my ($instance_id) = @_;
     $instance_id //= '';

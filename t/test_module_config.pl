@@ -119,4 +119,22 @@ ok(!module_config_flash_consume_ok(), 'module_config_flash_consume_ok: second co
     is($config{modrinth_contact}, 'test@example.com', 'job secrets overlay modrinth');
 }
 
+{
+    my $srv = tempdir(CLEANUP => 1);
+    require File::Path;
+    File::Path::make_path("$srv/.monitor") or die $!;
+    open(my $fh, '>', "$srv/.monitor/auto_update_secrets") or die $!;
+    print $fh "steam_web_api_key=au-secret-key\n";
+    close($fh);
+    chmod 0600, "$srv/.monitor/auto_update_secrets";
+
+    %config = (steam_web_api_key => '');
+    ok(module_config_apply_auto_update_secrets($srv),
+        'apply auto_update secrets');
+    is($config{steam_web_api_key}, 'au-secret-key',
+        'auto_update secrets overlay steam_web_api_key');
+    ok(!module_config_apply_auto_update_secrets("$srv/missing"),
+        'apply auto_update secrets: missing file => 0');
+}
+
 done_testing();

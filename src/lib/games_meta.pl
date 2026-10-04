@@ -572,6 +572,18 @@ sub get_workshop_start_scale {
     };
 }
 
+# Return shallow copy of player_query meta for the given script, or undef.
+# Empty or missing player_query blocks return undef.
+sub get_game_player_query {
+    my ($script_name) = @_;
+    my %meta = load_games_meta();
+    my $key  = _resolve_meta_key($script_name);
+    my $entry = $meta{$key} or return;
+    my $pq = $entry->{'player_query'};
+    return unless ref($pq) eq 'HASH' && keys %$pq;
+    return { %$pq };
+}
+
 # Returns the query port field name for A2S-capable games.
 # For games that support A2S UDP queries, returns the LGSM config key holding the query port
 # (typically 'queryport'). Returns empty string for non-A2S games (e.g. Minecraft).

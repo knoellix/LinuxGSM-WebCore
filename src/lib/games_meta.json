@@ -20,17 +20,31 @@
       {"id": "stopped", "label_de": "Gestoppt", "label_en": "Stopped", "match": "All dimensions are saved|Server stopped|Stopping the server"}
     ],
     "variants": ["mcserver", "mc-paper", "mc-forge", "mc-neoforge", "mc-fabric"],
+    "game_config_path": "serverfiles/server.properties",
     "game_config_format": "properties",
     "game_config_fields": [
-      {"key": "server-port",  "type": "port", "label_de": "Port",          "label_en": "Port"},
-      {"key": "max-players",  "type": "int",  "label_de": "Max. Spieler",  "label_en": "Max players"},
-      {"key": "motd",         "type": "text", "label_de": "Servermotto",   "label_en": "MOTD"},
-      {"key": "difficulty",   "type": "text", "label_de": "Schwierigkeit", "label_en": "Difficulty"},
-      {"key": "gamemode",     "type": "text", "label_de": "Spielmodus",    "label_en": "Game mode"},
-      {"key": "level-name",   "type": "text", "label_de": "Weltname",      "label_en": "World name"},
-      {"key": "online-mode",  "type": "text", "label_de": "Online-Modus",  "label_en": "Online mode"},
-      {"key": "pvp",          "type": "text", "label_de": "PvP",           "label_en": "PvP"}
+      {"key": "server-port",    "type": "port",     "label_de": "Port",          "label_en": "Port"},
+      {"key": "max-players",    "type": "int",      "label_de": "Max. Spieler",  "label_en": "Max players"},
+      {"key": "motd",           "type": "text",     "label_de": "Servermotto",   "label_en": "MOTD"},
+      {"key": "difficulty",     "type": "text",     "label_de": "Schwierigkeit", "label_en": "Difficulty"},
+      {"key": "gamemode",       "type": "text",     "label_de": "Spielmodus",    "label_en": "Game mode"},
+      {"key": "level-name",     "type": "text",     "label_de": "Weltname",      "label_en": "World name"},
+      {"key": "online-mode",    "type": "text",     "label_de": "Online-Modus",  "label_en": "Online mode"},
+      {"key": "pvp",            "type": "text",     "label_de": "PvP",           "label_en": "PvP"},
+      {"key": "enable-rcon",    "type": "bool",     "label_de": "RCON aktiv",    "label_en": "RCON enabled"},
+      {"key": "rcon.port",      "type": "port",     "label_de": "RCON-Port",     "label_en": "RCON port"},
+      {"key": "rcon.password",  "type": "password", "label_de": "RCON-Passwort", "label_en": "RCON password"}
     ],
+    "player_query": {
+      "kind": "rcon",
+      "source": "game_config",
+      "enabled_key": "enable-rcon",
+      "port_key": "rcon.port",
+      "password_key": "rcon.password",
+      "max_players_key": "max-players",
+      "command": "list",
+      "parse": "mc_list"
+    },
     "fields": [
       {"key": "port",       "type": "port",   "label_de": "Port",         "label_en": "Port",          "default": "25565"},
       {"key": "gamename",   "type": "text",   "label_de": "Spielname",    "label_en": "Game name",     "default": "Minecraft"},
@@ -41,6 +55,31 @@
   "mc-paper": {
     "name": "Minecraft (Paper)",
     "steam_required": false,
+    "game_config_path": "serverfiles/server.properties",
+    "game_config_format": "properties",
+    "game_config_fields": [
+      {"key": "server-port",    "type": "port",     "label_de": "Port",          "label_en": "Port"},
+      {"key": "max-players",    "type": "int",      "label_de": "Max. Spieler",  "label_en": "Max players"},
+      {"key": "motd",           "type": "text",     "label_de": "Servermotto",   "label_en": "MOTD"},
+      {"key": "difficulty",     "type": "text",     "label_de": "Schwierigkeit", "label_en": "Difficulty"},
+      {"key": "gamemode",       "type": "text",     "label_de": "Spielmodus",    "label_en": "Game mode"},
+      {"key": "level-name",     "type": "text",     "label_de": "Weltname",      "label_en": "World name"},
+      {"key": "online-mode",    "type": "text",     "label_de": "Online-Modus",  "label_en": "Online mode"},
+      {"key": "pvp",            "type": "text",     "label_de": "PvP",           "label_en": "PvP"},
+      {"key": "enable-rcon",    "type": "bool",     "label_de": "RCON aktiv",    "label_en": "RCON enabled"},
+      {"key": "rcon.port",      "type": "port",     "label_de": "RCON-Port",     "label_en": "RCON port"},
+      {"key": "rcon.password",  "type": "password", "label_de": "RCON-Passwort", "label_en": "RCON password"}
+    ],
+    "player_query": {
+      "kind": "rcon",
+      "source": "game_config",
+      "enabled_key": "enable-rcon",
+      "port_key": "rcon.port",
+      "password_key": "rcon.password",
+      "max_players_key": "max-players",
+      "command": "list",
+      "parse": "mc_list"
+    },
     "fields": [
       {"key": "port",       "type": "port",   "label_de": "Port",         "label_en": "Port",          "default": "25565"},
       {"key": "gamename",   "type": "text",   "label_de": "Spielname",    "label_en": "Game name",     "default": "PaperMC"},
@@ -50,6 +89,31 @@
   "mc-forge": {
     "name": "Minecraft (Forge)",
     "steam_required": false,
+    "game_config_path": "serverfiles/server.properties",
+    "game_config_format": "properties",
+    "game_config_fields": [
+      {"key": "server-port",    "type": "port",     "label_de": "Port",          "label_en": "Port"},
+      {"key": "max-players",    "type": "int",      "label_de": "Max. Spieler",  "label_en": "Max players"},
+      {"key": "motd",           "type": "text",     "label_de": "Servermotto",   "label_en": "MOTD"},
+      {"key": "difficulty",     "type": "text",     "label_de": "Schwierigkeit", "label_en": "Difficulty"},
+      {"key": "gamemode",       "type": "text",     "label_de": "Spielmodus",    "label_en": "Game mode"},
+      {"key": "level-name",     "type": "text",     "label_de": "Weltname",      "label_en": "World name"},
+      {"key": "online-mode",    "type": "text",     "label_de": "Online-Modus",  "label_en": "Online mode"},
+      {"key": "pvp",            "type": "text",     "label_de": "PvP",           "label_en": "PvP"},
+      {"key": "enable-rcon",    "type": "bool",     "label_de": "RCON aktiv",    "label_en": "RCON enabled"},
+      {"key": "rcon.port",      "type": "port",     "label_de": "RCON-Port",     "label_en": "RCON port"},
+      {"key": "rcon.password",  "type": "password", "label_de": "RCON-Passwort", "label_en": "RCON password"}
+    ],
+    "player_query": {
+      "kind": "rcon",
+      "source": "game_config",
+      "enabled_key": "enable-rcon",
+      "port_key": "rcon.port",
+      "password_key": "rcon.password",
+      "max_players_key": "max-players",
+      "command": "list",
+      "parse": "mc_list"
+    },
     "fields": [
       {"key": "port",       "type": "port",   "label_de": "Port",         "label_en": "Port",          "default": "25565"},
       {"key": "gamename",   "type": "text",   "label_de": "Spielname",    "label_en": "Game name",     "default": "Forge"},
@@ -59,6 +123,31 @@
   "mc-neoforge": {
     "name": "Minecraft (NeoForge)",
     "steam_required": false,
+    "game_config_path": "serverfiles/server.properties",
+    "game_config_format": "properties",
+    "game_config_fields": [
+      {"key": "server-port",    "type": "port",     "label_de": "Port",          "label_en": "Port"},
+      {"key": "max-players",    "type": "int",      "label_de": "Max. Spieler",  "label_en": "Max players"},
+      {"key": "motd",           "type": "text",     "label_de": "Servermotto",   "label_en": "MOTD"},
+      {"key": "difficulty",     "type": "text",     "label_de": "Schwierigkeit", "label_en": "Difficulty"},
+      {"key": "gamemode",       "type": "text",     "label_de": "Spielmodus",    "label_en": "Game mode"},
+      {"key": "level-name",     "type": "text",     "label_de": "Weltname",      "label_en": "World name"},
+      {"key": "online-mode",    "type": "text",     "label_de": "Online-Modus",  "label_en": "Online mode"},
+      {"key": "pvp",            "type": "text",     "label_de": "PvP",           "label_en": "PvP"},
+      {"key": "enable-rcon",    "type": "bool",     "label_de": "RCON aktiv",    "label_en": "RCON enabled"},
+      {"key": "rcon.port",      "type": "port",     "label_de": "RCON-Port",     "label_en": "RCON port"},
+      {"key": "rcon.password",  "type": "password", "label_de": "RCON-Passwort", "label_en": "RCON password"}
+    ],
+    "player_query": {
+      "kind": "rcon",
+      "source": "game_config",
+      "enabled_key": "enable-rcon",
+      "port_key": "rcon.port",
+      "password_key": "rcon.password",
+      "max_players_key": "max-players",
+      "command": "list",
+      "parse": "mc_list"
+    },
     "fields": [
       {"key": "port",       "type": "port",   "label_de": "Port",         "label_en": "Port",          "default": "25565"},
       {"key": "gamename",   "type": "text",   "label_de": "Spielname",    "label_en": "Game name",     "default": "NeoForge"},
@@ -68,6 +157,31 @@
   "mc-fabric": {
     "name": "Minecraft (Fabric)",
     "steam_required": false,
+    "game_config_path": "serverfiles/server.properties",
+    "game_config_format": "properties",
+    "game_config_fields": [
+      {"key": "server-port",    "type": "port",     "label_de": "Port",          "label_en": "Port"},
+      {"key": "max-players",    "type": "int",      "label_de": "Max. Spieler",  "label_en": "Max players"},
+      {"key": "motd",           "type": "text",     "label_de": "Servermotto",   "label_en": "MOTD"},
+      {"key": "difficulty",     "type": "text",     "label_de": "Schwierigkeit", "label_en": "Difficulty"},
+      {"key": "gamemode",       "type": "text",     "label_de": "Spielmodus",    "label_en": "Game mode"},
+      {"key": "level-name",     "type": "text",     "label_de": "Weltname",      "label_en": "World name"},
+      {"key": "online-mode",    "type": "text",     "label_de": "Online-Modus",  "label_en": "Online mode"},
+      {"key": "pvp",            "type": "text",     "label_de": "PvP",           "label_en": "PvP"},
+      {"key": "enable-rcon",    "type": "bool",     "label_de": "RCON aktiv",    "label_en": "RCON enabled"},
+      {"key": "rcon.port",      "type": "port",     "label_de": "RCON-Port",     "label_en": "RCON port"},
+      {"key": "rcon.password",  "type": "password", "label_de": "RCON-Passwort", "label_en": "RCON password"}
+    ],
+    "player_query": {
+      "kind": "rcon",
+      "source": "game_config",
+      "enabled_key": "enable-rcon",
+      "port_key": "rcon.port",
+      "password_key": "rcon.password",
+      "max_players_key": "max-players",
+      "command": "list",
+      "parse": "mc_list"
+    },
     "fields": [
       {"key": "port",       "type": "port",   "label_de": "Port",         "label_en": "Port",          "default": "25565"},
       {"key": "gamename",   "type": "text",   "label_de": "Spielname",    "label_en": "Game name",     "default": "Fabric"},
@@ -119,8 +233,23 @@
       {"key": "ServerPlayerMaxNum",   "type": "int",      "label_de": "Max. Spieler",         "label_en": "Max players"},
       {"key": "Difficulty",           "type": "text",     "label_de": "Schwierigkeit",        "label_en": "Difficulty"},
       {"key": "RCONEnabled",          "type": "bool",     "label_de": "RCON aktiv",           "label_en": "RCON enabled"},
-      {"key": "RCONPort",             "type": "port",     "label_de": "RCON-Port",            "label_en": "RCON port"}
+      {"key": "RCONPort",             "type": "port",     "label_de": "RCON-Port",            "label_en": "RCON port"},
+      {"key": "RESTAPIEnabled",       "type": "bool",     "label_de": "REST-API aktiv",       "label_en": "REST API enabled"},
+      {"key": "RESTAPIPort",          "type": "port",     "label_de": "REST-API-Port",        "label_en": "REST API port"}
     ],
+    "player_query": {
+      "kind": "rest",
+      "source": "game_config",
+      "enabled_key": "RESTAPIEnabled",
+      "port_key": "RESTAPIPort",
+      "password_key": "AdminPassword",
+      "max_players_key": "ServerPlayerMaxNum",
+      "command": "/v1/api/metrics",
+      "parse": "json_field",
+      "players_field": "currentplayernum",
+      "max_field": "maxplayernum",
+      "auth_user": "admin"
+    },
     "fields": [
       {"key": "port",       "type": "port",   "label_de": "Port",         "label_en": "Port",          "default": "8211"},
       {"key": "gamename",   "type": "text",   "label_de": "Spielname",    "label_en": "Game name",     "default": "Palworld"},
@@ -221,6 +350,7 @@
       {"key": "ServerDescription_Persistent.DirectConnectionProxyAddress",  "type": "text",     "label_de": "Direkt-Proxy",        "label_en": "Direct proxy"},
       {"key": "ServerDescription_Persistent.P2pProxyAddress",               "type": "text",     "label_de": "P2P-Proxy",           "label_en": "P2P proxy"}
     ],
+    "player_query_note": "As of 2026-10-04 WebCore player_query: Windrose has no vanilla admin query (no RCON/REST). Needs a supported mod (e.g. Windrose+ query or WindroseRCON) before adding a player_query block.",
     "fields": [
       {"key": "port",       "type": "port",    "label_de": "Game Port",    "label_en": "Game Port",    "default": "7777"},
       {"key": "queryport",  "type": "port",    "label_de": "Query Port",   "label_en": "Query Port",   "default": "27015"},
@@ -290,8 +420,19 @@
       {"key": "Description", "type": "text", "label_de": "Beschreibung",      "label_en": "Description"},
       {"key": "PVP",         "type": "bool", "label_de": "PVP",               "label_en": "PVP"},
       {"key": "Mods",        "type": "text", "label_de": "Mods",              "label_en": "Mods"},
-      {"key": "WorkshopItems","type": "text","label_de": "Workshop-Items",    "label_en": "Workshop items"}
+      {"key": "WorkshopItems","type": "text","label_de": "Workshop-Items",    "label_en": "Workshop items"},
+      {"key": "RCONPort",     "type": "port",     "label_de": "RCON-Port",     "label_en": "RCON port"},
+      {"key": "RCONPassword", "type": "password", "label_de": "RCON-Passwort", "label_en": "RCON password"}
     ],
+    "player_query": {
+      "kind": "rcon",
+      "source": "game_config",
+      "port_key": "RCONPort",
+      "password_key": "RCONPassword",
+      "max_players_key": "MaxPlayers",
+      "command": "players",
+      "parse": "lines_skip_header"
+    },
     "field_hints": {
       "adminpassword": {
         "de": "Pflichtfeld. Wird beim Speichern und vor Start automatisch in startparameters eingetragen (-adminpassword), sonst hängt der Erststart an der Konsolenabfrage.",

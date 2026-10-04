@@ -98,6 +98,18 @@ if [ "$ACTION" = "start" ] || [ "$ACTION" = "stop" ] || [ "$ACTION" = "restart" 
             ;;
     esac
     if [ "$_ctrl_rc" -ne 0 ]; then
+        # Failed start/restart must release monitor "starting" grace — otherwise
+        # cron skips recovery until starting_until (can be 20+ min for PZ workshop).
+        if [[ "$ACTION" == "start" || "$ACTION" == "restart" ]]; then
+            _MODULE_ROOT="${MODULE_ROOT:-}"
+            if [[ -z "$_MODULE_ROOT" ]]; then
+                _MODULE_ROOT="$(cd "$(dirname "$0")"/.. && pwd)"
+            fi
+            if [[ -f "$_MODULE_ROOT/scripts/monitor_mark_ready.pl" ]]; then
+                perl "$_MODULE_ROOT/scripts/monitor_mark_ready.pl" "$SERVER_DIR" 2>/dev/null || true
+                echo "Monitor starting grace cleared after failed $ACTION (recovery allowed)"
+            fi
+        fi
         set_final_status "failed"
         exit 1
     fi

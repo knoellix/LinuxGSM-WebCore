@@ -35,6 +35,37 @@ mkdir -p "$TMP/pz/lgsm/config-default/config-lgsm/pzserver"
 printf 'gamename="Project Zomboid"\nengine="projectzomboid"\n' \
     >"$TMP/pz/lgsm/config-default/config-lgsm/pzserver/_default.cfg"
 lgsm_is_project_zomboid_instance "$TMP/pz" pzserver || { echo "fail: pz detect"; exit 1; }
+
+# --- Gamedig present / ensure no-op when marker exists ---
+if lgsm_gamedig_present "$TMP/pz"; then
+    echo "fail: gamedig should be absent initially"
+    exit 1
+fi
+mkdir -p "$TMP/pz/lgsm/node_modules/gamedig/bin"
+touch "$TMP/pz/lgsm/node_modules/gamedig/bin/gamedig.js"
+lgsm_gamedig_present "$TMP/pz" || { echo "fail: gamedig present after marker"; exit 1; }
+out="$(lgsm_ensure_gamedig "$TMP/pz" 2>&1)"
+echo "$out" | grep -qi 'Ensuring Gamedig' && { echo "fail: ensure should no-op when present: $out"; exit 1; }
+
+# --- start_reliable calls ensure before CLI when offline ---
+unset -f lgsm_is_started lgsm_run_timeout lgsm_ensure_gamedig \
+    lgsm_lifecycle_wait_ready 2>/dev/null || true
+_pz_flip=0
+lgsm_ensure_gamedig() { echo "ensure-called"; return 0; }
+lgsm_lifecycle_wait_ready() { echo "ready-ok"; return 0; }
+lgsm_is_started() {
+    if [[ "$_pz_flip" -eq 1 ]]; then return 0; fi
+    return 1
+}
+lgsm_run_timeout() { _pz_flip=1; echo "cli-start"; return 0; }
+out="$(lgsm_start_reliable "$TMP/pz" pzserver 5 2>&1)"
+echo "$out" | grep -q 'ensure-called' || { echo "fail: expected ensure before start: $out"; exit 1; }
+echo "$out" | grep -q 'cli-start' || { echo "fail: expected CLI start after ensure: $out"; exit 1; }
+unset -f lgsm_is_started lgsm_run_timeout lgsm_ensure_gamedig \
+    lgsm_lifecycle_wait_ready 2>/dev/null || true
+# Restore real functions after mocks (later tests redefine as needed).
+# shellcheck source=../src/scripts/lib/lgsm_control.sh
+. "$ROOT/src/scripts/lib/lgsm_control.sh"
 if lgsm_is_project_zomboid_instance "$TMP/other" pwserver; then
     echo "fail: non-pz should be false"
     exit 1

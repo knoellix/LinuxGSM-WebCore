@@ -18,6 +18,7 @@ require './lib/monitor.pl';
 require './lib/live_log.pl';
 require './lib/server_log.pl';
 require './lib/server_control_bar.pl';
+require './lib/progressive_ui.pl';
 require './lib/pz_workshop.pl';
 
 our (%text, %config, %in, %gconfig);
@@ -146,7 +147,8 @@ sub _ws_redirect_silent_job {
     $na =~ s/[^a-z_]//g;
     if (!$opts{'start_log'}
         && ($na eq 'start' || $na eq 'restart')
-        && &server_log_start_log_enabled())
+        && defined &server_log_start_log_wanted
+        && &server_log_start_log_wanted(\%in))
     {
         $opts{'start_log'} = 1;
     }
@@ -159,6 +161,39 @@ sub _ws_redirect_silent_job {
                 if defined &module_config_flash_mark;
             $extra{start_log_warn} = 1;
         }
+    }
+    if (defined &server_control_async_requested && &server_control_async_requested(\%in)) {
+        my $poll_q = "workshop.cgi?instance_id=" . &urlize($instance_id)
+            . "&action=poll_job&job=" . &urlize($job_id)
+            . "&poll_format=json&silent=1";
+        $poll_q .= "&next_status=" . &urlize($opts{'next_status'})
+            if ($opts{'next_status'} // '') ne '';
+        $poll_q .= "&notice_action=" . &urlize($na) if $na ne '';
+        my $runtime_html = '';
+        $runtime_html = _ws_runtime_badge_html('starting')
+            if $na =~ /^(?:start|restart)$/;
+        my $start_log_on = $extra{start_log} ? 1 : 0;
+        my %payload = (
+            ok               => 1,
+            mode             => 'silent',
+            job_id           => $job_id,
+            notice_action    => $na,
+            poll_url         => _ws_module_cgi_path($poll_q),
+            runtime_poll_url => _ws_module_cgi_path(
+                "workshop.cgi?instance_id=" . &urlize($instance_id) . "&action=poll_runtime"),
+            live_url         => _ws_module_cgi_path(
+                "job_live.cgi?instance_id=" . &urlize($instance_id)
+                    . "&job=" . &urlize($job_id) . "&xnavigation=1"),
+            start_blink      => ($na =~ /^(?:start|restart)$/ ? 1 : 0),
+            runtime_html     => $runtime_html,
+            start_log        => $start_log_on,
+        );
+        if ($start_log_on) {
+            $payload{'start_log_panel_url'} = _ws_module_cgi_path(
+                "workshop.cgi?instance_id=" . &urlize($instance_id)
+                    . "&action=start_log_panel&start_log=1");
+        }
+        &server_control_async_json_exit(\%payload);
     }
     &redirect(_ws_page_url($instance_id, %extra));
     exit;
@@ -369,13 +404,30 @@ sub _ws_runtime_badge_html {
     return &server_runtime_status_badge_html($status);
 }
 
+sub _ws_inv_page_hidden {
+    my $inv_page = int($in{'inv_page'} // 1);
+    $inv_page = 1 if $inv_page < 1;
+    return &ui_hidden('inv_page', $inv_page);
+}
+
+sub _ws_inventory_cache_invalidate {
+    my ($instance_id) = @_;
+    my $path = _ws_inventory_cache_path($instance_id);
+    unlink $path if $path ne '' && -f $path;
+    return 1;
+}
+
 sub _ws_redirect_with_flash {
     my ($instance_id, $flash_key, $query_flag) = @_;
     $flash_key =~ s/[^a-z_]//g;
     $flash_key or _ws_action_failed();
     &module_config_flash_mark($flash_key)
         or _ws_action_failed();
-    &redirect(_ws_page_url($instance_id, $query_flag => 1));
+    _ws_inventory_cache_invalidate($instance_id);
+    my %extra = ($query_flag => 1);
+    my $inv_page = int($in{'inv_page'} // 0);
+    $extra{inv_page} = $inv_page if $inv_page > 1;
+    &redirect(_ws_page_url($instance_id, %extra));
     exit;
 }
 
@@ -429,14 +481,14 @@ sub _ws_inline_action {
 sub _ws_status_label {
     my ($status) = @_;
     if ($status eq 'active') {
-        return $text{'workshop_status_active'} || 'Active';
+        return $text{'workshop_status_active'} || 'Subscribed';
     }
     if ($status eq 'workshop_only') {
         return $text{'workshop_status_workshop_only'}
-            || 'Workshop only (mods off)';
+            || 'Subscribed (mods off)';
     }
     if ($status eq 'inactive') {
-        return $text{'workshop_status_inactive'} || 'Inactive';
+        return $text{'workshop_status_inactive'} || 'Files only';
     }
     if ($status eq 'orphan_ini') {
         return $text{'workshop_status_orphan'} || 'INI only';
@@ -471,6 +523,7 @@ sub _ws_render_mod_infos {
             my $form = &ui_form_start('workshop.cgi', 'post');
             $form .= &ui_hidden('instance_id', &html_escape($instance_id));
             $form .= &ui_hidden('xnavigation', '1');
+            $form .= _ws_inv_page_hidden();
             $form .= &ui_hidden('action', $act);
             $form .= &ui_hidden('workshop_id', &html_escape($workshop_id));
             $form .= &ui_hidden('mod_id', &html_escape($id));
@@ -492,14 +545,12 @@ sub _ws_render_pz_version_cell {
         next unless ref($mi) eq 'HASH';
         my $id = $mi->{'id'} // '';
         next unless $id =~ /\S/;
-        my $cell = &pz_workshop_pz_version_cell($mi->{'pz_require'}, $server_ver);
-        my $req = $mi->{'pz_require'} // '';
-        $req =~ s/^\s+|\s+$//g;
-        my $label;
-        if ($req eq '') {
+        my $cell = &pz_workshop_pz_version_cell($mi->{'pz_require'}, $server_ver, $mi);
+        my $label = &html_escape($cell->{'label'} // '');
+        if (($cell->{'label'} // '') eq 'keine Angabe') {
             $label = &html_escape($text{'workshop_pz_version_none'} || 'keine Angabe');
-        } else {
-            $label = &html_escape($cell->{'label'} // '');
+        } elsif (($cell->{'label'} // '') eq 'unbekannt') {
+            $label = &html_escape($text{'workshop_pz_version_unknown'} || 'unbekannt');
         }
         my $match = $cell->{'match'} // 'none';
         if ($match eq 'ok') {
@@ -509,6 +560,10 @@ sub _ws_render_pz_version_cell {
         } elsif ($match eq 'bad') {
             $label .= ' <small class="text-danger">'
                 . &html_escape($text{'workshop_pz_match_bad'} || 'unpassend')
+                . '</small>';
+        } elsif ($match eq 'unknown') {
+            $label .= ' <small class="text-muted">'
+                . &html_escape($text{'workshop_pz_match_unknown'} || 'unbekannt')
                 . '</small>';
         }
         push @parts, $label;
@@ -527,8 +582,8 @@ sub _ws_render_item_cell {
         $title = $steam->{'title'} // '';
         my $preview_url = $steam->{'preview_url'} // '';
         if ($preview_url =~ /\S/ && _ws_steam_preview_allowed($preview_url)) {
-            $preview = '<img src="' . &html_escape($preview_url)
-                . '" alt="" style="max-width:64px;max-height:64px;vertical-align:middle;margin-right:8px">';
+            $preview = '<img class="lgsm-ws-preview" src="' . &html_escape($preview_url)
+                . '" alt="" width="32" height="32">';
         }
     }
     $title = $wid unless $title =~ /\S/;
@@ -556,29 +611,18 @@ sub _ws_render_row_actions {
     my $on_disk = $row->{'on_disk'} ? 1 : 0;
     my $actions = '';
 
-    # inactive: not in WorkshopItems; workshop_only: in WorkshopItems but Mods= off
-    if ($status eq 'inactive' || $status eq 'workshop_only') {
+    # Files on disk but not in WorkshopItems → local "subscribe" (INI only, no re-download).
+    # No item-level disable: unused items are deleted (de-subscribed).
+    if ($status eq 'inactive') {
         my $form = &ui_form_start('workshop.cgi', 'post');
         $form .= &ui_hidden('instance_id', &html_escape($instance_id));
         $form .= &ui_hidden('xnavigation', '1');
+        $form .= _ws_inv_page_hidden();
         $form .= &ui_hidden('action', 'enable');
         $form .= &ui_hidden('workshop_id', $wid);
-        my $btn = ($status eq 'workshop_only')
-            ? ($text{'workshop_enable_mods_btn'} || 'Enable mods')
-            : ($text{'workshop_enable_btn'} || 'Enable');
-        $form .= &ui_submit($btn, undef, undef, undef, 'btn-success');
-        $form .= &ui_form_end();
-        $actions .= _ws_inline_action($form);
-    }
-
-    if ($status eq 'active' || $status eq 'workshop_only' || $status eq 'orphan_ini') {
-        my $form = &ui_form_start('workshop.cgi', 'post');
-        $form .= &ui_hidden('instance_id', &html_escape($instance_id));
-        $form .= &ui_hidden('xnavigation', '1');
-        $form .= &ui_hidden('action', 'disable');
-        $form .= &ui_hidden('workshop_id', $wid);
-        $form .= &ui_submit($text{'workshop_disable_btn'} || 'Disable',
-            undef, undef, undef, 'btn-default');
+        $form .= &ui_submit(
+            $text{'workshop_subscribe_local_btn'} || 'Subscribe',
+            undef, undef, undef, 'btn-success');
         $form .= &ui_form_end();
         $actions .= _ws_inline_action($form);
     }
@@ -590,6 +634,7 @@ sub _ws_render_row_actions {
             "onsubmit=\"return confirm('" . &html_escape($confirm) . "')\"");
         $form .= &ui_hidden('instance_id', &html_escape($instance_id));
         $form .= &ui_hidden('xnavigation', '1');
+        $form .= _ws_inv_page_hidden();
         $form .= &ui_hidden('action', 'delete');
         $form .= &ui_hidden('workshop_id', $wid);
         $form .= &ui_submit($text{'workshop_delete_btn'} || 'Delete',
@@ -599,6 +644,233 @@ sub _ws_render_row_actions {
     }
 
     return $actions;
+}
+
+# Short-lived inventory cache so progressive poll_inventory batches do not re-scan disk.
+sub _ws_inventory_cache_path {
+    my ($instance_id) = @_;
+    $instance_id =~ s/[^a-zA-Z0-9_-]//g;
+    return '' if $instance_id eq '' || !$config_directory;
+    return "$config_directory/.ws_inv_cache_$instance_id.json";
+}
+
+sub _ws_inventory_cache_load {
+    my ($instance_id) = @_;
+    my $path = _ws_inventory_cache_path($instance_id);
+    return undef unless $path ne '' && -f $path;
+    open(my $fh, '<:encoding(UTF-8)', $path) or return undef;
+    local $/;
+    my $raw = <$fh>;
+    close $fh;
+    return undef unless defined $raw && $raw =~ /\S/;
+    my $data = eval {
+        require JSON::PP;
+        JSON::PP->new->utf8(0)->decode($raw);
+    };
+    return undef unless ref($data) eq 'HASH';
+    my $ts = int($data->{'ts'} // 0);
+    return undef if $ts < 1 || (time() - $ts) > 90;
+    return $data;
+}
+
+sub _ws_inventory_cache_save {
+    my ($instance_id, $data) = @_;
+    my $path = _ws_inventory_cache_path($instance_id);
+    return 0 unless $path ne '' && ref($data) eq 'HASH';
+    $data->{'ts'} = time();
+    my $json = eval {
+        require JSON::PP;
+        JSON::PP->new->utf8(0)->canonical(1)->encode($data);
+    };
+    return 0 unless defined $json && $json =~ /\S/;
+    open(my $fh, '>:encoding(UTF-8)', $path) or return 0;
+    print $fh $json;
+    close $fh;
+    chmod 0600, $path;
+    return 1;
+}
+
+sub _ws_inventory_preamble_html {
+    my ($unix_user, $script_name, $server_dir, $pz_ver) = @_;
+    my $html = '';
+    my ($ini_ok, $ini_path) = &pz_workshop_resolve_ini_path($unix_user, $script_name);
+    if ($ini_ok) {
+        $html .= "<p><small>" . &html_escape($text{'workshop_ini_path'} || 'INI')
+            . ": " . &html_escape($ini_path)
+            . (-f $ini_path ? '' : ' (' . &html_escape($text{'workshop_ini_not_created'} || 'not created yet') . ')')
+            . "</small></p>\n";
+    }
+    if (($pz_ver // '') ne '') {
+        $html .= "<p><small>" . &html_escape($text{'workshop_server_pz_version'} || 'Detected PZ version')
+            . ": " . &html_escape($pz_ver)
+            . " — " . &html_escape($text{'workshop_mod_version_hint'}
+                || 'Subscribe auto-selects at most one matching Mod ID; others stay off until enabled manually.')
+            . "</small></p>\n";
+    } else {
+        $html .= "<p><small class=\"text-warning\">"
+            . &html_escape($text{'workshop_server_pz_version_unknown'}
+                || 'PZ version unknown — subscribe will not auto-select Mod IDs. Enable Mod IDs manually.')
+            . "</small></p>\n";
+    }
+    return $html;
+}
+
+# Paginate inventory rows (same shape as MC mods: page/per_page → slice,total,pages).
+sub _ws_paginate_inventory {
+    my ($rows, $page, $per_page) = @_;
+    $rows = [] unless ref($rows) eq 'ARRAY';
+    $per_page = 50 unless defined $per_page && $per_page =~ /^\d+$/ && $per_page > 0;
+    $per_page = 100 if $per_page > 100;
+    my $total = scalar(@$rows);
+    my $pages = $total > 0 ? int(($total + $per_page - 1) / $per_page) : 1;
+    $pages = 1 if $pages < 1;
+    $page = 1 unless defined $page && $page =~ /^\d+$/ && $page > 0;
+    $page = $pages if $page > $pages;
+    my $start = ($page - 1) * $per_page;
+    my @slice;
+    if ($total > 0 && $start < $total) {
+        my $last = $start + $per_page - 1;
+        $last = $total - 1 if $last > $total - 1;
+        @slice = @$rows[$start .. $last];
+    }
+    return (\@slice, $total, $pages, $page);
+}
+
+# Prev/Next + "Page N of M" — links reload workshop shell with inv_page=.
+sub _ws_inventory_pager_html {
+    my ($instance_id, $page, $pages, $total) = @_;
+    $page  = int($page  // 1);
+    $pages = int($pages // 1);
+    $total = int($total // 0);
+    my $html = "<p><small>" . &html_escape(sprintf(
+        $text{'workshop_page_info'} || $text{'mc_mods_page_page_info'}
+            || 'Page %d of %d (%d entries).',
+        $page, $pages, $total
+    )) . "</small></p>\n";
+    return $html if $pages <= 1;
+
+    $html .= "<div style='text-align:right;margin:4px 0 12px 0'>\n";
+    if ($page > 1) {
+        my $prev = _ws_page_url($instance_id, inv_page => $page - 1);
+        $html .= _ws_inline_action(
+            "<a class=\"btn btn-default\" href=\"" . &html_escape($prev) . "\">"
+            . &html_escape($text{'workshop_page_prev'} || $text{'mc_mods_page_prev'} || 'Previous')
+            . "</a>"
+        );
+    }
+    if ($page < $pages) {
+        my $next = _ws_page_url($instance_id, inv_page => $page + 1);
+        $html .= _ws_inline_action(
+            "<a class=\"btn btn-default\" href=\"" . &html_escape($next) . "\">"
+            . &html_escape($text{'workshop_page_next'} || $text{'mc_mods_page_next'} || 'Next')
+            . "</a>"
+        );
+    }
+    $html .= "</div>\n";
+    return $html;
+}
+
+# Lazy inventory payload: disk scan once (cached), one page of rows + Steam titles.
+# Opts: page (default 1), per_page (default 50, max 100).
+# Always done=1 (page-sized response; no progressive offset batches).
+sub _ws_build_inventory_payload {
+    my ($instance_id, $unix_user, $script_name, $server_dir, $api_key, %opts) = @_;
+    my $page = int($opts{'page'} // 1);
+    $page = 1 if $page < 1;
+    my $per_page = int($opts{'per_page'} // 50);
+    $per_page = 50 if $per_page < 1;
+    $per_page = 100 if $per_page > 100;
+
+    my $cached = _ws_inventory_cache_load($instance_id);
+    my @inventory_rows;
+    my $pz_ver = '';
+    if (ref($cached) eq 'HASH' && ref($cached->{'rows'}) eq 'ARRAY') {
+        @inventory_rows = @{ $cached->{'rows'} };
+        $pz_ver = $cached->{'pz_ver'} // '';
+    }
+    else {
+        my $inventory = &pz_workshop_list_inventory($unix_user, $script_name, $server_dir);
+        @inventory_rows = ref($inventory) eq 'ARRAY' ? @$inventory : ();
+        $pz_ver = &pz_workshop_detect_server_version($unix_user, $server_dir);
+        _ws_inventory_cache_save($instance_id, {
+            rows   => \@inventory_rows,
+            pz_ver => $pz_ver,
+        });
+    }
+
+    my ($slice, $total, $pages, $page_clamped)
+        = _ws_paginate_inventory(\@inventory_rows, $page, $per_page);
+    $page = $page_clamped;
+
+    if ($total < 1) {
+        my $pre = _ws_inventory_preamble_html($unix_user, $script_name, $server_dir, $pz_ver);
+        my $empty = "<p><i>" . &html_escape($text{'workshop_none_installed'}
+            || 'No workshop items on disk or in the INI yet.') . "</i></p>\n";
+        return {
+            ok              => 1,
+            count           => 0,
+            page            => 1,
+            pages           => 1,
+            offset          => 0,
+            next_offset     => 0,
+            done            => 1,
+            preamble_html   => $pre,
+            table_head_html => '',
+            rows_html       => $empty,
+            table_foot_html => '',
+            html            => $pre . $empty,
+        };
+    }
+
+    my @slice_rows = @$slice;
+    my $steam_details = {};
+    if (($api_key // '') =~ /\S/ && @slice_rows) {
+        my @steam_ids = map { $_->{'workshop_id'} // '' } @slice_rows;
+        $steam_details = &pz_workshop_steam_details(\@steam_ids);
+        $steam_details = {} unless ref($steam_details) eq 'HASH';
+    }
+
+    my @rows;
+    for my $row (@slice_rows) {
+        next unless ref($row) eq 'HASH';
+        my $wid = $row->{'workshop_id'} // '';
+        my $steam = $steam_details->{$wid};
+        push @rows, [
+            _ws_render_item_cell($row, $steam),
+            _ws_render_mod_infos($instance_id, $wid, $row->{'mod_infos'}),
+            _ws_render_pz_version_cell($row->{'mod_infos'}, $pz_ver),
+            &html_escape(_ws_status_label($row->{'status'} // '')),
+            _ws_render_row_actions($instance_id, $row),
+        ];
+    }
+
+    my $preamble = _ws_inventory_preamble_html($unix_user, $script_name, $server_dir, $pz_ver);
+    my $table = &ui_columns_table(
+        [
+            $text{'workshop_col_item'} || 'Item',
+            $text{'workshop_col_mods'} || 'Mods',
+            $text{'workshop_col_pz_version'} || 'PZ version',
+            $text{'workshop_col_status'} || 'Status',
+            $text{'workshop_col_actions'} || 'Actions',
+        ],
+        '100%',
+        \@rows,
+    );
+    my $after = _ws_inventory_pager_html($instance_id, $page, $pages, $total);
+    $after .= "<p><small>" . &html_escape($text{'workshop_restart_hint'}
+        || 'Restart the server after changing workshop mods for changes to take effect.')
+        . "</small></p>\n";
+
+    return {
+        ok              => 1,
+        count           => $total,
+        page            => $page,
+        pages           => $pages,
+        offset          => 0,
+        next_offset     => scalar(@slice_rows),
+        done            => 1,
+        html            => $preamble . $table . $after,
+    };
 }
 
 # --- bootstrap instance ---
@@ -622,10 +894,10 @@ my (undef, $script_name, $server_dir) = _ws_parse_script_info($inst);
 my $action = $in{'action'} // '';
 $action =~ s/[^a-z_]//g;
 
-if ($action ne '' && $action !~ /^(?:search|subscribe|enable|disable|delete|enable_mod|disable_mod|start|stop|restart|monitor|poll_monitor|poll_runtime|poll_job)$/) {
+if ($action ne '' && $action !~ /^(?:search|subscribe|enable|disable|delete|enable_mod|disable_mod|start|stop|restart|monitor|poll_monitor|poll_runtime|poll_job|poll_inventory|start_log_panel)$/) {
     &error($text{'err_invalid_action'} || 'Invalid action');
 }
-if ($action ne '' && $action !~ /^(?:search|monitor|poll_monitor|poll_runtime|poll_job)$/ && &user_is_readonly($instance_id)) {
+if ($action ne '' && $action !~ /^(?:search|monitor|poll_monitor|poll_runtime|poll_job|poll_inventory|start_log_panel)$/ && &user_is_readonly($instance_id)) {
     &error($text{'err_readonly'} || 'This server is read-only for your account');
 }
 
@@ -728,6 +1000,45 @@ if ($action eq 'poll_runtime') {
         runtime_html   => _ws_runtime_badge_html($rs),
         starting       => ($rs eq 'starting') ? 1 : 0,
     });
+    exit;
+}
+
+if ($action eq 'poll_inventory') {
+    my $api_key = &steam_web_api_key();
+    my $inv_page = int($in{'inv_page'} // $in{'page'} // 1);
+    $inv_page = 1 if $inv_page < 1;
+    my $per_page = int($in{'per_page'} // 50);
+    my $payload = _ws_build_inventory_payload(
+        $instance_id, $unix_user, $script_name, $server_dir, $api_key,
+        page     => $inv_page,
+        per_page => $per_page,
+    );
+    $main::headerprinted = 1;
+    print "Content-type: application/json; charset=utf-8\n\n";
+    print job_log_json_utf8($payload);
+    exit;
+}
+
+if ($action eq 'start_log_panel') {
+    unless (&server_log_start_log_should_show(\%in, $instance_id)) {
+        $main::headerprinted = 1;
+        print "Content-type: text/html; charset=utf-8\n\n";
+        print '';
+        exit;
+    }
+    my $mn = $module_name // $main::module_name // 'linuxgsm-webcore';
+    $mn =~ s/[^a-zA-Z0-9_-]//g;
+    $main::headerprinted = 1;
+    print "Content-type: text/html; charset=utf-8\n\n";
+    print &server_log_embed_html(
+        instance_id   => $instance_id,
+        server_dir    => $server_dir,
+        script_name   => $script_name,
+        source        => &instance_effective_source($inst),
+        minecraft     => 0,
+        poll_url_base => "/$mn/workshop.cgi?instance_id=" . &urlize($instance_id)
+            . '&action=poll_monitor',
+    );
     exit;
 }
 
@@ -1153,70 +1464,29 @@ if ($search_err eq 'api_key_missing') {
 }
 print &ui_collapsible_end();
 
-# Installed inventory (disk scan ∪ INI)
-my $inventory = &pz_workshop_list_inventory($unix_user, $script_name, $server_dir);
-my @inventory_rows = ref($inventory) eq 'ARRAY' ? @$inventory : ();
+# Installed inventory — shell first; one lazy poll loads the current page (50/page).
+my $inv_page = int($in{'inv_page'} // 1);
+$inv_page = 1 if $inv_page < 1;
 print &ui_collapsible_start($text{'workshop_installed_section'} || 'Installed',
     id => 'ws-installed', open => 1,
-    badge => scalar(@inventory_rows));
-
-my ($ini_ok, $ini_path) = &pz_workshop_resolve_ini_path($unix_user, $script_name);
-if ($ini_ok) {
-    print "<p><small>" . &html_escape($text{'workshop_ini_path'} || 'INI')
-        . ": " . &html_escape($ini_path)
-        . (-f $ini_path ? '' : ' (' . &html_escape($text{'workshop_ini_not_created'} || 'not created yet') . ')')
-        . "</small></p>\n";
-}
-my $pz_ver = &pz_workshop_detect_server_version($unix_user, $server_dir);
-if ($pz_ver ne '') {
-    print "<p><small>" . &html_escape($text{'workshop_server_pz_version'} || 'Detected PZ version')
-        . ": " . &html_escape($pz_ver)
-        . " — " . &html_escape($text{'workshop_mod_version_hint'}
-            || 'Enable item auto-selects Mod IDs matching this version; others stay off until enabled manually.')
-        . "</small></p>\n";
-} else {
-    print "<p><small class=\"text-warning\">"
-        . &html_escape($text{'workshop_server_pz_version_unknown'}
-            || 'PZ version unknown — enabling a workshop item will not auto-select Mod IDs. Enable Mod IDs manually.')
-        . "</small></p>\n";
-}
-
-my $steam_details = {};
-if ($api_key =~ /\S/ && @inventory_rows) {
-    my @steam_ids = map { $_->{'workshop_id'} // '' } @inventory_rows;
-    $steam_details = &pz_workshop_steam_details(\@steam_ids);
-    $steam_details = {} unless ref($steam_details) eq 'HASH';
-}
-
-if (!@inventory_rows) {
-    print "<p><i>" . &html_escape($text{'workshop_none_installed'}
-        || 'No workshop items on disk or in the INI yet.') . "</i></p>\n";
-} else {
-    print &ui_columns_start([
-        &html_escape($text{'workshop_col_item'} || 'Item'),
-        &html_escape($text{'workshop_col_mods'} || 'Mods'),
-        &html_escape($text{'workshop_col_pz_version'} || 'PZ version'),
-        &html_escape($text{'workshop_col_status'} || 'Status'),
-        &html_escape($text{'workshop_col_actions'} || 'Actions'),
-    ]);
-    for my $row (@inventory_rows) {
-        next unless ref($row) eq 'HASH';
-        my $wid = $row->{'workshop_id'} // '';
-        my $steam = $steam_details->{$wid};
-        print &ui_columns_row([
-            _ws_render_item_cell($row, $steam),
-            _ws_render_mod_infos($instance_id, $wid, $row->{'mod_infos'}),
-            _ws_render_pz_version_cell($row->{'mod_infos'}, $pz_ver),
-            &html_escape(_ws_status_label($row->{'status'} // '')),
-            _ws_render_row_actions($instance_id, $row),
-        ]);
-    }
-    print &ui_columns_end();
-    print "<p><small>" . &html_escape($text{'workshop_restart_hint'}
-        || 'Restart the server after changing workshop mods for changes to take effect.')
-        . "</small></p>\n";
-}
+    badge => '…');
+print "<div id=\"ws-inventory\">"
+    . "<p class=\"lgsm-inv-loading-line\"><i>"
+    . &html_escape($text{'workshop_inventory_loading'}
+        || 'Loading installed workshop items…')
+    . "</i> " . &ui_progressive_dots_html('ws-inv-init-dots') . "</p>"
+    . "</div>\n";
 print &ui_collapsible_end();
+print &ui_progressive_table_loader_js(
+    box_id     => 'ws-inventory',
+    section_id => 'ws-installed',
+    poll_url   => _ws_module_cgi_path(
+        "workshop.cgi?instance_id=" . &urlize($instance_id)
+        . "&action=poll_inventory&inv_page=" . &urlize($inv_page)),
+    fail_msg   => ($text{'workshop_inventory_load_failed'}
+        || 'Could not load workshop inventory.'),
+    batch_size => 50,
+);
 
 print &ui_collapsible_state_script();
 &footer();

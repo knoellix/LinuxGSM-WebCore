@@ -23,6 +23,7 @@ require './lib/acl.pl';
 require './lib/games_meta.pl';
 require './lib/games.pl';
 require './lib/config_editor.pl';
+require './lib/player_query.pl';
 require './lib/ftp_proftpd.pl';
 require './lib/steam.pl';
 require './lib/jobs.pl';
@@ -31,6 +32,8 @@ require './lib/error_hints.pl';
 require './lib/provision.pl';
 require './lib/monitor.pl';
 require './lib/schedule.pl';
+require './lib/auto_update.pl';
+require './lib/auto_update_pz.pl';
 require './lib/query.pl';
 require './lib/mc_profile.pl';
 require './lib/mc_loader.pl';
@@ -52,7 +55,8 @@ our ($module_root, $module_root_directory, $config_directory, $module_name);
 our $current_lang;
 $module_root ||= $module_root_directory;
 $module_root ||= do { (my $d = __FILE__) =~ s{/[^/]+$}{}; $d };
-$main::gconfig{'charset'} = 'utf-8';
+# UTF-8 lang reload (de.UTF-8) + force_charset — see webcore_ensure_utf8_text().
+&webcore_ensure_utf8_text() if defined &webcore_ensure_utf8_text;
 if (($ENV{REQUEST_METHOD} // '') eq 'POST'
     && ($ENV{CONTENT_TYPE} // '') =~ /multipart\/form-data/i) {
     &ReadParseMime(\%in);
@@ -335,7 +339,7 @@ sub _manage_render_instance_jobs_table {
             $out_cell = &job_log_open_link_html($jid, $text{'jobs_view_log'} || 'Log');
         }
         my $act_label = $job_action_labels{$act} // $act // '—';
-        my $act_cell = ($act eq 'monitor_restart' || $act eq 'scheduled_restart')
+        my $act_cell = ($act eq 'monitor_restart' || $act eq 'scheduled_restart' || $act eq 'auto_update_restart')
             ? '&#x1F504; ' . &html_escape($act_label)
             : &html_escape($act_label);
         my $st_label = &job_status_label($status, \%text);
@@ -415,6 +419,11 @@ sub _rebuild_monitor_cron {
 sub _rebuild_schedule_cron {
     return 1 unless defined &rebuild_schedule_cron;
     return &rebuild_schedule_cron($module_root, $config_directory) ? 1 : 0;
+}
+
+sub _rebuild_auto_update_cron {
+    return 1 unless defined &rebuild_auto_update_cron;
+    return &rebuild_auto_update_cron($module_root, $config_directory) ? 1 : 0;
 }
 
 sub _log_monitor_cron_failure {
@@ -545,9 +554,14 @@ sub _manage_mc_upgrade_error {
     }
 }
 
-# Compact status line above the info table: runtime, monitor, MC profile, ports.
+# Compact status line above the info table: runtime, monitor, MC profile, ports,
+# and (when the game has player_query meta) a live player-count cell.
+# $pq_html: player_query_status_html(...) output, or '' when the game has no
+# player_query meta at all (row is skipped entirely in that case).
+# $pq_poll_url: manage.cgi poll_players URL — only used (and the poll JS only
+# emitted) when $pq_html is non-empty.
 sub _manage_render_status_badges {
-    my ($mc_info, $runtime_status, $mon_state, $ports_open) = @_;
+    my ($mc_info, $runtime_status, $mon_state, $ports_open, $pq_html, $pq_poll_url) = @_;
     my $mon_key = 'monitor_status_'
         . (ref($mon_state) eq 'HASH' ? ($mon_state->{'status'} // 'running') : 'running');
     my $profile_html = '';
@@ -561,7 +575,7 @@ sub _manage_render_status_badges {
     }
     my $badge = '<span class="js-runtime-status">'
         . _runtime_status_badge_html($runtime_status) . '</span>';
-    print &ui_instance_status_line(
+    my @parts = (
         &ui_instance_status_part($text{'manage_status'} || 'Status', $badge),
         &ui_instance_status_part($text{'monitor_col'} || 'Monitor',
             &html_escape($text{$mon_key} || '')),
@@ -571,6 +585,15 @@ sub _manage_render_status_badges {
                 ? ($text{'manage_fw_ports_open'} || 'offen')
                 : ($text{'manage_fw_ports_closed'} || 'geschlossen'))),
     );
+    $pq_html = '' unless defined $pq_html;
+    if ($pq_html ne '') {
+        push @parts, &ui_instance_status_part($text{'manage_players_label'} || 'Players',
+            '<span class="js-player-query">' . $pq_html . '</span>');
+    }
+    print &ui_instance_status_line(@parts);
+    if ($pq_html ne '' && defined $pq_poll_url && $pq_poll_url ne '') {
+        print &player_query_poll_js($pq_poll_url);
+    }
 }
 
 # Keep blinking status until monitor grace ends / process is ready.
@@ -619,7 +642,8 @@ sub _manage_upgrade_candidates {
 
 sub _manage_upgrade_badge_text {
     my ($ld_cand, $mc_cand, $lists_loaded) = @_;
-    return $text{'manage_badge_versions_unloaded'} || '' unless $lists_loaded;
+    # No "nicht geprüft" badge — version lists are optional; empty until loaded/checked.
+    return '' unless $lists_loaded;
     my @parts;
     push @parts, &text('manage_badge_loader_updates', scalar @$ld_cand) if @$ld_cand;
     push @parts, &text('manage_badge_mc_available', $mc_cand->[0]) if @$mc_cand;
@@ -1006,6 +1030,14 @@ sub _manage_redirect_poll_job {
     if ($opts{'return_target'}) {
         $url .= "&return=" . _manage_query_urlencode($opts{'return_target'});
     }
+    if (defined &server_control_async_requested && &server_control_async_requested(\%in)) {
+        &server_control_async_json_exit({
+            ok       => 1,
+            mode     => 'job_live',
+            redirect => _manage_poll_job_module_path($url),
+            job_id   => $job_id,
+        });
+    }
     &redirect($url);
     exit;
 }
@@ -1022,13 +1054,16 @@ sub _manage_redirect_silent_job {
     $na =~ s/[^a-z_]//g;
     if (!$opts{'start_log'}
         && ($na eq 'start' || $na eq 'restart')
-        && &server_log_start_log_enabled())
+        && defined &server_log_start_log_wanted
+        && &server_log_start_log_wanted(\%in))
     {
         $opts{'start_log'} = 1;
     }
+    my $start_log_on = 0;
     if ($opts{'start_log'}) {
         if (&server_log_start_log_flash_mark($inst_id)) {
             $url .= "&start_log=1";
+            $start_log_on = 1;
         }
         else {
             # Job already launched — soft-warn, never claim launch failed.
@@ -1036,6 +1071,40 @@ sub _manage_redirect_silent_job {
                 if defined &module_config_flash_mark;
             $url .= "&start_log_warn=1";
         }
+    }
+    if (defined &server_control_async_requested && &server_control_async_requested(\%in)) {
+        my $poll_q = "manage.cgi?instance_id=" . &html_escape($inst_id)
+            . "&action=poll_job&job=" . &html_escape($job_id)
+            . "&poll_format=json&silent=1";
+        $poll_q .= "&next_status=" . &html_escape($opts{'next_status'}) if $opts{'next_status'};
+        $poll_q .= "&next_action=" . &html_escape($opts{'next_action'}) if $opts{'next_action'};
+        $poll_q .= "&notice_action=" . &html_escape($na) if $na ne '';
+        my $runtime_html = '';
+        if ($na =~ /^(?:start|restart)$/ && defined &_runtime_status_badge_html) {
+            $runtime_html = _runtime_status_badge_html('starting');
+        }
+        my %payload = (
+            ok               => 1,
+            mode             => 'silent',
+            job_id           => $job_id,
+            notice_action    => $na,
+            poll_url         => _manage_poll_job_module_path($poll_q),
+            runtime_poll_url => _manage_poll_job_module_path(
+                "manage.cgi?instance_id=" . &html_escape($inst_id)
+                    . "&action=poll_runtime&xnavigation=1"),
+            live_url         => _manage_poll_job_module_path(
+                "job_live.cgi?instance_id=" . &html_escape($inst_id)
+                    . "&job=" . &html_escape($job_id) . "&xnavigation=1"),
+            start_blink      => ($na =~ /^(?:start|restart)$/ ? 1 : 0),
+            runtime_html     => $runtime_html,
+            start_log        => $start_log_on,
+        );
+        if ($start_log_on) {
+            $payload{'start_log_panel_url'} = _manage_poll_job_module_path(
+                "manage.cgi?instance_id=" . &html_escape($inst_id)
+                    . "&action=start_log_panel&start_log=1");
+        }
+        &server_control_async_json_exit(\%payload);
     }
     &redirect($url);
     exit;
@@ -1281,14 +1350,18 @@ sub _manage_poll_job_json {
                 my $mon = ($script_dir ne '' && $iid ne '')
                     ? &read_monitor_state($script_dir, $config_directory, $iid)
                     : {};
-                if ($status eq 'ok' && $notice_action =~ /^(?:start|restart)$/) {
-                    &monitor_heal_starting_if_ready(
-                        $script_dir, $config_directory, $iid, $rs,
-                        job_in_flight => 0)
-                        if $script_dir ne '' && $iid ne '';
-                    $mon = ($script_dir ne '' && $iid ne '')
-                        ? &read_monitor_state($script_dir, $config_directory, $iid)
-                        : {};
+                if ($notice_action =~ /^(?:start|restart)$/ && $script_dir ne '' && $iid ne '') {
+                    if ($status eq 'ok') {
+                        &monitor_heal_starting_if_ready(
+                            $script_dir, $config_directory, $iid, $rs,
+                            job_in_flight => 0);
+                    }
+                    elsif ($status eq 'failed' || $status eq 'aborted') {
+                        # Release starting grace so monitor can recover (start never ready).
+                        &set_monitor_ready_after_start(
+                            $script_dir, $config_directory, $iid);
+                    }
+                    $mon = &read_monitor_state($script_dir, $config_directory, $iid);
                     $rs = _manage_badge_runtime_status($rs, $mon);
                 }
                 $payload{'runtime_status'} = $rs;
@@ -1606,7 +1679,36 @@ if (($in{'action'} // '') eq 'job_log_card') {
     &_manage_job_log_card_partial($instance_id, $job_id);
 }
 
-if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|poll_runtime|monitor|job_log_card)$/) {
+# GET: start_log_panel — HTML fragment for Dev-Start soft inject (consumes flash).
+if (($in{'action'} // '') eq 'start_log_panel') {
+    unless (&server_log_start_log_should_show(\%in, $instance_id)) {
+        $main::headerprinted = 1;
+        print "Content-type: text/html; charset=utf-8\n\n";
+        print '';
+        exit;
+    }
+    my (undef, $sn, $sd) = _parse_script_info($inst);
+    my $is_mc = ($sd
+        && (
+            (&is_minecraft_game($sn) ? 1 : 0)
+            || (-d "$sd/serverfiles/logs" ? 1 : 0)
+            || (&read_mc_profile($sd) ? 1 : 0)
+        )) ? 1 : 0;
+    $main::headerprinted = 1;
+    print "Content-type: text/html; charset=utf-8\n\n";
+    print &server_log_embed_html(
+        instance_id   => $instance_id,
+        server_dir    => $sd,
+        script_name   => $sn,
+        source        => $effective_source,
+        minecraft     => $is_mc,
+        poll_url_base => _manage_poll_job_module_path(
+            'manage.cgi?instance_id=' . &urlize($instance_id) . '&action=poll_monitor'),
+    );
+    exit;
+}
+
+if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|poll_runtime|poll_players|monitor|job_log_card|start_log_panel)$/) {
     my $action = &sanitize_input($in{'action'});
     &log_debug("action=$action instance=$instance_id");
     if (&user_is_readonly($instance_id)) {
@@ -2564,6 +2666,80 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|poll_runtime|mo
             or &error($text{'schedule_save_failed'} || 'Schedule could not be saved.');
         &_manage_redirect_section($instance_id, 'monitoring');
     }
+    elsif ($action eq 'save_auto_update') {
+        my (undef, $script_name, $server_dir) = _parse_script_info($inst);
+        $script_name = _manage_executable_script_name($server_dir, $script_name)
+            if $server_dir && $script_name;
+        my $script_base = $script_name // '';
+        $script_base =~ s{.*/}{};
+        $script_base =~ s/[^a-zA-Z0-9_-]//g;
+        &error($text{'auto_update_save_failed'} || 'Auto-update could not be saved.')
+            unless $server_dir && $server_dir =~ m|^/|
+            && $script_base ne ''
+            && &auto_update_adapter_for_script($script_base) ne '';
+
+        my $cur = &read_auto_update($server_dir);
+        my $enabled        = &module_config_bool($in{'auto_update_enabled'});
+        my $check_game     = &module_config_bool($in{'auto_update_check_game'});
+        my $check_workshop = &module_config_bool($in{'auto_update_check_workshop'});
+
+        my $interval = $in{'auto_update_interval_min'} // '';
+        $interval =~ s/[^0-9]//g;
+        &error($text{'auto_update_save_failed'} || 'Auto-update could not be saved.')
+            unless &validate_auto_update_interval($interval);
+
+        my $warn = $in{'auto_update_warn_minutes'} // '';
+        $warn =~ s/\s+//g;
+        $warn =~ s/[^0-9,]//g;
+        &error($text{'auto_update_save_failed'} || 'Auto-update could not be saved.')
+            unless &validate_warn_minutes($warn);
+
+        my $msg_template = $in{'auto_update_msg_template'} // '';
+        $msg_template =~ s/[\r\n]+/ /g;
+        $msg_template =~ s/^\s+|\s+$//g;
+        my $msg_now = $in{'auto_update_msg_now'} // '';
+        $msg_now =~ s/[\r\n]+/ /g;
+        $msg_now =~ s/^\s+|\s+$//g;
+        &error($text{'auto_update_save_failed'} || 'Auto-update could not be saved.')
+            if $msg_template eq '' || $msg_now eq '';
+
+        my %new = (
+            enabled            => $enabled ? 1 : 0,
+            check_game         => $check_game ? 1 : 0,
+            check_workshop     => $check_workshop ? 1 : 0,
+            interval_min       => int($interval),
+            warn_minutes       => $warn,
+            msg_template       => $msg_template,
+            msg_now            => $msg_now,
+            # Preserve runtime state from the current file.
+            pending            => $cur->{'pending'} // 0,
+            countdown_deadline => $cur->{'countdown_deadline'} // 0,
+            need_game          => $cur->{'need_game'} // 0,
+            need_workshop      => $cur->{'need_workshop'} // 0,
+            reason             => $cur->{'reason'} // '',
+            mods               => $cur->{'mods'} // '',
+            last_check         => $cur->{'last_check'} // '',
+            last_restart_job   => $cur->{'last_restart_job'} // '',
+            msg_sent           => $cur->{'msg_sent'} // '',
+        );
+        &write_auto_update($server_dir, \%new, $unix_user)
+            or &error($text{'auto_update_save_failed'} || 'Auto-update could not be saved.');
+        my $verify = &read_auto_update($server_dir);
+        unless (($verify->{'enabled'} // 0) == ($enabled ? 1 : 0)
+            && ($verify->{'check_game'} // 0) == ($check_game ? 1 : 0)
+            && ($verify->{'check_workshop'} // 0) == ($check_workshop ? 1 : 0)
+            && int($verify->{'interval_min'} // 0) == int($interval)
+            && ($verify->{'warn_minutes'} // '') eq $warn
+            && ($verify->{'msg_template'} // '') eq $msg_template
+            && ($verify->{'msg_now'} // '') eq $msg_now) {
+            &error($text{'auto_update_save_failed'} || 'Auto-update could not be saved.');
+        }
+        &_rebuild_auto_update_cron()
+            or &error($text{'auto_update_cron_rebuild_failed'} || $text{'auto_update_save_failed'});
+        &module_config_flash_mark("auto_update_save_$instance_id")
+            or &error($text{'auto_update_save_failed'} || 'Auto-update could not be saved.');
+        &_manage_redirect_section($instance_id, 'upgrades');
+    }
     else {
         my $script_name = (split('/', $inst->{'script'}))[-1];
         my $script_dir  = $inst->{'script'};
@@ -2809,6 +2985,30 @@ if (($in{'action'} // '') eq 'poll_runtime') {
     exit;
 }
 
+# GET: poll_players — player-count status cell HTML (60s visibility-aware
+# poll from the manage status line). Never returns the RCON/REST password —
+# player_query_status_html only ever emits a generic count or status text.
+if (($in{'action'} // '') eq 'poll_players') {
+    my (undef, $pq_script, $pq_dir) = _parse_script_info($inst);
+    $pq_script = _manage_executable_script_name($pq_dir, $pq_script)
+        if $pq_dir && $pq_script;
+    my $source = _effective_instance_source($inst);
+    my $rs = _manage_runtime_status($inst, $source, light => 1);
+    my $mon = &read_monitor_state($pq_dir, $config_directory, $instance_id);
+    $rs = _manage_badge_runtime_status($rs, $mon);
+    my $html = ($pq_script && $pq_dir)
+        ? &player_query_status_html($pq_dir, $pq_script,
+            unix_user => $unix_user, runtime_status => $rs)
+        : '';
+    $main::headerprinted = 1;
+    print "Content-type: application/json; charset=utf-8\n\n";
+    print job_log_json_utf8({
+        html           => $html,
+        runtime_status => $rs,
+    });
+    exit;
+}
+
 # GET: monitor
 if (($in{'action'} // '') eq 'monitor') {
     my $script_name = (split('/', $inst->{'script'}))[-1] // '';
@@ -3050,6 +3250,11 @@ if ($job_aborted_id ne ''
             . &html_escape($text{'schedule_saved_ok'} || 'Geplanter Neustart gespeichert.')
             . "</div>\n";
     }
+    if ($flash_id ne '' && &module_config_flash_consume("auto_update_save_$flash_id")) {
+        print "<div class='alert alert-success'>"
+            . &html_escape($text{'auto_update_saved_ok'} || 'Auto-update settings saved.')
+            . "</div>\n";
+    }
     if ($flash_id ne '' && &module_config_flash_consume("cfg_save_$flash_id")) {
         print "<div class='alert alert-success'>"
             . &html_escape($text{'manage_config_saved_ok'} || 'Configuration saved.')
@@ -3155,8 +3360,21 @@ my $has_misplaced = scalar grep { $gkeys_chk{$_} } keys %$common_chk;
 my ($upgrade_ld_cand, $upgrade_mc_cand, $upgrade_lists_loaded) =
     _manage_upgrade_candidates($mc_info);
 
+# Live player count (RCON/REST admin query) when the game has player_query
+# meta — '' when it does not, which also skips the status-line cell + poll JS.
+my $pq_html = ($script_name_for_cfg && $script_dir_for_cfg)
+    ? &player_query_status_html($script_dir_for_cfg, $script_name_for_cfg,
+        unix_user => $unix_user, runtime_status => $runtime_status)
+    : '';
+my $pq_poll_url = $pq_html ne ''
+    ? _manage_poll_job_module_path(
+        "manage.cgi?instance_id=" . &html_escape($instance_id)
+            . "&action=poll_players&xnavigation=1")
+    : '';
+
 print &job_status_pulse_css();
-_manage_render_status_badges($mc_info, $runtime_status, $mon_state, $all_open);
+_manage_render_status_badges($mc_info, $runtime_status, $mon_state, $all_open,
+    $pq_html, $pq_poll_url);
 _manage_render_upgrade_hint($mc_info, $upgrade_ld_cand, $upgrade_mc_cand);
 
 # Server-Info table
@@ -3224,7 +3442,8 @@ if ($runtime_status eq 'online' || $runtime_status eq 'running') {
         print &ui_table_row($text{'manage_memory'}, &html_escape($mem_gb));
     }
     my $qfield = &get_game_query_port_field($script_name_for_cfg);
-    if ($qfield) {
+    my $has_pq = defined &player_query_meta && player_query_meta($script_name_for_cfg);
+    if ($qfield && !$has_pq) {
         my $qport = int($cfg{$qfield} // 0);
         if ($qport > 0) {
             my $qdata = &a2s_query('127.0.0.1', $qport, 2);
@@ -3341,6 +3560,8 @@ if ($effective_source eq 'steamcmd' && $script_name_for_cfg eq 'windrose') {
 # Control buttons — server group + maintenance row
 print "<h4>" . &html_escape($text{'manage_controls_server'}) . "</h4>\n";
 print "<div style='margin:4px 0 12px 0'>\n";
+print &server_control_dev_start_toggle_html()
+    if defined &server_control_dev_start_toggle_html;
 foreach my $action (qw(start stop restart)) {
     my $btn_class = ($action eq 'start') ? 'btn-success'
                   : ($action eq 'stop')  ? 'btn-default'
@@ -3350,12 +3571,16 @@ foreach my $action (qw(start stop restart)) {
     $form .= &ui_hidden('action', $action);
     $form .= &ui_submit($text{"manage_$action"}, undef, undef, undef, $btn_class);
     $form .= &ui_form_end();
+    $form = &server_control_soft_form($form) if defined &server_control_soft_form;
     print &_manage_inline_action_btn($form);
 }
 my $monitor_link = "<a href=\"manage.cgi?instance_id=$safe_id&amp;action=monitor&amp;xnavigation=1\""
     . " class=\"btn btn-default\">" . &html_escape($text{'manage_monitor_btn'}) . "</a>";
 print &_manage_inline_action_btn($monitor_link);
 print "</div>\n";
+print &server_control_dev_start_slot_html()
+    if defined &server_control_dev_start_slot_html;
+print &server_control_soft_action_js() if defined &server_control_soft_action_js;
 
 # Mods / Workshop page links (below server controls)
 &_manage_render_mods_page_link($inst, $instance_id);
@@ -3466,6 +3691,128 @@ print "<div style='margin:4px 0 12px 0'>\n";
     print &_manage_inline_action_btn($form);
 }
 print "</div>\n";
+
+# Auto-update check + warned restart (adapter games only, v1: PZ)
+{
+    my $au_script = $script_name_for_cfg // '';
+    $au_script =~ s{.*/}{};
+    if ($script_dir_for_cfg && $au_script ne ''
+        && &auto_update_adapter_for_script($au_script) ne '') {
+        my $au = &read_auto_update($script_dir_for_cfg);
+        print "<h4>" . &html_escape($text{'auto_update_title'} || 'Auto-Update') . "</h4>\n";
+        print "<p><strong>"
+            . &html_escape($text{'auto_update_howto_title'} || 'How auto-update works')
+            . "</strong><br>"
+            . &html_escape($text{'auto_update_howto_body'} || '')
+            . "</p>\n";
+
+        print &ui_form_start('manage.cgi', 'post');
+        print &ui_hidden('instance_id', $safe_id);
+        print &ui_hidden('action', 'save_auto_update');
+        print &ui_table_start();
+        print &ui_table_row(
+            $text{'auto_update_enabled_label'} || 'Enabled',
+            &ui_checkbox('auto_update_enabled', 1,
+                $text{'auto_update_enabled_hint'} || 'Enable auto-update checks',
+                $au->{'enabled'}),
+        );
+        print &ui_table_row(
+            $text{'auto_update_check_game'} || 'Check game build',
+            &ui_checkbox('auto_update_check_game', 1,
+                $text{'auto_update_check_game_hint'} || 'Compare local vs Steam dedicated build',
+                $au->{'check_game'}),
+        );
+        print &ui_table_row(
+            $text{'auto_update_check_workshop'} || 'Check Workshop',
+            &ui_checkbox('auto_update_check_workshop', 1,
+                $text{'auto_update_check_workshop_hint'} || 'Compare Workshop item timestamps',
+                $au->{'check_workshop'}),
+        );
+        print &ui_table_row(
+            $text{'auto_update_interval_label'} || 'Check interval (minutes)',
+            &ui_textbox('auto_update_interval_min', $au->{'interval_min'}, 5, 0,
+                'placeholder="30"'),
+        );
+        print &ui_table_row(
+            $text{'auto_update_warn_minutes_label'} || 'Warn minutes (CSV)',
+            &ui_textbox('auto_update_warn_minutes', $au->{'warn_minutes'}, 20, 0,
+                'placeholder="15,10,5,1,0"'),
+        );
+        print &ui_table_row(
+            $text{'auto_update_msg_template_label'} || 'Countdown message',
+            &ui_textbox('auto_update_msg_template', $au->{'msg_template'}, 60),
+        );
+        print &ui_table_row(
+            $text{'auto_update_msg_now_label'} || 'Restart-now message',
+            &ui_textbox('auto_update_msg_now', $au->{'msg_now'}, 60),
+        );
+        print &ui_table_row(
+            '',
+            '<small>' . &html_escape($text{'auto_update_msg_placeholders_hint'}
+                || 'Placeholders: {minutes} {reason} {mods} {game}') . '</small>',
+        );
+
+        my $last_check = $au->{'last_check'} // '';
+        if ($last_check =~ /^\d+$/ && $last_check > 0) {
+            my $lc_ts = &monitor_format_restart_time($last_check);
+            $lc_ts = '—' unless defined $lc_ts && $lc_ts ne '';
+            print &ui_table_row(
+                $text{'auto_update_last_check_col'} || 'Last check',
+                &html_escape($lc_ts),
+            );
+        }
+
+        my $pending = ($au->{'pending'} // 0) ? 1 : 0;
+        my $deadline = int($au->{'countdown_deadline'} // 0);
+        if ($pending || $deadline > 0) {
+            my $pend_txt;
+            if ($deadline > 0) {
+                my $dl_ts = &monitor_format_restart_time($deadline);
+                $dl_ts = '—' unless defined $dl_ts && $dl_ts ne '';
+                $pend_txt = &text('auto_update_pending_countdown', $dl_ts);
+                $pend_txt = "Pending restart (countdown until $dl_ts)"
+                    unless defined $pend_txt && $pend_txt =~ /\S/;
+            }
+            else {
+                $pend_txt = $text{'auto_update_pending_yes'} || 'Pending restart';
+            }
+            if (($au->{'reason'} // '') ne '') {
+                $pend_txt .= ' — ' . ($au->{'reason'} // '');
+            }
+            print &ui_table_row(
+                $text{'auto_update_pending_col'} || 'Pending',
+                &html_escape($pend_txt),
+            );
+        }
+
+        my $lr_job = $au->{'last_restart_job'} // '';
+        $lr_job =~ s/[^0-9a-f]//g;
+        if (length($lr_job) == 16) {
+            my $job_url = "job_live.cgi?instance_id=" . &html_escape($instance_id)
+                . "&job=" . &html_escape($lr_job) . "&xnavigation=1";
+            print &ui_table_row(
+                $text{'auto_update_last_restart_col'} || 'Last restart job',
+                '<a href="' . &html_escape($job_url) . '">'
+                    . &html_escape($text{'monitor_job_link'} || 'View job')
+                    . '</a>',
+            );
+        }
+        print &ui_table_end();
+
+        if (($au->{'check_workshop'} // 0)
+            && defined &steam_web_api_key
+            && &steam_web_api_key() !~ /\S/) {
+            print "<p><small>" . &html_escape($text{'auto_update_workshop_no_key_hint'}
+                || 'No Steam Web API key configured — Workshop checks are skipped. '
+                   . 'Add a key under Integrations.')
+                . "</small></p>\n";
+        }
+
+        print &ui_submit($text{'auto_update_save_btn'} || 'Save auto-update',
+            undef, undef, undef, 'btn-primary');
+        print &ui_form_end();
+    }
+}
 
 if ($server_dir_info && $mc_info) {
     _manage_render_mc_loader_upgrade_block(

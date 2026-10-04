@@ -149,6 +149,10 @@ sub sync_monitor_job_pointers {
             my $sl = &read_schedule_last_job_id($sdir);
             $want{$sl} = 1 if $sl ne '';
         }
+        if (defined &read_auto_update_last_job_id) {
+            my $al = &read_auto_update_last_job_id($sdir);
+            $want{$al} = 1 if $al ne '';
+        }
 
         my @remain;
         for my $jid (sort keys %want) {
@@ -573,10 +577,10 @@ sub get_all_jobs {
     }
     closedir($dh);
 
-    # Newest first; monitor_restart / scheduled_restart floated near the top.
+    # Newest first; periodic auto-restarts floated near the top.
     my @sorted = sort {
-        my $am = (($a->{action} // '') =~ /^(?:monitor_restart|scheduled_restart)$/) ? 1 : 0;
-        my $bm = (($b->{action} // '') =~ /^(?:monitor_restart|scheduled_restart)$/) ? 1 : 0;
+        my $am = (($a->{action} // '') =~ /^(?:monitor_restart|scheduled_restart|auto_update_restart)$/) ? 1 : 0;
+        my $bm = (($b->{action} // '') =~ /^(?:monitor_restart|scheduled_restart|auto_update_restart)$/) ? 1 : 0;
         return $bm <=> $am if $am != $bm;
         return ($b->{started_at} || 0) <=> ($a->{started_at} || 0);
     } @jobs;
@@ -598,16 +602,16 @@ sub get_instance_jobs {
     return @jobs;
 }
 
-# UI overview tables: keep only the newest finished monitor_restart (and
-# scheduled_restart) per instance. Running jobs are always kept. Input must be
-# newest-first (as from get_all_jobs / get_instance_jobs).
+# UI overview tables: keep only the newest finished periodic restart per
+# instance (monitor / scheduled / auto-update). Running jobs are always kept.
+# Input must be newest-first (as from get_all_jobs / get_instance_jobs).
 sub jobs_dedupe_periodic_restarts {
     my (@jobs) = @_;
     my %seen_finished;    # "instance_id\0action" => 1
     my @out;
     for my $j (@jobs) {
         my $act = $j->{action} // '';
-        if ($act eq 'monitor_restart' || $act eq 'scheduled_restart') {
+        if ($act eq 'monitor_restart' || $act eq 'scheduled_restart' || $act eq 'auto_update_restart') {
             my $st = $j->{status} // '';
             if ($st ne 'running') {
                 my $key = ($j->{instance_id} // '') . "\0" . $act;
@@ -781,6 +785,7 @@ sub job_action_label {
         init_game_config => $text_ref->{'jobs_action_init_game_config'} || 'Spiel-Config anlegen',
         monitor_restart    => $text_ref->{'jobs_action_monitor_restart'} || 'Neustart (Monitoring)',
         scheduled_restart  => $text_ref->{'jobs_action_scheduled_restart'} || 'Geplanter Neustart',
+        auto_update_restart => $text_ref->{'jobs_action_auto_update_restart'} || 'Neustart (Auto-Update)',
     );
     my $act = $action // '';
     return $labels{$act} // $act;
@@ -810,6 +815,7 @@ sub job_action_labels_hash {
         init_game_config => job_action_label('init_game_config', $text_ref),
         monitor_restart   => job_action_label('monitor_restart',   $text_ref),
         scheduled_restart => job_action_label('scheduled_restart', $text_ref),
+        auto_update_restart => job_action_label('auto_update_restart', $text_ref),
     };
 }
 

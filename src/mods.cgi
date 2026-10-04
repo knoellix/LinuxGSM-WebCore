@@ -24,6 +24,7 @@ require './lib/mc_upgrade.pl';
 require './lib/live_log.pl';
 require './lib/server_log.pl';
 require './lib/server_control_bar.pl';
+require './lib/progressive_ui.pl';
 
 our (%text, %config, %in, %gconfig);
 our ($module_root, $module_root_directory, $module_name, $config_directory);
@@ -586,6 +587,468 @@ sub _mods_env_label_for_row {
     return $text{'mc_mod_env_unknown'} || 'Unknown';
 }
 
+sub _mods_module_cgi_path {
+    my ($query) = @_;
+    my $mn = $module_name // $main::module_name // 'linuxgsm-webcore';
+    $mn =~ s/[^a-zA-Z0-9_-]//g;
+    $query //= '';
+    $query =~ s{^\./}{};
+    return "/$mn/$query";
+}
+
+sub _mods_page_url {
+    my ($instance_id, %extra) = @_;
+    my $url = "mods.cgi?instance_id=" . _mods_query_urlencode($instance_id) . "&xnavigation=1";
+    for my $k (sort keys %extra) {
+        my $v = $extra{$k};
+        next unless defined $v && $v ne '';
+        $url .= "&$k=" . _mods_query_urlencode($v);
+    }
+    return $url;
+}
+
+sub _mods_action_result_text {
+    my ($notice_action, $status) = @_;
+    $notice_action //= '';
+    $notice_action =~ s/[^a-z_]//g;
+    return '' unless $notice_action ne '';
+    my $suffix = ($status eq 'ok') ? '_ok' : '_failed';
+    my $key = "manage_action_${notice_action}${suffix}";
+    return $text{$key} // ($status eq 'ok'
+        ? ($text{'job_ok'} // 'OK')
+        : ($text{'manage_action_failed'} // 'Action failed.'));
+}
+
+sub _mods_async_silent_job_json {
+    my ($job_id, $instance_id, %opts) = @_;
+    $job_id or _mods_job_launch_failed();
+    my $na = $opts{'notice_action'} // '';
+    $na =~ s/[^a-z_]//g;
+    my $poll_q = "mods.cgi?instance_id=" . &urlize($instance_id)
+        . "&action=poll_job&job=" . &urlize($job_id)
+        . "&poll_format=json&silent=1";
+    $poll_q .= "&next_status=" . &urlize($opts{'next_status'})
+        if ($opts{'next_status'} // '') ne '';
+    $poll_q .= "&notice_action=" . &urlize($na) if $na ne '';
+    my $runtime_html = '';
+    $runtime_html = _mods_status_badge_html('starting')
+        if $na =~ /^(?:start|restart)$/;
+    my $start_log_on = $opts{'start_log'} ? 1 : 0;
+    my %payload = (
+        ok               => 1,
+        mode             => 'silent',
+        job_id           => $job_id,
+        notice_action    => $na,
+        poll_url         => _mods_module_cgi_path($poll_q),
+        runtime_poll_url => _mods_module_cgi_path(
+            "mods.cgi?instance_id=" . &urlize($instance_id) . "&action=poll_runtime"),
+        live_url         => _mods_module_cgi_path(
+            "job_live.cgi?instance_id=" . &urlize($instance_id)
+                . "&job=" . &urlize($job_id) . "&xnavigation=1"),
+        start_blink      => ($na =~ /^(?:start|restart)$/ ? 1 : 0),
+        runtime_html     => $runtime_html,
+        start_log        => $start_log_on,
+    );
+    if ($start_log_on) {
+        $payload{'start_log_panel_url'} = _mods_module_cgi_path(
+            "mods.cgi?instance_id=" . &urlize($instance_id)
+                . "&action=start_log_panel&start_log=1");
+    }
+    &server_control_async_json_exit(\%payload);
+}
+
+sub _mods_redirect_silent_job {
+    my ($job_id, $instance_id, %opts) = @_;
+    $job_id or _mods_job_launch_failed();
+    my %extra = (silent_job => $job_id);
+    $extra{next_status}   = $opts{'next_status'}   if ($opts{'next_status'} // '') ne '';
+    $extra{notice_action} = $opts{'notice_action'} if ($opts{'notice_action'} // '') ne '';
+    my $na = $opts{'notice_action'} // '';
+    $na =~ s/[^a-z_]//g;
+    if (!$opts{'start_log'}
+        && ($na eq 'start' || $na eq 'restart')
+        && defined &server_log_start_log_wanted
+        && &server_log_start_log_wanted(\%in))
+    {
+        $opts{'start_log'} = 1;
+    }
+    if ($opts{'start_log'}) {
+        if (&server_log_start_log_flash_mark($instance_id)) {
+            $extra{start_log} = 1;
+        }
+        else {
+            &module_config_flash_mark('start_log_embed_warn')
+                if defined &module_config_flash_mark;
+            $extra{start_log_warn} = 1;
+        }
+    }
+    if (defined &server_control_async_requested && &server_control_async_requested(\%in)) {
+        _mods_async_silent_job_json($job_id, $instance_id,
+            notice_action => $na,
+            next_status   => $opts{'next_status'},
+            start_log     => ($extra{start_log} ? 1 : 0),
+        );
+    }
+    &redirect(_mods_page_url($instance_id, %extra));
+    exit;
+}
+
+sub _mods_render_silent_job_poll {
+    my ($instance_id, $job_id, %opts) = @_;
+    $job_id =~ s/[^0-9a-f]//g;
+    return unless length($job_id) == 16;
+    &validate_job_for_instance($job_id, $instance_id) or return;
+
+    my $notice_action = $opts{'notice_action'} // '';
+    $notice_action =~ s/[^a-z_]//g;
+    unless ($notice_action) {
+        my $meta = &get_job_meta($job_id);
+        $notice_action = $meta->{'action'} // '';
+        $notice_action =~ s/[^a-z_]//g;
+    }
+
+    my $poll_q = "mods.cgi?instance_id=" . &urlize($instance_id)
+        . "&action=poll_job&job=" . &urlize($job_id)
+        . "&poll_format=json&silent=1";
+    $poll_q .= "&next_status=" . &urlize($opts{'next_status'}) if ($opts{'next_status'} // '') ne '';
+    $poll_q .= "&notice_action=" . &urlize($notice_action) if $notice_action ne '';
+    my $poll_cfg = job_log_json_for_script({
+        pollUrl        => _mods_module_cgi_path($poll_q),
+        runtimePollUrl => _mods_module_cgi_path(
+            "mods.cgi?instance_id=" . &urlize($instance_id) . "&action=poll_runtime"),
+        runningMsg     => $text{'manage_action_running'} || 'Aktion läuft…',
+        pollInterval   => 500,
+        pollErrorMsg   => $text{'manage_action_poll_error'}
+            || 'Statusabfrage fehlgeschlagen — Seite neu laden.',
+        startBlink     => ($notice_action =~ /^(?:start|restart)$/ ? 1 : 0),
+    });
+
+    print "<div id=\"silent_job_banner\" class=\"alert alert-info\">"
+        . "<strong>" . &html_escape($text{'manage_action_running'} || 'Aktion läuft…')
+        . "</strong></div>\n";
+    # JS mirrors manage.cgi silent poll (trusted JSON notice_msg from our poll_job).
+    print <<"EOF";
+<script>
+(function () {
+  var C = $poll_cfg;
+  var banner = document.getElementById("silent_job_banner");
+  var timer = null;
+  var failCount = 0;
+  var runtimeTimer = null;
+  function setRuntimeHtml(html) {
+    if (!html) return;
+    if (window.__lgsmStartReadySeen && html.indexOf("lgsm-job-pulse") >= 0) return;
+    var nodes = document.querySelectorAll(".js-runtime-status");
+    for (var i = 0; i < nodes.length; i++) {
+      nodes[i].innerHTML = html;
+    }
+  }
+  function pollRuntimeUntilReady() {
+    if (!C.runtimePollUrl) return;
+    if (runtimeTimer) return;
+    function once() {
+      if (window.__lgsmStartReadySeen) { runtimeTimer = null; return; }
+      fetch(C.runtimePollUrl, { credentials: "same-origin", cache: "no-store" })
+        .then(function (r) { if (!r.ok) throw new Error("http"); return r.json(); })
+        .then(function (d) {
+          if (window.__lgsmStartReadySeen) { runtimeTimer = null; return; }
+          if (d.runtime_html) setRuntimeHtml(d.runtime_html);
+          if (d.starting) {
+            runtimeTimer = window.setTimeout(once, 2000);
+          } else {
+            runtimeTimer = null;
+          }
+        })
+        .catch(function () {
+          runtimeTimer = window.setTimeout(once, 3000);
+        });
+    }
+    once();
+  }
+  function finish(d) {
+    if (timer) {
+      clearInterval(timer);
+      timer = null;
+    }
+    var markUrl = C.pollUrl + (C.pollUrl.indexOf("?") >= 0 ? "&" : "?") + "mark_result=1";
+    fetch(markUrl, { credentials: "same-origin", cache: "no-store" }).catch(function () {});
+    if (banner) {
+      if (d.status === "ok") {
+        banner.className = "alert alert-success";
+        banner.innerHTML = "<strong>" + (d.notice_msg || "") + "</strong>";
+      } else if (d.status === "aborted") {
+        banner.className = "alert alert-info";
+        banner.innerHTML = "<strong>" + (d.notice_msg || "") + "</strong>";
+      } else {
+        banner.className = "alert alert-danger";
+        banner.innerHTML = "<strong>" + (d.notice_msg || "") + "</strong>";
+      }
+    }
+    if (d.runtime_html) setRuntimeHtml(d.runtime_html);
+    if (d.starting || (C.startBlink && d.status === "ok" && d.runtime_status === "starting")) {
+      pollRuntimeUntilReady();
+    }
+    window.setTimeout(function () {
+      if (banner) banner.style.display = "none";
+    }, 4500);
+  }
+  function pollOnce() {
+    fetch(C.pollUrl, { credentials: "same-origin", cache: "no-store" })
+      .then(function (r) {
+        if (!r.ok) throw new Error("http " + r.status);
+        return r.json();
+      })
+      .then(function (d) {
+        failCount = 0;
+        if (d.status === "running") {
+          if (banner) {
+            banner.className = "alert alert-info";
+            banner.innerHTML = "<strong>" + C.runningMsg + "</strong>";
+          }
+          if (d.runtime_html) setRuntimeHtml(d.runtime_html);
+          return;
+        }
+        finish(d);
+      })
+      .catch(function () {
+        failCount++;
+        if (banner && failCount >= 6) {
+          banner.className = "alert alert-warning";
+          banner.innerHTML = "<strong>" + (C.pollErrorMsg || "Poll failed") + "</strong>";
+        }
+      });
+  }
+  pollOnce();
+  timer = setInterval(pollOnce, C.pollInterval);
+})();
+</script>
+EOF
+}
+
+sub _mods_installed_cache_path {
+    my ($instance_id, $key) = @_;
+    $instance_id =~ s/[^a-zA-Z0-9_-]//g;
+    $key =~ s/[^a-zA-Z0-9_-]//g;
+    return '' if $instance_id eq '' || !$config_directory;
+    return "$config_directory/.mc_mods_cache_${instance_id}_$key.json";
+}
+
+sub _mods_installed_cache_key {
+    my ($q, $status, $sort, $dir, $page) = @_;
+    my $raw = join('|', map { $_ // '' } ($q, $status, $sort, $dir, $page));
+    $raw =~ s/[^a-zA-Z0-9_|.-]//g;
+    $raw = 'x' if $raw eq '';
+    # keep filename short
+    if (length($raw) > 80) {
+        require Digest::MD5;
+        $raw = substr(Digest::MD5::md5_hex($raw), 0, 16);
+    }
+    $raw =~ s/\|/_/g;
+    return $raw;
+}
+
+sub _mods_installed_cache_save {
+    my ($path, $data) = @_;
+    return 0 unless $path ne '' && ref($data) eq 'HASH';
+    $data->{'ts'} = time();
+    my $json = eval {
+        require JSON::PP;
+        JSON::PP->new->utf8(0)->canonical(1)->encode($data);
+    };
+    return 0 unless defined $json && $json =~ /\S/;
+    open(my $fh, '>:encoding(UTF-8)', $path) or return 0;
+    print $fh $json;
+    close $fh;
+    chmod 0600, $path;
+    return 1;
+}
+
+sub _mods_installed_row_html {
+    my ($instance_id, $mod, $q, $status, $sort, $dir, $page, $mod_q) = @_;
+    return '' unless ref($mod) eq 'HASH';
+    my $safe_id = &html_escape($instance_id);
+    my $display_name = &_mc_mods_display_name($mod);
+    my $filename = $mod->{'filename_on_disk'} // ($mod->{'basename'} // '');
+    my $source = _mods_source_label_for_row($mod->{'source'} // '');
+    my $env_label = _mods_env_label_for_row($mod->{'env'} // 'unknown');
+    my $status_label = _mods_status_label_for_row(($mod->{'enabled'} // 0) ? 1 : 0);
+    my $version_label = &mc_mod_installed_version_label($mod);
+    my $basename = $mod->{'basename'} // '';
+    my $actions = '';
+    if (&user_is_readonly($instance_id)) {
+        $actions = &html_escape($text{'mc_mods_page_readonly_mod_hint'} || 'Read-only');
+    } else {
+        my $toggle_action = ($mod->{'enabled'} // 0) ? 'mod_disable' : 'mod_enable';
+        my $toggle_label  = ($mod->{'enabled'} // 0)
+            ? ($text{'mc_mods_page_disable_btn'} || 'Disable')
+            : ($text{'mc_mods_page_enable_btn'}  || 'Enable');
+        my $toggle_class  = ($mod->{'enabled'} // 0) ? 'btn-default' : 'btn-success';
+        my $toggle_form = &ui_form_start('mods.cgi', 'post');
+        $toggle_form .= &ui_hidden('instance_id', $safe_id);
+        $toggle_form .= &ui_hidden('xnavigation', '1');
+        $toggle_form .= _mods_hidden_list_state($q, $status, $sort, $dir, $page);
+        $toggle_form .= _mods_hidden_mod_search_state($mod_q);
+        $toggle_form .= &ui_hidden('action', $toggle_action);
+        $toggle_form .= &ui_hidden('mod_basename', $basename);
+        $toggle_form .= &ui_submit($toggle_label, undef, undef, undef, $toggle_class);
+        $toggle_form .= &ui_form_end();
+        $actions .= _mods_inline_action_btn($toggle_form);
+
+        my $confirm = $text{'mc_mods_page_delete_confirm'}
+            || 'Really delete this mod file?';
+        my $delete_form = &ui_form_start('mods.cgi', 'post',
+            "onsubmit=\"return confirm('" . &html_escape($confirm) . "')\"");
+        $delete_form .= &ui_hidden('instance_id', $safe_id);
+        $delete_form .= &ui_hidden('xnavigation', '1');
+        $delete_form .= _mods_hidden_list_state($q, $status, $sort, $dir, $page);
+        $delete_form .= _mods_hidden_mod_search_state($mod_q);
+        $delete_form .= &ui_hidden('action', 'mod_delete');
+        $delete_form .= &ui_hidden('mod_basename', $basename);
+        $delete_form .= &ui_submit($text{'mc_mods_page_delete_btn'} || 'Delete',
+            undef, undef, undef, 'btn-danger');
+        $delete_form .= &ui_form_end();
+        $actions .= _mods_inline_action_btn($delete_form);
+
+        if ($mod->{'has_update_meta'}) {
+            my $versions_url = "mods.cgi?instance_id=" . _mods_query_urlencode($instance_id)
+                . "&action=mod_versions&basename=" . _mods_query_urlencode($basename)
+                . "&xnavigation=1";
+            my $qs = _mods_list_qs($q, $status, $sort, $dir, $page);
+            $versions_url .= "&$qs" if $qs ne '';
+            $versions_url .= "&mod_q=" . _mods_query_urlencode($mod_q) if length($mod_q // '') >= 2;
+            $actions .= _mods_inline_action_btn(
+                "<a href=\"" . &html_escape($versions_url) . "\">"
+                . &html_escape($text{'mc_mods_page_update_btn'} || 'Choose version')
+                . "</a>"
+            );
+        } else {
+            $actions .= _mods_inline_action_btn(
+                "<small>" . &html_escape(
+                    $text{'mc_mods_page_update_unavailable'} || 'No version data available.'
+                ) . "</small>"
+            );
+        }
+    }
+    my $version_cell = ($version_label // '') =~ /\S/
+        ? &html_escape($version_label)
+        : &html_escape($text{'mc_mods_page_version_unknown'} || '-');
+    return [
+        &html_escape($display_name),
+        &html_escape($filename),
+        &html_escape($source),
+        &html_escape($env_label),
+        &html_escape($status_label),
+        $version_cell,
+        $actions,
+    ];
+}
+
+sub _mods_build_installed_payload {
+    my ($instance_id, $server_dir, $profile, $q, $status, $sort, $dir, $page, $mod_q, %opts) = @_;
+    $page = int($page // 1);
+    $page = 1 if $page < 1;
+
+    my $all_mods = &list_installed_mods($server_dir, $profile);
+    my $filtered_mods = &filter_installed_mods($all_mods, {
+        q      => $q,
+        status => $status,
+    });
+    my $sorted_mods = &sort_installed_mods($filtered_mods, $sort, $dir);
+    my ($paged_mods, $total_mods, $total_pages)
+        = &paginate_installed_mods($sorted_mods, $page, 50);
+    $total_mods ||= 0;
+    $total_pages ||= 1;
+    $page = $total_pages if $page > $total_pages;
+
+    if ($total_mods == 0) {
+        my $empty = "<p>" . &html_escape($text{'mc_mods_page_empty'}
+            || 'No installed mods found.') . "</p>\n";
+        return {
+            ok              => 1,
+            count           => 0,
+            page            => 1,
+            pages           => 1,
+            offset          => 0,
+            next_offset     => 0,
+            done            => 1,
+            html            => $empty,
+        };
+    }
+
+    my @rows;
+    for my $mod (@$paged_mods) {
+        my $cells = _mods_installed_row_html(
+            $instance_id, $mod, $q, $status, $sort, $dir, $page, $mod_q);
+        push @rows, $cells if ref($cells) eq 'ARRAY';
+    }
+
+    my $table = &ui_columns_table(
+        [
+            $text{'mc_mods_page_col_name'}     || 'Name',
+            $text{'mc_mods_page_col_filename'} || 'Filename',
+            $text{'mc_mods_page_col_source'}   || 'Source',
+            $text{'mc_mods_page_col_env'}      || 'Side',
+            $text{'mc_mods_page_col_status'}   || 'Status',
+            $text{'mc_mods_page_col_version'}  || 'Version',
+            $text{'mc_mods_page_col_actions'}  || 'Actions',
+        ],
+        '100%',
+        \@rows,
+    );
+    my $after = "<p><small>" . &html_escape(sprintf(
+        $text{'mc_mods_page_page_info'} || 'Page %d of %d (%d entries).',
+        $page, $total_pages, $total_mods
+    )) . "</small></p>\n";
+    if ($total_pages > 1) {
+        $after .= "<div style='text-align:right;margin:4px 0 12px 0'>\n";
+        if ($page > 1) {
+            my $prev_url = _mods_list_url(
+                $instance_id, $q, $status, $sort, $dir, $page - 1, $mod_q);
+            $after .= _mods_inline_action_btn(
+                "<a class=\"btn btn-default\" href=\"" . &html_escape($prev_url) . "\">"
+                . &html_escape($text{'mc_mods_page_prev'} || 'Previous') . "</a>"
+            );
+        }
+        if ($page < $total_pages) {
+            my $next_url = _mods_list_url(
+                $instance_id, $q, $status, $sort, $dir, $page + 1, $mod_q);
+            $after .= _mods_inline_action_btn(
+                "<a class=\"btn btn-default\" href=\"" . &html_escape($next_url) . "\">"
+                . &html_escape($text{'mc_mods_page_next'} || 'Next') . "</a>"
+            );
+        }
+        $after .= "</div>\n";
+    }
+    $after .= "<p><small>" . &html_escape($text{'mc_mods_page_restart_hint'}
+        || 'Hint: restart the server after enable/disable so the loader picks up changes.')
+        . "</small></p>\n";
+
+    return {
+        ok              => 1,
+        count           => $total_mods,
+        page            => $page,
+        pages           => $total_pages,
+        offset          => 0,
+        next_offset     => scalar(@$paged_mods),
+        done            => 1,
+        html            => $table . $after,
+    };
+}
+
+sub _mods_installed_poll_url {
+    my ($instance_id, $q, $status, $sort, $dir, $page, $mod_q) = @_;
+    my $url = "mods.cgi?instance_id=" . &urlize($instance_id)
+        . "&action=poll_installed";
+    $url .= "&q=" . _mods_query_urlencode($q // '') if defined($q) && $q ne '';
+    $url .= "&status=" . _mods_query_urlencode($status // 'all');
+    $url .= "&sort=" . _mods_query_urlencode($sort // 'name');
+    $url .= "&dir=" . _mods_query_urlencode($dir // 'asc');
+    $url .= "&page=" . _mods_query_urlencode($page // 1);
+    $mod_q = _mods_mod_search_query($mod_q // '');
+    $url .= "&mod_q=" . _mods_query_urlencode($mod_q) if length($mod_q) >= 2;
+    return _mods_module_cgi_path($url);
+}
+
 sub _mods_redirect_with_flash {
     my ($instance_id, $flash, $q, $status, $sort, $dir, $page) = @_;
     $flash =~ s/[^a-z_]//g;
@@ -617,6 +1080,20 @@ sub _mods_redirect_if_job_running {
     my $job_id = &find_running_job_for_instance($instance_id, $action);
     $job_id ||= &find_running_job_for_instance($instance_id);
     return 0 unless $job_id;
+    my $act = $action // '';
+    $act =~ s/[^a-z_]//g;
+    unless ($act) {
+        my $meta = &get_job_meta($job_id);
+        $act = $meta->{'action'} // '';
+        $act =~ s/[^a-z_]//g;
+    }
+    if ($act =~ /^(?:start|stop|restart)$/) {
+        _mods_redirect_silent_job(
+            $job_id, $instance_id,
+            notice_action => $act,
+            next_status   => &job_next_instance_status($act),
+        );
+    }
     _mods_redirect_job_live($job_id, $instance_id);
 }
 
@@ -1093,10 +1570,10 @@ $mods_compat_loader =~ s/[^0-9.]//g;
 &user_can_manage($instance_id)
     or &error($text{'err_acl_admin_only'} || 'Access denied');
 
-if ($action ne '' && $action !~ /^(?:monitor|poll_monitor|poll_runtime|job_log_card|monitor_disable|monitor_reset|start|stop|restart|mod_enable|mod_disable|mod_delete|mod_versions|mod_search_versions|mod_install_preview|mc_mod_install|modpack_import|modpack_import_path|modpack_import_remote|modpack_import_resume|mod_compat_scan|upgrade_check|upgrade_versions)$/) {
+if ($action ne '' && $action !~ /^(?:monitor|poll_monitor|poll_runtime|poll_job|poll_installed|start_log_panel|job_log_card|monitor_disable|monitor_reset|start|stop|restart|mod_enable|mod_disable|mod_delete|mod_versions|mod_search_versions|mod_install_preview|mc_mod_install|modpack_import|modpack_import_path|modpack_import_remote|modpack_import_resume|mod_compat_scan|upgrade_check|upgrade_versions)$/) {
     &error($text{'err_invalid_action'} || 'Invalid action');
 }
-if ($action ne '' && $action !~ /^(?:monitor|poll_monitor|poll_runtime|job_log_card)$/ && &user_is_readonly($instance_id)) {
+if ($action ne '' && $action !~ /^(?:monitor|poll_monitor|poll_runtime|poll_job|poll_installed|start_log_panel|job_log_card)$/ && &user_is_readonly($instance_id)) {
     &error($text{'err_readonly'} || 'This server is read-only for your account');
 }
 
@@ -1181,22 +1658,11 @@ if ($action eq 'start' || $action eq 'stop' || $action eq 'restart') {
     }
     _mods_rebuild_monitor_cron();
     my $next_status = &job_next_instance_status($action);
-    if (($action eq 'start' || $action eq 'restart') && &server_log_start_log_enabled()) {
-        if (&server_log_start_log_flash_mark($instance_id)) {
-            my $url = _mods_list_url($instance_id, $q, $status, $sort, $dir, $page)
-                . '&start_log=1';
-            &redirect($url);
-            exit;
-        }
-        # Job already launched — do not claim launch failure; soft-warn and stay on list.
-        &module_config_flash_mark('start_log_embed_warn')
-            if defined &module_config_flash_mark;
-        my $url = _mods_list_url($instance_id, $q, $status, $sort, $dir, $page)
-            . '&start_log_warn=1';
-        &redirect($url);
-        exit;
-    }
-    _mods_redirect_job_live($job_id, $instance_id, next_status => $next_status);
+    _mods_redirect_silent_job(
+        $job_id, $instance_id,
+        next_status   => $next_status,
+        notice_action => $action,
+    );
 }
 
 if ($action =~ /^(?:mod_enable|mod_disable|mod_delete)$/) {
@@ -1933,6 +2399,109 @@ if ($action eq 'poll_runtime') {
     exit;
 }
 
+if ($action eq 'poll_installed') {
+    my $payload = _mods_build_installed_payload(
+        $instance_id, $server_dir, $profile, $q, $status, $sort, $dir, $page, $mod_q,
+    );
+    $main::headerprinted = 1;
+    print "Content-type: application/json; charset=utf-8\n\n";
+    print job_log_json_utf8($payload);
+    exit;
+}
+
+if ($action eq 'start_log_panel') {
+    unless (&server_log_start_log_should_show(\%in, $instance_id)) {
+        $main::headerprinted = 1;
+        print "Content-type: text/html; charset=utf-8\n\n";
+        print '';
+        exit;
+    }
+    my $mn = $module_name // $main::module_name // 'linuxgsm-webcore';
+    $mn =~ s/[^a-zA-Z0-9_-]//g;
+    $main::headerprinted = 1;
+    print "Content-type: text/html; charset=utf-8\n\n";
+    print &server_log_embed_html(
+        instance_id   => $instance_id,
+        server_dir    => $server_dir,
+        script_name   => $script_name,
+        source        => &instance_effective_source($inst),
+        minecraft     => 1,
+        poll_url_base => "/$mn/mods.cgi?instance_id=" . &urlize($instance_id)
+            . '&action=poll_monitor',
+    );
+    exit;
+}
+
+if ($action eq 'poll_job') {
+    my $job_id = $in{'job'} // '';
+    $job_id =~ s/[^0-9a-f]//g;
+    $job_id = substr($job_id, 0, 16);
+    my $next_status = $in{'next_status'} // '';
+    $next_status =~ s/[^a-z_]//g;
+    &timeout_check_job($job_id);
+    &validate_job_for_instance($job_id, $instance_id)
+        or &error($text{'err_not_found'});
+    my $status = &get_job_status($job_id) // 'unknown';
+    my $all_out = &get_job_output_display($job_id);
+
+    if ($status eq 'ok') {
+        my $apply = $next_status;
+        unless ($apply) {
+            my $meta = &get_job_meta($job_id);
+            $apply = &job_next_instance_status($meta->{'action'} // '');
+        }
+        &set_instance_status($instance_id, $apply) if $apply;
+    }
+    if (($in{'mark_result'} // '') eq '1' && $status =~ /^(?:ok|failed|aborted)$/) {
+        &module_config_flash_mark("jobres_$job_id") if defined &module_config_flash_mark;
+    }
+
+    my $notice_action = $in{'notice_action'} // '';
+    $notice_action =~ s/[^a-z_]//g;
+    unless ($notice_action) {
+        my $meta = &get_job_meta($job_id);
+        $notice_action = $meta->{'action'} // '';
+        $notice_action =~ s/[^a-z_]//g;
+    }
+
+    my %payload = (
+        status => $status,
+        output => (defined $all_out ? $all_out : ''),
+        done   => ($status ne 'running' ? 1 : 0),
+    );
+    if (($in{'silent'} // '') eq '1') {
+        if ($status eq 'running' && $notice_action =~ /^(?:start|restart)$/) {
+            $payload{runtime_status} = 'starting';
+            $payload{runtime_html}   = _mods_status_badge_html('starting');
+            $payload{starting}       = 1;
+        }
+        elsif ($status ne 'running') {
+            $payload{notice_msg} = _mods_action_result_text($notice_action, $status);
+            my $retries = 0;
+            if ($status eq 'ok') {
+                $retries = 5 if $notice_action =~ /^(?:start|restart)$/;
+                $retries = 3 if $notice_action eq 'stop';
+            }
+            my $rs = &instance_runtime_status($inst, light => 1, retries => $retries);
+            my $mon = &read_monitor_state($server_dir, $config_directory, $instance_id);
+            if ($status eq 'ok' && $notice_action =~ /^(?:start|restart)$/) {
+                &monitor_heal_starting_if_ready(
+                    $server_dir, $config_directory, $instance_id, $rs,
+                    job_in_flight => 0);
+                $mon = &read_monitor_state($server_dir, $config_directory, $instance_id);
+            }
+            $rs = &monitor_runtime_display_status($rs, $mon);
+            $payload{runtime_status} = $rs;
+            $payload{runtime_html}   = _mods_status_badge_html($rs);
+            $payload{starting}       = ($rs eq 'starting') ? 1 : 0;
+        }
+    }
+    $main::headerprinted = 1;
+    print "Content-type: application/json; charset=utf-8\n\n";
+    print job_log_json_utf8(\%payload);
+    exit;
+}
+
 if ($action eq 'monitor') {
     my $source = &instance_effective_source($inst);
     my $mn = $module_name // $main::module_name // 'linuxgsm-webcore';
@@ -1975,6 +2544,24 @@ if ($action eq 'monitor') {
 my $safe_id = &html_escape($instance_id);
 
 &header($text{'mc_mods_page_title'} || 'Mods', '');
+
+my $silent_job_id = $in{'silent_job'} // '';
+$silent_job_id =~ s/[^0-9a-f]//g;
+$silent_job_id = substr($silent_job_id, 0, 16);
+if ($silent_job_id ne '') {
+    my $na = $in{'notice_action'} // '';
+    $na =~ s/[^a-z_]//g;
+    unless ($na) {
+        my $meta = &get_job_meta($silent_job_id);
+        $na = $meta->{'action'} // '';
+        $na =~ s/[^a-z_]//g;
+    }
+    my %silent_opts = (notice_action => $na);
+    my $ns = $in{'next_status'} // '';
+    $ns =~ s/[^a-z_]//g;
+    $silent_opts{next_status} = $ns if $ns ne '';
+    &_mods_render_silent_job_poll($instance_id, $silent_job_id, %silent_opts);
+}
 
 unless (&mc_mod_ui_ready($profile, $server_dir)) {
     print "<h3>" . &html_escape($text{'mc_mods_page_title'} || 'Mods') . "</h3>\n";
@@ -2454,21 +3041,10 @@ if (length($mod_q) >= 2) {
 
 print &ui_collapsible_end();
 
-my $all_mods = &list_installed_mods($server_dir, $profile);
-my $filtered_mods = &filter_installed_mods($all_mods, {
-    q      => $q,
-    status => $status,
-});
-my $sorted_mods = &sort_installed_mods($filtered_mods, $sort, $dir);
-my ($paged_mods, $total_mods, $total_pages) = &paginate_installed_mods($sorted_mods, $page, 50);
-$total_mods ||= 0;
-$total_pages ||= 1;
-$page = $total_pages if $page > $total_pages;
-
 print &ui_collapsible_start($text{'mc_mods_page_installed_title'} || 'Installed mods',
     id    => 'installed-mods',
     open  => 1,
-    badge => &text('mods_badge_installed_count', $total_mods),
+    badge => '…',
 );
 
 print &ui_form_start('mods.cgi', 'get');
@@ -2507,134 +3083,22 @@ print &ui_submit($text{'mc_mods_page_filter_apply'} || 'Apply',
     undef, undef, undef, 'btn-default');
 print &ui_form_end();
 
-if ($total_mods == 0) {
-    print "<p>" . &html_escape($text{'mc_mods_page_empty'} || 'No installed mods found.') . "</p>\n";
-} else {
-    my @rows;
-    for my $mod (@$paged_mods) {
-        next unless ref($mod) eq 'HASH';
-        my $display_name = &_mc_mods_display_name($mod);
-        my $filename = $mod->{'filename_on_disk'} // ($mod->{'basename'} // '');
-        my $source = _mods_source_label_for_row($mod->{'source'} // '');
-        my $env_label = _mods_env_label_for_row($mod->{'env'} // 'unknown');
-        my $status_label = _mods_status_label_for_row(($mod->{'enabled'} // 0) ? 1 : 0);
-        my $version_label = &mc_mod_installed_version_label($mod);
-        my $basename = $mod->{'basename'} // '';
-        my $actions = '';
-        if (&user_is_readonly($instance_id)) {
-            $actions = &html_escape($text{'mc_mods_page_readonly_mod_hint'} || 'Read-only');
-        } else {
-            my $toggle_action = ($mod->{'enabled'} // 0) ? 'mod_disable' : 'mod_enable';
-            my $toggle_label  = ($mod->{'enabled'} // 0)
-                ? ($text{'mc_mods_page_disable_btn'} || 'Disable')
-                : ($text{'mc_mods_page_enable_btn'}  || 'Enable');
-            my $toggle_class  = ($mod->{'enabled'} // 0) ? 'btn-default' : 'btn-success';
-            my $toggle_form = &ui_form_start('mods.cgi', 'post');
-            $toggle_form .= &ui_hidden('instance_id', $safe_id);
-            $toggle_form .= &ui_hidden('xnavigation', '1');
-            $toggle_form .= _mods_hidden_list_state($q, $status, $sort, $dir, $page);
-            $toggle_form .= _mods_hidden_mod_search_state($mod_q);
-            $toggle_form .= &ui_hidden('action', $toggle_action);
-            $toggle_form .= &ui_hidden('mod_basename', $basename);
-            $toggle_form .= &ui_submit($toggle_label, undef, undef, undef, $toggle_class);
-            $toggle_form .= &ui_form_end();
-            $actions .= _mods_inline_action_btn($toggle_form);
-
-            my $confirm = $text{'mc_mods_page_delete_confirm'}
-                || 'Really delete this mod file?';
-            my $delete_form = &ui_form_start('mods.cgi', 'post',
-                "onsubmit=\"return confirm('" . &html_escape($confirm) . "')\"");
-            $delete_form .= &ui_hidden('instance_id', $safe_id);
-            $delete_form .= &ui_hidden('xnavigation', '1');
-            $delete_form .= _mods_hidden_list_state($q, $status, $sort, $dir, $page);
-            $delete_form .= _mods_hidden_mod_search_state($mod_q);
-            $delete_form .= &ui_hidden('action', 'mod_delete');
-            $delete_form .= &ui_hidden('mod_basename', $basename);
-            $delete_form .= &ui_submit($text{'mc_mods_page_delete_btn'} || 'Delete',
-                undef, undef, undef, 'btn-danger');
-            $delete_form .= &ui_form_end();
-            $actions .= _mods_inline_action_btn($delete_form);
-
-            if ($mod->{'has_update_meta'}) {
-                my $versions_url = "mods.cgi?instance_id=" . _mods_query_urlencode($instance_id)
-                    . "&action=mod_versions&basename=" . _mods_query_urlencode($basename)
-                    . "&xnavigation=1";
-                my $qs = _mods_list_qs($q, $status, $sort, $dir, $page);
-                $versions_url .= "&$qs" if $qs ne '';
-                $versions_url .= "&mod_q=" . _mods_query_urlencode($mod_q) if length($mod_q) >= 2;
-                $actions .= _mods_inline_action_btn(
-                    "<a href=\"" . &html_escape($versions_url) . "\">"
-                    . &html_escape($text{'mc_mods_page_update_btn'} || 'Choose version')
-                    . "</a>"
-                );
-            } else {
-                $actions .= _mods_inline_action_btn(
-                    "<small>" . &html_escape(
-                        $text{'mc_mods_page_update_unavailable'} || 'No version data available.'
-                    ) . "</small>"
-                );
-            }
-        }
-
-        my $version_cell = $version_label =~ /\S/
-            ? &html_escape($version_label)
-            : &html_escape($text{'mc_mods_page_version_unknown'} || '—');
-
-        push @rows, [
-            &html_escape($display_name),
-            &html_escape($filename),
-            &html_escape($source),
-            &html_escape($env_label),
-            &html_escape($status_label),
-            $version_cell,
-            $actions,
-        ];
-    }
-    print &ui_columns_table(
-        [
-            $text{'mc_mods_page_col_name'}     || 'Name',
-            $text{'mc_mods_page_col_filename'} || 'Filename',
-            $text{'mc_mods_page_col_source'}   || 'Source',
-            $text{'mc_mods_page_col_env'}      || 'Side',
-            $text{'mc_mods_page_col_status'}   || 'Status',
-            $text{'mc_mods_page_col_version'}  || 'Version',
-            $text{'mc_mods_page_col_actions'}  || 'Actions',
-        ],
-        '100%',
-        \@rows,
-    );
-
-    print "<p><small>" . &html_escape(sprintf(
-        $text{'mc_mods_page_page_info'} || 'Page %d of %d (%d entries).',
-        $page, $total_pages, $total_mods
-    )) . "</small></p>\n";
-
-    if ($total_pages > 1) {
-        print "<div style='text-align:right;margin:4px 0 12px 0'>\n";
-        if ($page > 1) {
-            my $prev_url = _mods_list_url(
-                $instance_id, $q, $status, $sort, $dir, $page - 1, $mod_q);
-            print _mods_inline_action_btn(
-                "<a class=\"btn btn-default\" href=\"" . &html_escape($prev_url) . "\">"
-                . &html_escape($text{'mc_mods_page_prev'} || 'Previous') . "</a>"
-            );
-        }
-        if ($page < $total_pages) {
-            my $next_url = _mods_list_url(
-                $instance_id, $q, $status, $sort, $dir, $page + 1, $mod_q);
-            print _mods_inline_action_btn(
-                "<a class=\"btn btn-default\" href=\"" . &html_escape($next_url) . "\">"
-                . &html_escape($text{'mc_mods_page_next'} || 'Next') . "</a>"
-            );
-        }
-        print "</div>\n";
-    }
-}
-
-print "<p><small>" . &html_escape($text{'mc_mods_page_restart_hint'}
-    || 'Hint: restart the server after enable/disable so the loader picks up changes.')
-    . "</small></p>\n";
+print "<div id=\"mc-mods-installed\">"
+    . "<p class=\"lgsm-inv-loading-line\"><i>"
+    . &html_escape($text{'mc_mods_page_inventory_loading'}
+        || 'Loading installed mods…')
+    . "</i> " . &ui_progressive_dots_html('mc-mods-inv-dots') . "</p>"
+    . "</div>\n";
 print &ui_collapsible_end();
+print &ui_progressive_table_loader_js(
+    box_id     => 'mc-mods-installed',
+    section_id => 'installed-mods',
+    poll_url   => _mods_installed_poll_url(
+        $instance_id, $q, $status, $sort, $dir, $page, $mod_q),
+    fail_msg   => ($text{'mc_mods_page_inventory_load_failed'}
+        || 'Could not load installed mods list.'),
+    batch_size => 50,
+);
 
 print &ui_collapsible_state_script();
 print &job_log_card_client_js(

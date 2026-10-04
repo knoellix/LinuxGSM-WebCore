@@ -273,3 +273,15 @@ require './src/lib/monitor.pl';
         ? pass('heal_starting: skips when offline')
         : fail("heal_off: healed=$healed status=$s->{status}");
 }
+
+# 24. failed start path: set_monitor_ready_after_start releases grace while offline
+{
+    my $server_dir = "$tmp/fail_clear";
+    set_monitor_running($server_dir, $tmp, 'fail_clear');
+    set_monitor_starting($server_dir, $tmp, 'fail_clear', time() + 1500);
+    my $cleared = set_monitor_ready_after_start($server_dir, $tmp, 'fail_clear');
+    my $s = read_monitor_state($server_dir, $tmp, 'fail_clear');
+    ($cleared && $s->{status} eq 'running' && !monitor_is_starting($s))
+        ? pass('failed-start clear: starting → running while offline')
+        : fail("fail_clear: cleared=$cleared status=$s->{status}");
+}

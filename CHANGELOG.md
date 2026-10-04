@@ -7,14 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Player status (Manage status line):** modular admin query via `player_query` meta in `games_meta.json` — RCON or REST command + parser per game; polls every 60 s while Manage is open and the tab is visible; shows `N/M` when max players is known from config, otherwise `N`; waits until runtime is online (not starting); MC (all variants), Project Zomboid, Palworld; `RCON fehlt` + generic tooltip when config is not ready; Windrose documents no supported query path yet in meta (`player_query_note`)
+- **Auto-Update + restart (Project Zomboid v1):** Manage → Upgrades — poll game build and/or Workshop on an interval; with 0 players restart immediately, with players warn at T−15/10/5/1/0 then hard restart (stop → optional LGSM update → start); per-instance cron + state; Steam Web API key required for Workshop checks
+
 ### Changed
 
+- Workshop installed list: paginated like MC mods (50 per page, Prev/Next); lazy `poll_inventory` loads one page
+- **Workshop UX:** Item An/Aus removed — Abonnieren + Löschen (deabonnieren); per Mod-ID an/aus remains; subscribe auto-enables at most one matching Mod ID (name/`[B42.xx]` fallback when `mod.info` has no require); non-version `require` strings show **unbekannt**, not unpassend
 - Start/Stop/Restart: shared lifecycle — sliding log stall (warn/fail), meta start/stop phases, stop save-grace, restart offline hard-gate; Windrose ready = GenlandiaMulty; Palworld ready = Running Palworld dedicated server on; MC ready/stall scaled by enabled mod count; workshop games (PZ) scale by WorkshopItems + no stall-fail during workshop download phase
+- Workshop page: shell-first paint; installed inventory + Steam titles load via `poll_inventory` (no disk/API block on first render)
+- Start/Stop/Restart (Manage + control bar on Mods/Workshop): soft `fetch` POST + corner toast/badge poll — no theme full-page progress bar for lifecycle actions
+- **Dev-Start** checkbox next to Start/Stop: when on, embeds the live start-log panel after start/restart (same panel as Integrations “Start-Log”); preference in `localStorage`
 
 ### Fixed
 
+- Mods/Workshop lazy tables: complete `ui_columns_table` HTML; hide Authentic dotted `th` side borders (looked like stray pipes); Workshop Steam previews 32×32 instead of 64px
+- Auto-Update countdown texts: ASCII `-` defaults; normalize em-dash / mojibake on read/write (fixes `â` in Countdown-Text)
+- PZ Workshop „Erkannte PZ-Version“: ignore OS/mod `version=` noise (`1.3.0`, kernel `7.2.8`); only accept Build 40–49 (`versionNumber=42.12…`) so subscribe matches mods that declare `42.12`
+- UTF-8 UI strings (`geprüft` / `Job-Übersicht` mojibake): ship `lang/de.UTF-8` / `en.UTF-8`, force charset, and hard-reload module lang into `%text` as UTF-8 (bypasses Webmin Latin-1 `load_language`)
 - Workshop delete: remove the workshop ID under **all** content roots (home Steam tree and `serverfiles`), not only the inventory `content_dir` — leftover copies no longer reappear in the list
 - Start blink / hung start job: detect console log truncate/rotate after offset capture so PZ ready wait sees `*** SERVER STARTED ****`; stop forcing Startet… solely because the start-log embed is open; clear monitor starting on abort; sticky UI badge once start-log sees ready
+- Start/restart: preflight GameDig under `lgsm/` before LGSM CLI (avoids 90s timeout killing mid-`npm install`) and raise default start CLI timeout to 180s
+- Failed start/restart clears monitor `starting` grace so cron can recover instead of skipping until workshop-length `starting_until`
 
 ## [0.2.4] - 2026-09-29
 

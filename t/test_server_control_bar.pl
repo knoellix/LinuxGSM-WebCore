@@ -57,6 +57,24 @@ subtest 'full bar when not readonly' => sub {
     like($html, qr/name="instance_id" value="pz1"/, 'instance id');
     like($html, qr/ONLINE/, 'runtime badge present');
     like($html, qr/value="Restart"/, 'restart button label');
+    like($html, qr/js-lgsm-soft-action/, 'soft-action class on mutate forms');
+    like($html, qr/name="async" value="1"/, 'async=1 hidden field');
+    like($html, qr/lgsm_soft_toast/, 'soft-action corner toast');
+    like($html, qr/position:\\s*fixed|position: fixed/,
+        'toast is fixed overlay (background-job feel)');
+    like($html, qr/js-lgsm-dev-start|lgsm_dev_start/, 'Dev-Start toggle present');
+    like($html, qr/lgsm_dev_start_slot/, 'Dev-Start log slot present');
+};
+
+subtest 'async request detection' => sub {
+    local %main::in = (async => '1');
+    ok(server_control_async_requested(\%main::in), 'async=1');
+    local %main::in = ();
+    local $ENV{HTTP_ACCEPT} = 'application/json';
+    ok(server_control_async_requested({}), 'Accept application/json');
+    local $ENV{HTTP_ACCEPT} = 'text/html';
+    local $ENV{HTTP_X_REQUESTED_WITH} = 'fetch';
+    ok(server_control_async_requested({}), 'X-Requested-With fetch');
 };
 
 subtest 'readonly hides mutation actions' => sub {

@@ -643,9 +643,28 @@ subtest 'version match and select AluminumBat-style' => sub {
         'empty require alone => enable');
     is_deeply(
         [ pz_workshop_select_mod_ids_for_version(
+            [
+                { id => 'ModA', pz_require => '' },
+                { id => 'ModB', pz_require => '' },
+            ],
+            '42.12') ],
+        [],
+        'multiple unconstrained => none (never auto multi)');
+    is_deeply(
+        [ pz_workshop_select_mod_ids_for_version(
             [ { id => 'OldBat', pz_require => '41.78' } ], '42.12') ],
         [],
         'only mismatched require => none');
+    is_deeply(
+        [ pz_workshop_select_mod_ids_for_version(
+            [ { id => 'GunFix', name => '[B42.20] Gun Fix', pz_require => '' } ],
+            '42.20') ],
+        ['GunFix'],
+        'name fallback [B42.20] auto-enables when require empty');
+    is(pz_workshop_extract_version_hint('BladesmithSystemB42'), '',
+        'embedded B42 in mod id is not a version hint');
+    is(pz_workshop_extract_version_hint('[B42.20] Patch'), '42.20',
+        'bracket B42.20 name hint');
 };
 
 subtest 'AluminumBat versioned subdirs collapse' => sub {
@@ -723,6 +742,51 @@ subtest 'pz_workshop_pz_version_cell' => sub {
         pz_workshop_pz_version_cell(' 42.12 ', '42.12'),
         { label => 'PZ 42.12', match => 'ok' },
         'trims require whitespace');
+    is_deeply(
+        pz_workshop_pz_version_cell('ModernFirearmsSystem', '42.12'),
+        { label => 'unbekannt', match => 'unknown' },
+        'dep/mod-name require => unknown not unpassend');
+    is_deeply(
+        pz_workshop_pz_version_cell('tsarslib', '42.12'),
+        { label => 'unbekannt', match => 'unknown' },
+        'non-version require => unknown');
+    is_deeply(
+        pz_workshop_pz_version_cell('', '42.20',
+            { id => 'x', name => '[B42.20] Patch', pz_require => '' }),
+        { label => 'PZ 42.20 ~', match => 'ok' },
+        'name fallback shows ~ and match ok');
+};
+
+subtest 'detect server version ignores OS/modversion noise' => sub {
+    ok(pz_workshop_looks_like_game_version('42.12'), '42.12 is game build');
+    ok(pz_workshop_looks_like_game_version('41.78.16'), '41.78.16 is game build');
+    ok(!pz_workshop_looks_like_game_version('1.3.0'), '1.3.0 is not a PZ build');
+    ok(!pz_workshop_looks_like_game_version('7.2.8'), 'kernel/OS version rejected');
+
+    is(pz_workshop_version_from_log_line(
+        'LOG : General f:0> OS: Linux, version: 7.2.8-2-cachyos, arch: amd64'),
+        '', 'OS version line ignored');
+    is(pz_workshop_version_from_log_line('modversion=1.3.0'),
+        '', 'modversion line ignored');
+    is(pz_workshop_version_from_log_line('versionNumber=42.12.0'),
+        '42.12.0', 'versionNumber accepted');
+    is(pz_workshop_version_from_log_line('version=42.20.3'),
+        '42.20.3', 'startup version= accepted');
+
+    my $tmp = tempdir(CLEANUP => 1);
+    my $home = "$tmp/home";
+    make_path("$home/Zomboid/Logs");
+    open my $fh, '>', "$home/Zomboid/Logs/server-console.txt" or die $!;
+    print $fh "OS: Linux, version: 7.2.8\n";
+    print $fh "some mod version=1.3.0\n";
+    print $fh "versionNumber=42.12.0\n";
+    close $fh;
+
+    no warnings 'redefine';
+    local *main::pz_workshop_unix_home = sub { return $home; };
+    use warnings 'redefine';
+    is(pz_workshop_detect_server_version('u', "$tmp/noserver"),
+        '42.12.0', 'detect prefers PZ versionNumber over noise');
 };
 
 subtest 'subscribe patch ini adds all workshop ids and ordered mods' => sub {
@@ -785,6 +849,18 @@ subtest 'workshop.cgi PZ-Version column' => sub {
     like($src, qr/_ws_render_pz_version_cell/, 'PZ version cell renderer');
     like($src, qr/pz_workshop_pz_version_cell/, 'uses library cell helper');
     unlike($src, qr/· PZ /, 'no inline PZ fragment in mods cell');
+};
+
+subtest 'workshop.cgi subscribe/delete not item disable' => sub {
+    open my $fh, '<', 'src/workshop.cgi' or die $!;
+    local $/;
+    my $src = <$fh>;
+    close $fh;
+    like($src, qr/workshop_subscribe_local_btn/, 'local subscribe for files-only');
+    unlike($src, qr/workshop_disable_btn/, 'no item-level disable button in UI');
+    unlike($src, qr/action', 'disable'/, 'no disable action form in UI');
+    like($src, qr/action', 'delete'/, 'delete remains');
+    like($src, qr/enable_mod|disable_mod/, 'per-mod toggles remain');
 };
 
 done_testing();

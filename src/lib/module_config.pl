@@ -121,19 +121,36 @@ sub module_config_job_secrets_path {
     return "$job_dir/.worker_secrets";
 }
 
+# Overlay key=value secrets file onto %config (game-user workers cannot read /etc/webmin/.../config).
+sub module_config_apply_secrets_file {
+    my ($path) = @_;
+    return 0 unless defined $path && $path ne '' && -r $path;
+    my %extra;
+    _module_config_read_file_plain($path, \%extra);
+    my $applied = 0;
+    for my $k (keys %extra) {
+        next unless $k =~ /^[a-z][a-z0-9_]*$/;
+        next unless defined $extra{$k} && $extra{$k} =~ /\S/;
+        $config{$k} = $extra{$k};
+        $applied = 1;
+    }
+    %main::config = %config if %config;
+    return $applied ? 1 : 0;
+}
+
 # Overlay job-local secrets onto %config (game-user workers cannot read /etc/webmin/.../config).
 sub module_config_apply_job_secrets {
     my $path = module_config_job_secrets_path();
-    return 0 unless $path && -r $path;
-    my %job;
-    _module_config_read_file_plain($path, \%job);
-    for my $k (keys %job) {
-        next unless $k =~ /^[a-z][a-z0-9_]*$/;
-        next unless defined $job{$k} && $job{$k} =~ /\S/;
-        $config{$k} = $job{$k};
-    }
-    %main::config = %config if %config;
-    return 1;
+    return module_config_apply_secrets_file($path);
+}
+
+# Overlay per-instance auto-update secrets ($SERVER_DIR/.monitor/auto_update_secrets).
+# Used by game-user cron detect (no WEBCORE_JOB_DIR).
+sub module_config_apply_auto_update_secrets {
+    my ($server_dir) = @_;
+    return 0 unless defined $server_dir && $server_dir =~ m{^/};
+    my $path = "$server_dir/.monitor/auto_update_secrets";
+    return module_config_apply_secrets_file($path);
 }
 
 # Write integration keys into job dir for game-user workers (0600, owned by unix_user).

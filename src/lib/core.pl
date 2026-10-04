@@ -2,7 +2,7 @@
 use strict;
 use warnings;
 
-our (%text, %config, %gconfig, $module_root, $module_root_directory, $current_lang, $config_directory);
+our (%text, %config, %gconfig, $module_root, $module_root_directory, $current_lang, $config_directory, $module_name);
 
 # Webmin sets $config_directory to the global /etc/webmin in some CGI contexts.
 # Derive the module-specific path from $module_root_directory if needed.
@@ -10,6 +10,69 @@ if ($module_root_directory && $config_directory) {
     (my $_mn = $module_root_directory) =~ s{.*/}{};
     $config_directory .= "/$_mn" unless !$_mn || $config_directory =~ /\Q$_mn\E/;
 }
+
+# Webmin's plain "de"/"en" often default to ISO-8859-1 when loading lang files,
+# which mojibakes UTF-8 strings (geprüft → geprÃ¼ft / Übersicht → Ãbersicht).
+# Prefer lang/*.UTF-8 and force HTTP charset before header().
+# Also re-read the module lang file ourselves as UTF-8 so %text is correct even
+# when load_language still decodes as Latin-1 under de.UTF-8.
+sub webcore_ensure_utf8_text {
+    $main::force_charset = 'utf-8';
+    $main::gconfig{'charset'} = 'utf-8';
+    $gconfig{'charset'} = 'utf-8' if %gconfig;
+
+    my $lang = $main::current_lang // $current_lang // $gconfig{'lang'} // '';
+    my $base = '';
+    if ($lang =~ /^(de|en)(?:\.UTF-8)?$/i) {
+        $base = lc($1);
+    } else {
+        return 0;
+    }
+    my $root = $module_root_directory // $module_root // '';
+    return 0 unless $root ne '';
+
+    my $utf_file = "$root/lang/${base}.UTF-8";
+    my $lang_file = (-f $utf_file) ? $utf_file : "$root/lang/$base";
+    return 0 unless -f $lang_file;
+
+    $main::current_lang = "${base}.UTF-8" if -f $utf_file;
+    $current_lang = "${base}.UTF-8" if -f $utf_file;
+
+    # Best-effort: let Webmin populate %text first (may already be wrong).
+    my $mod = $module_name // '';
+    if ($mod ne '' && defined &load_language) {
+        my %loaded = eval { &load_language($mod) };
+        %text = %loaded if %loaded;
+    }
+
+    my %from_file = webcore_load_lang_file_utf8($lang_file);
+    return 0 unless %from_file;
+    # Overlay module strings with a verified UTF-8 decode of the lang file.
+    %text = (%text, %from_file);
+    return 1;
+}
+
+# Parse a Webmin-style key=value lang file as UTF-8. Returns a hash (empty on fail).
+sub webcore_load_lang_file_utf8 {
+    my ($path) = @_;
+    return () unless defined $path && $path ne '' && -f $path;
+    open(my $fh, '<:encoding(UTF-8)', $path) or return ();
+    my %out;
+    while (my $line = <$fh>) {
+        $line =~ s/\r?\n\z//;
+        next if $line =~ /^\s*#/ || $line !~ /\S/;
+        next unless $line =~ /^([^=]+)=(.*)$/s;
+        my ($k, $v) = ($1, $2);
+        $k =~ s/^\s+|\s+$//g;
+        next if $k eq '';
+        $out{$k} = $v;
+    }
+    close $fh;
+    return %out;
+}
+
+# Auto-apply when this lib is required after init_config().
+webcore_ensure_utf8_text() if defined $module_name && defined $main::current_lang;
 
 # Prevent root execution of privileged actions
 sub error_if_root {

@@ -282,8 +282,7 @@ sub pz_workshop_pick_mod_info_variant {
     my (@matching, @empty, @other);
     for my $mi (@$variants) {
         next unless ref($mi) eq 'HASH';
-        my $req = $mi->{'pz_require'} // '';
-        $req =~ s/^\s+|\s+$//g;
+        my $req = pz_workshop_effective_pz_require($mi);
         if (length $srv && length $req && pz_workshop_version_matches($req, $srv)) {
             push @matching, $mi;
         }
@@ -411,6 +410,43 @@ sub pz_workshop_normalize_version {
     return $1;
 }
 
+# Extract a deliberate PZ version hint from require/name/id text.
+# Avoids treating dep lists / mod names like "BladesmithSystemB42" as versions
+# (embedded digits without a dotted minor). Accepts "42.12", "B42.20", "[B42.20]".
+sub pz_workshop_extract_version_hint {
+    my ($text) = @_;
+    $text = '' unless defined $text;
+    $text =~ s/[\t\n\r\0]//g;
+    $text =~ s/^\s+|\s+$//g;
+    return '' unless length $text;
+    if ($text =~ /\[?\s*B?(\d{2}(?:\.\d+)+)\s*\]?/i) {
+        return $1;
+    }
+    if ($text =~ /^\s*(\d+\.\d+(?:\.\d+)*)\s*$/) {
+        return $1;
+    }
+    if ($text =~ /^\s*(\d{2})\s*$/) {
+        return $1;
+    }
+    return '';
+}
+
+# Effective require for match/display: mod.info require, else weak name/id fallback.
+sub pz_workshop_effective_pz_require {
+    my ($mi) = @_;
+    return '' unless ref($mi) eq 'HASH';
+    my $req = $mi->{'pz_require'} // '';
+    $req =~ s/^\s+|\s+$//g;
+    my $hint = pz_workshop_extract_version_hint($req);
+    return $hint if length $hint;
+    for my $key (qw(name id)) {
+        my $t = $mi->{$key} // '';
+        $hint = pz_workshop_extract_version_hint($t);
+        return $hint if length $hint;
+    }
+    return '';
+}
+
 # Compare dotted version strings: -1 if $a < $b, 0 if equal, 1 if $a > $b.
 sub pz_workshop_version_cmp {
     my ($a, $b) = @_;
@@ -473,34 +509,53 @@ sub pz_workshop_version_exactish {
 }
 
 # Inventory PZ-Version cell data: label + match badge hint.
-# Empty require => label "keine Angabe", match none (never "neueste").
-# Set require + matching server => "PZ $req", ok; mismatch => bad; unknown server => none.
+# No extractable version (empty / dep names) => unbekannt/keine Angabe, match unknown|none.
+# Real version + matching server => ok; mismatch => bad; unknown server => none.
+# Optional $mi_or_fallback: hashref mod.info (name/id fallback) or plain fallback text.
 sub pz_workshop_pz_version_cell {
-    my ($pz_require, $server_ver) = @_;
-    my $req = defined $pz_require ? $pz_require : '';
-    $req =~ s/^\s+|\s+$//g;
-    if ($req eq '') {
-        return { label => 'keine Angabe', match => 'none' };
+    my ($pz_require, $server_ver, $mi_or_fallback) = @_;
+    my $raw = defined $pz_require ? $pz_require : '';
+    $raw =~ s/^\s+|\s+$//g;
+
+    my $ver = '';
+    my $from_fallback = 0;
+    if (ref($mi_or_fallback) eq 'HASH') {
+        my %tmp = %{$mi_or_fallback};
+        $tmp{pz_require} = $raw if $raw ne '';
+        $ver = pz_workshop_effective_pz_require(\%tmp);
+        my $from_req = pz_workshop_extract_version_hint($raw);
+        $from_fallback = 1 if length $ver && !length $from_req;
+    } else {
+        $ver = pz_workshop_extract_version_hint($raw);
+        if (!length $ver && defined $mi_or_fallback && !ref($mi_or_fallback)) {
+            $ver = pz_workshop_extract_version_hint($mi_or_fallback);
+            $from_fallback = 1 if length $ver;
+        }
     }
-    my $label = "PZ $req";
+
+    if (!length $ver) {
+        if ($raw eq '') {
+            return { label => 'keine Angabe', match => 'none' };
+        }
+        # Dep lists / mod names in require — not a version pin.
+        return { label => 'unbekannt', match => 'unknown' };
+    }
+
+    my $label = "PZ $ver";
+    $label .= ' ~' if $from_fallback;
     my $srv = pz_workshop_normalize_version($server_ver);
     if (!length $srv) {
         return { label => $label, match => 'none' };
     }
-    if (pz_workshop_version_matches($req, $server_ver)) {
+    if (pz_workshop_version_matches($ver, $server_ver)) {
         return { label => $label, match => 'ok' };
     }
     return { label => $label, match => 'bad' };
 }
 
 # Select Mod IDs to auto-enable for a workshop item given $server_ver.
-# Unknown server => none. Prefer version-matching require; if none match but the
-# item only has unconstrained (empty require) Mod IDs => enable those. If the
-# item has versioned variants and none match => none (never enable the wrong
-# branch). When both matching and empty-require siblings exist => matching only.
-# Among compatible pins: prefer exact major.minor; else the highest require
-# (newest pin that still fits the server) — avoids enabling AluminumBat12 and
-# AluminumBat together on 42.20.
+# Returns at most ONE id: best version match, else a single unconstrained mod,
+# else none. Never auto-enables multiple Mod IDs for one workshop item.
 sub pz_workshop_select_mod_ids_for_version {
     my ($mod_infos, $server_ver) = @_;
     my $srv = pz_workshop_normalize_version($server_ver);
@@ -519,8 +574,7 @@ sub pz_workshop_select_mod_ids_for_version {
         $id =~ s/[;\r\n]//g;
         next unless length $id;
         next if $seen{$id}++;
-        my $req = $mi->{'pz_require'} // '';
-        $req =~ s/^\s+|\s+$//g;
+        my $req = pz_workshop_effective_pz_require($mi);
         $req_for{$id} = $req;
         if ($req eq '') {
             push @unconstrained, $id;
@@ -534,7 +588,11 @@ sub pz_workshop_select_mod_ids_for_version {
         }
     }
     if (@exact) {
-        return @exact;
+        @exact = sort {
+            pz_workshop_version_cmp($req_for{$b}, $req_for{$a})
+              || ($a cmp $b)
+        } @exact;
+        return ($exact[0]);
     }
     if (@compatible) {
         @compatible = sort {
@@ -544,10 +602,43 @@ sub pz_workshop_select_mod_ids_for_version {
         return ($compatible[0]);
     }
     return () if $has_mismatch;
-    return @unconstrained;
+    # Only auto-enable when exactly one unconstrained Mod ID exists.
+    return @unconstrained == 1 ? ($unconstrained[0]) : ();
+}
+
+# True for PZ game builds used by mods (Build 41/42…), not OS/Java/modversion "1.3.0".
+sub pz_workshop_looks_like_game_version {
+    my ($raw) = @_;
+    my $v = pz_workshop_normalize_version($raw);
+    return 0 unless length $v;
+    # Require major.minor (42.12 / 41.78.16). Major 40–49 covers current PZ eras.
+    return 0 unless $v =~ /\A(\d{2})\.(\d+)/;
+    my $major = int($1);
+    return 0 unless $major >= 40 && $major <= 49;
+    return 1;
+}
+
+# Pull a PZ game version out of one log/console line (strict patterns only).
+sub pz_workshop_version_from_log_line {
+    my ($line) = @_;
+    $line = '' unless defined $line;
+    # Dedicated/startup: versionNumber=42.12.0  or  version=42.20.3
+    if ($line =~ /versionNumber\s*=\s*([0-9]+(?:\.[0-9]+)*)/i
+        || $line =~ /(?:^|[^\w])version\s*=\s*([0-9]+(?:\.[0-9]+)*)/i)
+    {
+        my $v = pz_workshop_normalize_version($1);
+        return $v if pz_workshop_looks_like_game_version($v);
+    }
+    # "Project Zomboid Build 42.20.x" / "LogVersion: … 42.20.3"
+    if ($line =~ /(?:Project\s*Zomboid|LogVersion).*?\b(?:Build\s*)?([0-9]{2}\.[0-9]+(?:\.[0-9]+)*)/i) {
+        my $v = pz_workshop_normalize_version($1);
+        return $v if pz_workshop_looks_like_game_version($v);
+    }
+    return '';
 }
 
 # Best-effort PZ game version from serverfiles / recent logs. '' if unknown.
+# Never treat OS/Java/mod "version: 1.3.0" as the game build — mods use 41.x/42.x.
 sub pz_workshop_detect_server_version {
     my ($unix_user, $server_dir) = @_;
     $server_dir //= '';
@@ -568,37 +659,44 @@ sub pz_workshop_detect_server_version {
         my $body = <$fh> // '';
         close($fh);
         my $v = pz_workshop_normalize_version($body);
-        return $v if length $v;
+        return $v if pz_workshop_looks_like_game_version($v);
     }
 
+    my @log_paths;
+    push @log_paths, "$home/Zomboid/server-console.txt"
+        if $home ne '' && -f "$home/Zomboid/server-console.txt";
+    push @log_paths, "$home/Zomboid/console.txt"
+        if $home ne '' && -f "$home/Zomboid/console.txt";
     my $logs = ($home ne '') ? "$home/Zomboid/Logs" : '';
     if ($logs ne '' && -d $logs) {
         my @candidates;
         if (opendir(my $dh, $logs)) {
             while (my $ent = readdir($dh)) {
                 next unless $ent =~ /\.(txt|log)\z/i;
-                next unless $ent =~ /DebugLog|console|server/i || $ent =~ /\d{2}-\d{2}-\d{2}/;
+                next unless $ent =~ /DebugLog|console|server|LogVersion/i
+                    || $ent =~ /\d{2}-\d{2}-\d{2}/;
                 my $p = "$logs/$ent";
                 next unless -f $p;
                 push @candidates, $p;
             }
             closedir($dh);
         }
-        @candidates = sort { (stat($b))[9] <=> (stat($a))[9] } @candidates;
-        for my $path (@candidates[0 .. 4]) {
-            last unless defined $path;
-            open(my $fh, '<', $path) or next;
-            my $found = '';
-            while (my $line = <$fh>) {
-                if ($line =~ /versionNumber\s*=\s*([0-9]+(?:\.[0-9]+)*)/i
-                    || $line =~ /\bversion[= ]+([0-9]+(?:\.[0-9]+)*)/i)
-                {
-                    $found = pz_workshop_normalize_version($1);
-                }
-            }
-            close($fh);
-            return $found if length $found;
+        push @log_paths, sort { (stat($b))[9] <=> (stat($a))[9] } @candidates;
+    }
+
+    my $seen = 0;
+    for my $path (@log_paths) {
+        last if $seen >= 8;
+        next unless defined $path && -f $path;
+        $seen++;
+        open(my $fh, '<', $path) or next;
+        my $found = '';
+        while (my $line = <$fh>) {
+            my $v = pz_workshop_version_from_log_line($line);
+            $found = $v if length $v;  # keep last good PZ build in file
         }
+        close($fh);
+        return $found if length $found;
     }
     return '';
 }

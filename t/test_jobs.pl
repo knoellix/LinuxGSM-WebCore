@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 use strict;
 use warnings;
-use Test::More tests => 72;
+use Test::More tests => 82;
 use File::Temp qw(tempdir);
 use FindBin qw($Bin);
 
@@ -316,6 +316,10 @@ ok(!validate_job_output_path('/home/mcuser/jobs/short/output'), 'validate_job_ou
 }
 
 is(job_action_label('start', { jobs_action_start => 'Go' }), 'Go', 'job_action_label: localized');
+is(job_action_label('auto_update_restart', { jobs_action_auto_update_restart => 'AU' }),
+    'AU', 'job_action_label: auto_update_restart localized');
+is(job_action_label('auto_update_restart', {}), 'Neustart (Auto-Update)',
+    'job_action_label: auto_update_restart default');
 is(job_action_label('custom_action', {}), 'custom_action', 'job_action_label: fallback');
 is(job_next_instance_status('mc_java_setup'), 'mc_ready', 'job_next_instance_status: mc_java_setup');
 is(job_next_instance_status('reinstall'), 'installed', 'job_next_instance_status: reinstall');
@@ -420,6 +424,46 @@ subtest 'user_worker_launch_cmd' => sub {
     is($found->{status}, 'ok', 'get_instance_jobs: monitor_restart status ok');
 }
 
+# --- sync_monitor_job_pointers: auto_update last_restart_job -----------------
+{
+    no warnings 'redefine';
+    require "$Bin/../src/lib/auto_update.pl";
+    *main::_load_registered = sub {
+        return (
+            pz1 => {
+                user   => 'gs_pz',
+                script => "$tmp/pz-1/pzserver",
+            },
+        );
+    };
+    $_jobs_home_base = $tmp;
+    my $sdir = "$tmp/pz-1";
+    my $jid  = '1122334455667788';
+    require File::Path;
+    File::Path::make_path("$sdir/.monitor", "$tmp/gs_pz/jobs/$jid");
+    open(my $mf, '>', "$tmp/gs_pz/jobs/$jid/meta") or die $!;
+    print $mf "instance_id=pz1\naction=auto_update_restart\nstarted_at=1700000000\nunix_user=gs_pz\n";
+    close($mf);
+    open(my $sf, '>', "$tmp/gs_pz/jobs/$jid/status") or die $!;
+    print $sf "ok\n";
+    close($sf);
+    open(my $of, '>', "$tmp/gs_pz/jobs/$jid/output") or die $!;
+    print $of "auto update restart ok\n";
+    close($of);
+    # No pending_job_ids — only auto_update last_restart_job (I3).
+    open(my $au, '>', "$sdir/.monitor/auto_update") or die $!;
+    print $au "enabled=1\nlast_restart_job=$jid\n";
+    close($au);
+
+    ok(sync_monitor_job_pointers(),
+        'sync_monitor_job_pointers: registers pointer from auto_update');
+    ok(-f "$tmp/jobs/$jid", 'sync_monitor_job_pointers: auto_update pointer created');
+    my @jobs = get_instance_jobs('pz1');
+    my ($found) = grep { $_->{job_id} eq $jid && ($_->{action} // '') eq 'auto_update_restart' } @jobs;
+    ok(defined $found, 'get_instance_jobs: auto_update_restart visible via last_restart_job');
+    is($found->{status}, 'ok', 'get_instance_jobs: auto_update_restart status ok');
+}
+
 # --- _ensure_job_pointer: existing pointer is success ---
 {
     my $jid = create_job('gs_pw');
@@ -444,4 +488,18 @@ subtest 'user_worker_launch_cmd' => sub {
     ok((grep { $_->{job_id} eq 'd' } @f), 'dedupe: keeps running monitor_restart');
     ok((grep { $_->{job_id} eq 'c' } @f), 'dedupe: keeps non-monitor jobs');
     ok((grep { $_->{job_id} eq 'e' } @f), 'dedupe: keeps other instance monitor_restart');
+}
+
+# --- jobs_dedupe_periodic_restarts: auto_update_restart same as other periodics ---
+{
+    my @jobs = (
+        { job_id => 'au1', instance_id => 'i1', action => 'auto_update_restart', status => 'ok', started_at => 300 },
+        { job_id => 'au2', instance_id => 'i1', action => 'auto_update_restart', status => 'ok', started_at => 200 },
+        { job_id => 'au3', instance_id => 'i1', action => 'auto_update_restart', status => 'running', started_at => 400 },
+    );
+    my @f = jobs_dedupe_periodic_restarts(@jobs);
+    is(scalar(@f), 2, 'dedupe: one finished auto_update_restart + running');
+    ok((grep { $_->{job_id} eq 'au1' } @f), 'dedupe: keeps newest finished auto_update_restart');
+    ok(!(grep { $_->{job_id} eq 'au2' } @f), 'dedupe: drops older finished auto_update_restart');
+    ok((grep { $_->{job_id} eq 'au3' } @f), 'dedupe: keeps running auto_update_restart');
 }
