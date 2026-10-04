@@ -62,6 +62,10 @@ subtest 'full bar when not readonly' => sub {
     like($html, qr/lgsm_soft_toast/, 'soft-action corner toast');
     like($html, qr/position:\\s*fixed|position: fixed/,
         'toast is fixed overlay (background-job feel)');
+    like($html, qr/__lgsmSoftActionBound/, 'soft JS binds once (no stacked listeners)');
+    like($html, qr/__lgsmSoftBusy/, 'soft JS uses global busy flag');
+    like($html, qr/lgsm_soft_page_banner|__lgsmSoftCfg/,
+        'soft feedback survives xnavigation (cfg refresh + page banner)');
     like($html, qr/js-lgsm-dev-start|lgsm_dev_start/, 'Dev-Start toggle present');
     like($html, qr/lgsm_dev_start_slot/, 'Dev-Start log slot present');
 };
@@ -75,6 +79,14 @@ subtest 'async request detection' => sub {
     local $ENV{HTTP_ACCEPT} = 'text/html';
     local $ENV{HTTP_X_REQUESTED_WITH} = 'fetch';
     ok(server_control_async_requested({}), 'X-Requested-With fetch');
+};
+
+subtest 'form scalar + async error trap helpers' => sub {
+    is(server_control_form_scalar(undef), '', 'undef → empty');
+    is(server_control_form_scalar('stop'), 'stop', 'plain scalar');
+    is(server_control_form_scalar("stop\0stop"), 'stop', 'NUL-joined takes first');
+    is(server_control_form_scalar(['', 'restart']), 'restart', 'arrayref skips empty');
+    ok(defined &server_control_install_async_error_trap, 'async error trap exported');
 };
 
 subtest 'readonly hides mutation actions' => sub {

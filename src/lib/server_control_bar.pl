@@ -79,6 +79,45 @@ sub server_control_async_json_exit {
     exit;
 }
 
+# Soft fetch must never see Webmin HTML &error pages ("Ungültige Eingabe") — those
+# look like dispatch failure and users click Start/Stop again, stacking jobs.
+# Install once per CGI request when the client asked for JSON.
+our $_server_control_async_error_trapped = 0;
+sub server_control_install_async_error_trap {
+    my ($in_ref) = @_;
+    return 0 if $_server_control_async_error_trapped;
+    return 0 unless server_control_async_requested($in_ref);
+    $_server_control_async_error_trapped = 1;
+    my $prev = \&main::error;
+    no warnings 'redefine';
+    *main::error = sub {
+        my ($msg) = @_;
+        $msg = defined $msg && "$msg" ne '' ? "$msg" : 'Error';
+        *main::error = $prev;
+        server_control_async_json_exit({ ok => 0, error => $msg });
+    };
+    return 1;
+}
+
+# First usable scalar from Webmin ReadParse (arrayref / "\0"-joined multi-value).
+sub server_control_form_scalar {
+    my ($raw) = @_;
+    return '' unless defined $raw;
+    my @vals;
+    if (ref($raw) eq 'ARRAY') {
+        @vals = @$raw;
+    }
+    else {
+        @vals = index("$raw", "\0") >= 0 ? split(/\0/, "$raw") : ($raw);
+    }
+    for my $v (@vals) {
+        next unless defined $v;
+        $v =~ s/^\s+|\s+$//g;
+        return $v if $v ne '';
+    }
+    return '';
+}
+
 # Mark a POST form for soft fetch dispatch (no theme full-page progress bar).
 sub server_control_soft_form {
     my ($form_html) = @_;
@@ -128,6 +167,8 @@ sub server_control_soft_action_js {
             runningMsg   => ($text{'manage_action_running'} || 'Aktion läuft…'),
             startedMsg   => ($text{'manage_action_bg_started'}
                 || 'Im Hintergrund gestartet…'),
+            busyMsg      => ($text{'manage_action_busy'}
+                || 'Eine Aktion läuft bereits — bitte warten.'),
             pollErrorMsg => ($text{'manage_action_poll_error'}
                 || 'Statusabfrage fehlgeschlagen — Seite neu laden.'),
             dispatchErr  => ($text{'manage_action_dispatch_failed'}
@@ -148,23 +189,84 @@ sub server_control_soft_action_js {
 }
 #lgsm_soft_toast .lgsm-soft-toast-actions { margin-top: 6px; font-size: 90%; }
 #lgsm_soft_toast .lgsm-soft-toast-actions a { margin-right: 10px; }
+#lgsm_soft_page_banner {
+  margin: 8px 0 12px 0;
+}
+#lgsm_soft_page_banner .lgsm-soft-toast-actions { margin-top: 6px; font-size: 90%; }
+#lgsm_soft_page_banner .lgsm-soft-toast-actions a { margin-right: 10px; }
 </style>
 <div id="lgsm_soft_toast" class="alert alert-info" role="status" aria-live="polite"></div>
 <script>
 (function () {
-  var C = $cfg;
-  var toast = document.getElementById("lgsm_soft_toast");
-  var busy = false;
+  /* Refresh config on every page paint (xnavigation). Bind submit only once. */
+  window.__lgsmSoftCfg = $cfg;
+  if (window.__lgsmSoftActionBound) {
+    try { window.__lgsmSoftSyncDev && window.__lgsmSoftSyncDev(); } catch (e) {}
+    return;
+  }
+  window.__lgsmSoftActionBound = 1;
   var timer = null;
   var runtimeTimer = null;
   var failCount = 0;
   var hideTimer = null;
-  var storageKey = C.storageKey || "lgsm_dev_start";
+  var disabledBtns = [];
+  function cfg() { return window.__lgsmSoftCfg || {}; }
+  function setBusy(on) {
+    window.__lgsmSoftBusy = on ? 1 : 0;
+  }
+  function disableFormButtons(form) {
+    disabledBtns = [];
+    if (!form) return;
+    var nodes = form.querySelectorAll("input[type=submit],button[type=submit],button:not([type])");
+    for (var i = 0; i < nodes.length; i++) {
+      if (nodes[i].disabled) continue;
+      nodes[i].disabled = true;
+      disabledBtns.push(nodes[i]);
+    }
+  }
+  function restoreFormButtons() {
+    for (var i = 0; i < disabledBtns.length; i++) {
+      try { disabledBtns[i].disabled = false; } catch (e) {}
+    }
+    disabledBtns = [];
+  }
 
   function escapeHtml(s) {
     return String(s || "").replace(/[&<>"']/g, function (c) {
       return ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" })[c];
     });
+  }
+  function ensureToast() {
+    var t = document.getElementById("lgsm_soft_toast");
+    if (t) return t;
+    t = document.createElement("div");
+    t.id = "lgsm_soft_toast";
+    t.className = "alert alert-info";
+    t.setAttribute("role", "status");
+    t.setAttribute("aria-live", "polite");
+    t.style.display = "none";
+    document.body.appendChild(t);
+    return t;
+  }
+  function ensurePageBanner() {
+    var b = document.getElementById("lgsm_soft_page_banner");
+    if (b) return b;
+    b = document.createElement("div");
+    b.id = "lgsm_soft_page_banner";
+    b.className = "alert alert-info";
+    b.setAttribute("role", "status");
+    b.style.display = "none";
+    var anchor = document.querySelector(".js-runtime-status");
+    var table = anchor ? anchor.closest("table") : null;
+    if (table && table.parentNode) {
+      table.parentNode.insertBefore(b, table);
+    } else {
+      var content = document.getElementById("content")
+        || document.querySelector(".panel-body")
+        || document.body;
+      content.insertBefore(b, content.firstChild);
+    }
+    return b;
   }
   function devStartBox() {
     return document.getElementById("lgsm_dev_start")
@@ -173,15 +275,18 @@ sub server_control_soft_action_js {
   function syncDevStartFromStorage() {
     var box = devStartBox();
     if (!box) return;
+    var storageKey = (cfg().storageKey || "lgsm_dev_start");
     try {
       var v = window.localStorage.getItem(storageKey);
       if (v === "1") box.checked = true;
       else if (v === "0") box.checked = false;
     } catch (e) {}
   }
+  window.__lgsmSoftSyncDev = syncDevStartFromStorage;
   function persistDevStart() {
     var box = devStartBox();
     if (!box) return;
+    var storageKey = (cfg().storageKey || "lgsm_dev_start");
     try {
       window.localStorage.setItem(storageKey, box.checked ? "1" : "0");
     } catch (e) {}
@@ -207,25 +312,35 @@ sub server_control_soft_action_js {
       .catch(function () {});
   }
   function showToast(cls, msg, extraHtml) {
-    if (!toast) return;
     if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
-    toast.style.display = "";
-    toast.className = "alert " + (cls || "alert-info");
     var html = "<strong>" + escapeHtml(msg || "") + "</strong>";
     if (extraHtml) html += "<div class=\\"lgsm-soft-toast-actions\\">" + extraHtml + "</div>";
+    var toast = ensureToast();
+    toast.style.display = "";
+    toast.className = "alert " + (cls || "alert-info");
     toast.innerHTML = html;
+    var banner = ensurePageBanner();
+    banner.style.display = "";
+    banner.className = "alert " + (cls || "alert-info");
+    banner.innerHTML = html;
+  }
+  function hideFeedback() {
+    var toast = document.getElementById("lgsm_soft_toast");
+    if (toast) toast.style.display = "none";
+    var banner = document.getElementById("lgsm_soft_page_banner");
+    if (banner) banner.style.display = "none";
   }
   function hideToastLater(ms) {
     if (hideTimer) clearTimeout(hideTimer);
     hideTimer = window.setTimeout(function () {
-      if (toast) toast.style.display = "none";
+      hideFeedback();
       hideTimer = null;
     }, ms || 4500);
   }
   function liveLinkHtml(url) {
     if (!url) return "";
     return "<a href=\\"" + escapeHtml(url) + "\\">"
-      + escapeHtml(C.liveLabel || "Live log") + "</a>";
+      + escapeHtml(cfg().liveLabel || "Live log") + "</a>";
   }
   function setRuntimeHtml(html) {
     if (!html) return;
@@ -269,7 +384,8 @@ sub server_control_soft_action_js {
   }
   function finishPoll(d, pollUrl, runtimeUrl, startBlink) {
     if (timer) { clearInterval(timer); timer = null; }
-    busy = false;
+    setBusy(0);
+    restoreFormButtons();
     if (pollUrl) {
       var markUrl = pollUrl + (pollUrl.indexOf("?") >= 0 ? "&" : "?") + "mark_result=1";
       fetch(markUrl, { credentials: "same-origin", cache: "no-store" }).catch(function () {});
@@ -288,12 +404,14 @@ sub server_control_soft_action_js {
     hideToastLater(4500);
   }
   function startSilentPoll(d) {
+    var C = cfg();
     var pollUrl = d.poll_url || "";
     var runtimeUrl = d.runtime_poll_url || "";
     var startBlink = !!d.start_blink;
     if (!pollUrl) {
       showToast("alert-danger", C.dispatchErr || "Dispatch failed");
-      busy = false;
+      setBusy(0);
+      restoreFormButtons();
       return;
     }
     showToast(
@@ -323,9 +441,10 @@ sub server_control_soft_action_js {
         .catch(function () {
           failCount++;
           if (failCount >= 6) {
-            showToast("alert-warning", C.pollErrorMsg || "Poll failed");
+            showToast("alert-warning", cfg().pollErrorMsg || "Poll failed");
             if (timer) { clearInterval(timer); timer = null; }
-            busy = false;
+            setBusy(0);
+            restoreFormButtons();
           }
         });
     }
@@ -335,10 +454,17 @@ sub server_control_soft_action_js {
   function onSoftSubmit(ev) {
     var form = ev.target;
     if (!form || !form.classList || !form.classList.contains("js-lgsm-soft-action")) return;
-    if (busy) { ev.preventDefault(); return; }
+    if (window.__lgsmSoftBusy) {
+      ev.preventDefault();
+      showToast("alert-warning", cfg().busyMsg || "Busy");
+      hideToastLater(4000);
+      return;
+    }
     if ((form.getAttribute("method") || "get").toLowerCase() !== "post") return;
     ev.preventDefault();
-    busy = true;
+    ev.stopPropagation();
+    setBusy(1);
+    disableFormButtons(form);
     var fd = new FormData(form);
     if (!fd.has("async")) fd.set("async", "1");
     var box = devStartBox();
@@ -347,7 +473,7 @@ sub server_control_soft_action_js {
     persistDevStart();
     var act = String(fd.get("action") || "");
     optimisticStarting(act);
-    showToast("alert-info", C.runningMsg || "Running…");
+    showToast("alert-info", cfg().runningMsg || "Running…");
     var actionUrl = form.getAttribute("action") || window.location.href;
     fetch(actionUrl, {
       method: "POST",
@@ -367,8 +493,9 @@ sub server_control_soft_action_js {
     }).then(function (res) {
       var d = res.d || {};
       if (!res.okHttp || d.ok === 0 || d.ok === false) {
-        showToast("alert-danger", d.error || C.dispatchErr || "Dispatch failed");
-        busy = false;
+        showToast("alert-danger", d.error || cfg().dispatchErr || "Dispatch failed");
+        setBusy(0);
+        restoreFormButtons();
         hideToastLater(6000);
         return;
       }
@@ -387,19 +514,29 @@ sub server_control_soft_action_js {
         return;
       }
       showToast("alert-success", d.notice_msg || "");
-      busy = false;
+      setBusy(0);
+      restoreFormButtons();
       hideToastLater(4500);
     }).catch(function () {
-      showToast("alert-danger", C.dispatchErr || "Dispatch failed");
-      busy = false;
+      showToast("alert-danger", cfg().dispatchErr || "Dispatch failed");
+      setBusy(0);
+      restoreFormButtons();
       hideToastLater(6000);
     });
   }
   syncDevStartFromStorage();
-  var boxInit = devStartBox();
-  if (boxInit) {
-    boxInit.addEventListener("change", persistDevStart);
-  }
+  document.addEventListener("change", function (ev) {
+    var t = ev.target;
+    if (!t) return;
+    if (t.id === "lgsm_dev_start" || (t.classList && t.classList.contains("js-lgsm-dev-start"))) {
+      persistDevStart();
+    }
+  }, true);
+  window.addEventListener("pageshow", function () {
+    setBusy(0);
+    restoreFormButtons();
+    syncDevStartFromStorage();
+  });
   document.addEventListener("submit", onSoftSubmit, true);
 })();
 </script>

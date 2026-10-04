@@ -360,6 +360,16 @@ _steamcmd_stop_grace_wait() {
                 offset=$size
             fi
         fi
+        if [[ "$phase" == "stopped" ]]; then
+            echo "Stop: shutdown marker seen (phase=stopped)"
+            if ! _server_process_running; then
+                echo "Stopped gracefully"
+                return 0
+            fi
+            # Marker seen but PID still up — let caller hard-kill without waiting out grace.
+            echo "Stop: residual process after shutdown marker — forcing"
+            return 1
+        fi
         if [[ "$phase" == "saving" ]]; then
             if (( elapsed - last_save_msg >= 5 )); then
                 echo "Stop: still saving…"

@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 use strict;
 use warnings;
-use Test::More tests => 82;
+use Test::More tests => 86;
 use File::Temp qw(tempdir);
 use FindBin qw($Bin);
 
@@ -502,4 +502,14 @@ subtest 'user_worker_launch_cmd' => sub {
     ok((grep { $_->{job_id} eq 'au1' } @f), 'dedupe: keeps newest finished auto_update_restart');
     ok(!(grep { $_->{job_id} eq 'au2' } @f), 'dedupe: drops older finished auto_update_restart');
     ok((grep { $_->{job_id} eq 'au3' } @f), 'dedupe: keeps running auto_update_restart');
+}
+
+# --- instance_job_launch_lock: exclusive flock for start/stop/restart ---
+{
+    my $fh = instance_job_launch_lock('pz_test_1');
+    ok(defined $fh, 'launch lock: acquired');
+    ok(-f "$tmp/.inst_launch_pz_test_1", 'launch lock: lock file created');
+    is(instance_job_launch_lock(''), undef, 'launch lock: empty id rejected');
+    is(instance_job_launch_lock('!!!'), undef, 'launch lock: non-alnum id rejected');
+    close($fh) if $fh;
 }

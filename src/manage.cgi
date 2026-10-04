@@ -63,6 +63,10 @@ if (($ENV{REQUEST_METHOD} // '') eq 'POST'
 } else {
     &ReadParse(\%in);
 }
+# Soft Start/Stop/Restart: turn &error into JSON so the toast does not look like
+# a failed click (HTML "Ungültige Eingabe") and tempt another press.
+&server_control_install_async_error_trap(\%in)
+    if defined &server_control_install_async_error_trap;
 
 sub _write_file_as_user {
     my ($path, $content, $unix_user, %opts) = @_;
@@ -256,10 +260,29 @@ sub _manage_next_status_for_action {
 }
 
 # Redirect to live log if a background job is already running (never returns).
+# Lifecycle start/stop/restart: only re-attach to the *same* action. A different
+# running lifecycle job (e.g. Start while Stop still waits) must error visibly —
+# never silently poll the wrong job (looks like "no feedback / nothing happens").
 sub _manage_redirect_if_job_running {
     my ($instance_id, $action) = @_;
+    my $want = $action // '';
+    $want =~ s/[^a-z_]//g;
     my $job_id = &find_running_job_for_instance($instance_id, $action);
-    $job_id ||= &find_running_job_for_instance($instance_id);
+    unless ($job_id) {
+        my $other = &find_running_job_for_instance($instance_id);
+        if ($other && _manage_is_silent_job_action($want)) {
+            my $meta = &get_job_meta($other);
+            my $other_act = $meta->{'action'} // '';
+            $other_act =~ s/[^a-z_]//g;
+            if (_manage_is_silent_job_action($other_act) && $other_act ne $want) {
+                my %labels = %{ &job_action_labels_hash(\%text) };
+                my $label = $labels{$other_act} // $other_act;
+                &error(&text('manage_job_busy', $label)
+                    || ("Es läuft bereits ein Job: $label"));
+            }
+        }
+        $job_id = $other if $other && !_manage_is_silent_job_action($want);
+    }
     return 0 unless $job_id;
     my $meta = &get_job_meta($job_id);
     my $job_action = $meta->{'action'} // $action // '';
@@ -270,29 +293,45 @@ sub _manage_redirect_if_job_running {
     &_manage_redirect_after_job_launch($job_id, $instance_id, %opts);
 }
 
+# One info banner per page render. Multiple "running" rows for the same action
+# (e.g. double-click restart) used to stack identical alerts; keep newest per action.
+our $_MANAGE_ACTIVE_JOB_NOTICE_DONE;
 sub _manage_render_active_job_notice {
     my ($instance_id) = @_;
     return unless defined $instance_id && $instance_id =~ /\S/;
+    return if $_MANAGE_ACTIVE_JOB_NOTICE_DONE;
     my @running = &get_instance_jobs($instance_id, status => 'running');
     return unless @running;
     my %labels = %{ &job_action_labels_hash(\%text) };
+    my %seen_act;
+    my @uniq;
     for my $job (@running) {
+        my $act = $job->{action} // '';
+        next if $seen_act{$act}++;
+        push @uniq, $job;
+    }
+    $_MANAGE_ACTIVE_JOB_NOTICE_DONE = 1;
+    print "<div class='alert alert-info'>";
+    print "<strong>"
+        . &html_escape($text{'manage_job_running_title'} || 'Background job running')
+        . "</strong><br>";
+    for my $job (@uniq) {
         my $jid = $job->{job_id};
         my $act = $job->{action} // '';
         my $label = $labels{$act} // $act;
         my $next = _manage_next_status_for_action($act);
-        print "<div class='alert alert-info'>";
-        print "<strong>" . &html_escape($text{'manage_job_running_title'}) . "</strong><br>";
-        print &html_escape($label) . " — " . &html_escape($text{'job_running'}) . "<br>";
+        # ASCII separator — em-dash mojibakes to "â" when Webmin loads lang as Latin-1.
+        print &html_escape($label) . " - "
+            . &html_escape($text{'job_running'} || 'Running...') . "<br>";
         unless (_manage_is_silent_job_action($act)) {
             my $url = "job_live.cgi?instance_id=" . &html_escape($instance_id)
                 . "&job=" . &html_escape($jid) . "&xnavigation=1";
             $url .= "&next_status=" . &html_escape($next) if $next;
             print "<a href=\"" . &html_escape($url) . "\">"
-                . &html_escape($text{'manage_job_open_live'}) . "</a>";
+                . &html_escape($text{'manage_job_open_live'}) . "</a><br>";
         }
-        print "</div>\n";
     }
+    print "</div>\n";
 }
 
 sub _manage_render_instance_jobs_table {
@@ -1657,7 +1696,10 @@ sub _manage_maybe_launch_pending_modpack {
     }
 }
 
-my $instance_id = &sanitize_input($in{'instance_id'} || $in{'user'} || '');
+my $instance_id_raw = defined &server_control_form_scalar
+    ? &server_control_form_scalar($in{'instance_id'} // $in{'user'} // '')
+    : ($in{'instance_id'} || $in{'user'} || '');
+my $instance_id = &sanitize_input($instance_id_raw);
 my $inst = &get_instance_flexible($instance_id) or &error($text{'err_not_found'});
 $inst = _manage_reconcile_mc_instance_status($inst, $instance_id);
 my $unix_user = $inst->{'user'};
@@ -1708,8 +1750,11 @@ if (($in{'action'} // '') eq 'start_log_panel') {
     exit;
 }
 
-if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|poll_runtime|poll_players|monitor|job_log_card|start_log_panel)$/) {
-    my $action = &sanitize_input($in{'action'});
+my $action_raw = defined &server_control_form_scalar
+    ? &server_control_form_scalar($in{'action'} // '')
+    : ($in{'action'} // '');
+if ($action_raw ne '' && $action_raw !~ /^(?:poll_job|poll_monitor|poll_runtime|poll_players|monitor|job_log_card|start_log_panel)$/) {
+    my $action = &sanitize_input($action_raw);
     &log_debug("action=$action instance=$instance_id");
     if (&user_is_readonly($instance_id)) {
         &error($text{'err_readonly'} || 'This server is read-only for your account');
@@ -2508,6 +2553,9 @@ if ($in{'action'} && $in{'action'} !~ /^(?:poll_job|poll_monitor|poll_runtime|po
         exit;
     }
     elsif ($action eq 'start' || $action eq 'stop' || $action eq 'restart') {
+        # Serialize concurrent soft clicks (flock held until CGI exit).
+        my $_launch_lock = &instance_job_launch_lock($instance_id)
+            if defined &instance_job_launch_lock;
         &_manage_redirect_if_job_running($instance_id, $action);
         my $source = $effective_source;
         my ($script_path, $script_name, $server_dir) = _parse_script_info($inst);

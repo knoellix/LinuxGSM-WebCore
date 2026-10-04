@@ -38,6 +38,8 @@ if (($ENV{REQUEST_METHOD} // '') eq 'POST'
 } else {
     &ReadParse(\%in);
 }
+&server_control_install_async_error_trap(\%in)
+    if defined &server_control_install_async_error_trap;
 &module_config_sync_in();
 
 sub _parse_script_info {
@@ -1077,8 +1079,24 @@ sub _mods_redirect_job_live {
 
 sub _mods_redirect_if_job_running {
     my ($instance_id, $action) = @_;
+    my $want = $action // '';
+    $want =~ s/[^a-z_]//g;
     my $job_id = &find_running_job_for_instance($instance_id, $action);
-    $job_id ||= &find_running_job_for_instance($instance_id);
+    unless ($job_id) {
+        my $other = &find_running_job_for_instance($instance_id);
+        if ($other && $want =~ /^(?:start|stop|restart)$/) {
+            my $meta = &get_job_meta($other);
+            my $other_act = $meta->{'action'} // '';
+            $other_act =~ s/[^a-z_]//g;
+            if ($other_act =~ /^(?:start|stop|restart)$/ && $other_act ne $want) {
+                my %labels = %{ &job_action_labels_hash(\%text) };
+                my $label = $labels{$other_act} // $other_act;
+                &error(&text('manage_job_busy', $label)
+                    || ("A job is already running: $label"));
+            }
+        }
+        $job_id = $other if $other && $want !~ /^(?:start|stop|restart)$/;
+    }
     return 0 unless $job_id;
     my $act = $action // '';
     $act =~ s/[^a-z_]//g;
@@ -1538,11 +1556,16 @@ sub _mods_render_upgrade_check_section {
     print &ui_collapsible_end();
 }
 
-my $instance_id = &sanitize_input($in{'instance_id'} || $in{'user'} || '');
+my $instance_id_raw = defined &server_control_form_scalar
+    ? &server_control_form_scalar($in{'instance_id'} // $in{'user'} // '')
+    : ($in{'instance_id'} || $in{'user'} || '');
+my $instance_id = &sanitize_input($instance_id_raw);
 my $inst = &get_instance_flexible($instance_id) or &error($text{'err_not_found'});
 my $unix_user = $inst->{'user'} // '';
 my ($script_path, $script_name, $server_dir) = _parse_script_info($inst);
-my $action = $in{'action'} // '';
+my $action = defined &server_control_form_scalar
+    ? &server_control_form_scalar($in{'action'} // '')
+    : ($in{'action'} // '');
 $action =~ s/[^a-z_]//g;
 my $profile = &read_mc_profile($server_dir);
 
@@ -1601,6 +1624,8 @@ if ($action eq 'monitor_reset') {
 }
 
 if ($action eq 'start' || $action eq 'stop' || $action eq 'restart') {
+    my $_launch_lock = &instance_job_launch_lock($instance_id)
+        if defined &instance_job_launch_lock;
     _mods_redirect_if_job_running($instance_id, $action);
 
     if ($action eq 'start' && &is_minecraft_game($script_name)) {

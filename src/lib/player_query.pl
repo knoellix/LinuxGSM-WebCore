@@ -30,9 +30,12 @@ our $PLAYER_QUERY_META_OVERRIDE;
 our $PLAYER_QUERY_RCON_FETCH;
 our $PLAYER_QUERY_REST_FETCH;
 
-use constant PLAYER_QUERY_HOST       => '127.0.0.1';
-use constant PLAYER_QUERY_TIMEOUT    => 2;
-use constant PLAYER_QUERY_CACHE_TTL  => 60;
+use constant PLAYER_QUERY_HOST            => '127.0.0.1';
+use constant PLAYER_QUERY_TIMEOUT         => 2;
+use constant PLAYER_QUERY_CACHE_TTL       => 60;
+# Failed RCON/REST must not stick for a full minute — PZ often reports
+# process-online before RCON listens; short fail TTL lets the next poll recover.
+use constant PLAYER_QUERY_FAIL_CACHE_TTL  => 10;
 
 # Return shallow copy of player_query meta for $script, or undef.
 sub player_query_meta {
@@ -253,7 +256,12 @@ sub _pq_cache_valid {
     return 0 unless ref($data) eq 'HASH';
     my $ts = int($data->{'ts'} // 0);
     return 0 unless $ts > 0;
-    return (time() - $ts) < PLAYER_QUERY_CACHE_TTL;
+    my $ttl = PLAYER_QUERY_CACHE_TTL;
+    my $state = $data->{'state'} // '';
+    if (!$data->{'ok'} || $state eq 'unreachable' || $state eq 'rcon_missing') {
+        $ttl = PLAYER_QUERY_FAIL_CACHE_TTL;
+    }
+    return (time() - $ts) < $ttl;
 }
 
 # Repairs ownership of the .monitor dir to $unix_user before an su write,
@@ -312,15 +320,18 @@ sub _pq_cache_write {
 # Task 4: transports (Source RCON + REST), host always 127.0.0.1
 # ------------------------------------------------------------------
 
+# Source RCON wire ints are always 32-bit little-endian. Use i< (not l<):
+# plain l can be 64-bit on some Perls and breaks AUTH against PZ/Source.
 sub _pq_rcon_pack_packet {
     my ($id, $type, $body) = @_;
     $body = '' unless defined $body;
-    my $payload = pack('l<l<', $id, $type) . $body . "\x00\x00";
-    return pack('l<', length($payload)) . $payload;
+    my $payload = pack('i<i<', $id, $type) . $body . "\x00\x00";
+    return pack('i<', length($payload)) . $payload;
 }
 
 # Reads exactly $n bytes from $sock, respecting $timeout. Returns the
-# bytes read, or undef on timeout/EOF/error.
+# bytes read, or undef on timeout/EOF/error. Uses sysread (binary-safe;
+# buffered $sock->read mixed with syswrite broke PZ AUTH in production).
 sub _pq_sock_read_n {
     my ($sock, $n, $timeout) = @_;
     my $buf      = '';
@@ -333,7 +344,7 @@ sub _pq_sock_read_n {
         my $ready = select($rin, undef, undef, $remaining);
         return undef unless $ready;
         my $chunk;
-        my $got = $sock->read($chunk, $n - length($buf));
+        my $got = sysread($sock, $chunk, $n - length($buf));
         return undef unless defined $got && $got > 0;
         $buf .= $chunk;
     }
@@ -345,11 +356,11 @@ sub _pq_rcon_read_packet {
     my ($sock, $timeout) = @_;
     my $size_buf = _pq_sock_read_n($sock, 4, $timeout);
     return undef unless defined $size_buf;
-    my $size = unpack('l<', $size_buf);
+    my $size = unpack('i<', $size_buf);
     return undef unless $size >= 8 && $size <= 65536;
     my $payload = _pq_sock_read_n($sock, $size, $timeout);
     return undef unless defined $payload;
-    my ($id, $type) = unpack('l<l<', substr($payload, 0, 8));
+    my ($id, $type) = unpack('i<i<', substr($payload, 0, 8));
     my $body = substr($payload, 8);
     $body =~ s/\x00+$//;
     return { id => $id, type => $type, body => $body };
@@ -361,10 +372,13 @@ use constant PLAYER_QUERY_RCON_DRAIN_TIMEOUT => 0.2;
 
 # Minimal Source RCON (AUTH + EXEC). Returns ($raw, $err); $err '' on
 # success. Never returns a players count here — caller parses $raw.
+# Err codes: bad_port | connect_failed | request_failed | auth_timeout |
+# auth_failed | auth_bad_response | exec_failed
 sub _pq_rcon_real_fetch {
     my ($host, $port, $password, $command, $timeout) = @_;
     $timeout //= PLAYER_QUERY_TIMEOUT;
     return (undef, 'bad_port') unless $port && $port > 0 && $port < 65536;
+    $password = '' unless defined $password;
 
     require IO::Socket::INET;
     my $sock = IO::Socket::INET->new(
@@ -374,25 +388,44 @@ sub _pq_rcon_real_fetch {
         Timeout  => $timeout,
     );
     return (undef, 'connect_failed') unless $sock;
+    $sock->autoflush(1);
 
-    $sock->print(_pq_rcon_pack_packet(1, 3, $password))
-        or do { $sock->close(); return (undef, 'request_failed'); };
+    my $auth_pkt = _pq_rcon_pack_packet(1, 3, $password);
+    my $wrote = $sock->syswrite($auth_pkt);
+    unless (defined $wrote && $wrote == length($auth_pkt)) {
+        $sock->close();
+        return (undef, 'request_failed');
+    }
 
     # Some servers send an empty SERVERDATA_RESPONSE_VALUE (type 0) ahead
-    # of the real SERVERDATA_AUTH_RESPONSE (type 2) — skip up to one.
+    # of the real SERVERDATA_AUTH_RESPONSE (type 2) — skip a few non-auth
+    # packets (PZ/Source occasionally emit more than one type-0).
     my $authed = 0;
-    for (1 .. 2) {
+    for (1 .. 4) {
         my $pkt = _pq_rcon_read_packet($sock, $timeout);
-        unless ($pkt) { $sock->close(); return (undef, 'auth_failed'); }
+        unless ($pkt) {
+            $sock->close();
+            return (undef, 'auth_timeout');
+        }
         next if $pkt->{'type'} != 2;
-        if ($pkt->{'id'} == -1) { $sock->close(); return (undef, 'auth_failed'); }
+        if ($pkt->{'id'} == -1) {
+            $sock->close();
+            return (undef, 'auth_failed');
+        }
         $authed = 1;
         last;
     }
-    unless ($authed) { $sock->close(); return (undef, 'auth_failed'); }
+    unless ($authed) {
+        $sock->close();
+        return (undef, 'auth_bad_response');
+    }
 
-    $sock->print(_pq_rcon_pack_packet(2, 2, $command))
-        or do { $sock->close(); return (undef, 'request_failed'); };
+    my $cmd_pkt = _pq_rcon_pack_packet(2, 2, $command);
+    $wrote = $sock->syswrite($cmd_pkt);
+    unless (defined $wrote && $wrote == length($cmd_pkt)) {
+        $sock->close();
+        return (undef, 'request_failed');
+    }
     my $resp = _pq_rcon_read_packet($sock, $timeout);
     unless ($resp) { $sock->close(); return (undef, 'exec_failed'); }
     my $body = $resp->{'body'};
@@ -619,10 +652,15 @@ sub player_query_status_html {
         return &html_escape($max > 0 ? "$players/$max" : "$players");
     }
 
+    my $tip = $text{'manage_players_unreachable_tip'}
+        // 'RCON/REST-Admin-Query nicht erreichbar oder Zugangsdaten falsch.';
+    # Append machine err code (auth_failed / connect_failed / …) — never password.
+    my $err = $count->{'err'} // '';
+    $err =~ s/[^a-z0-9_]//g;
+    $tip .= " ($err)" if length($err);
     return _pq_status_span(
         $text{'manage_players_unreachable'} // '?',
-        $text{'manage_players_unreachable_tip'}
-            // 'RCON/REST-Admin-Query nicht erreichbar oder Zugangsdaten falsch.',
+        $tip,
     );
 }
 

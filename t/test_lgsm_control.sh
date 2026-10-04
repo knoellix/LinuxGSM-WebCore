@@ -487,6 +487,46 @@ unset WEBCORE_LC_STOP_GRACE WEBCORE_LC_STOP_FORCE WEBCORE_LC_READY_LOG \
 unset -f lgsm_tmux_is_online lgsm_tmux_resolve_live lgsm_tmux_kill_live \
     lgsm_kill_java_for_server lgsm_java_pids_for_server 2>/dev/null || true
 
+# --- Stop: phase=stopped (PZ "Shutdown handling finished") finishes without full grace ---
+mkdir -p "$TMP/pz2/log/console"
+: >"$TMP/pz2/log/console/pzserver-console.log"
+# Flag files: command substitution runs stubs in a subshell — shell vars won't propagate.
+_stop_online_file="$TMP/pz2_online"
+_killed_file="$TMP/pz2_killed"
+echo 1 >"$_stop_online_file"
+rm -f "$_killed_file"
+lgsm_tmux_is_online() { [[ "$(cat "$_stop_online_file" 2>/dev/null || echo 0)" -eq 1 ]]; }
+lgsm_tmux_resolve_live() { return 1; }
+lgsm_tmux_kill_live() { echo 0 >"$_stop_online_file"; echo 1 >"$_killed_file"; return 0; }
+lgsm_kill_java_for_server() { return 0; }
+lgsm_java_pids_for_server() { return 0; }
+export WEBCORE_LC_STOP_GRACE=30
+export WEBCORE_LC_STOP_FORCE=60
+export WEBCORE_LC_READY_LOG=console
+export WEBCORE_LC_STOP_PHASE_0='saving|[Ss]aving'
+export WEBCORE_LC_STOP_PHASE_1='stopped|Shutdown handling finished|Server stopped'
+# Append shutdown marker shortly after stop starts watching the log
+(
+    sleep 1
+    printf 'LOG  : General      f:5 st:440,230,610> Shutdown handling finished\n' \
+        >>"$TMP/pz2/log/console/pzserver-console.log"
+) &
+set +e
+out="$(lgsm_stop_direct "$TMP/pz2" pzserver quit 2 2>&1)"
+rc=$?
+set -e
+[[ "$rc" -eq 0 ]] || { echo "fail: shutdown-marker stop rc=$rc: $out"; exit 1; }
+echo "$out" | grep -q 'shutdown marker' \
+    || { echo "fail: expected shutdown marker finish: $out"; exit 1; }
+echo "$out" | grep -qiE 'grace expired' \
+    && { echo "fail: must not wait full grace after shutdown marker: $out"; exit 1; }
+[[ -f "$_killed_file" || "$(cat "$_stop_online_file" 2>/dev/null || echo 1)" -eq 0 ]] \
+    || { echo "fail: expected residual session cleanup after marker: $out"; exit 1; }
+unset WEBCORE_LC_STOP_GRACE WEBCORE_LC_STOP_FORCE WEBCORE_LC_READY_LOG \
+    WEBCORE_LC_STOP_PHASE_0 WEBCORE_LC_STOP_PHASE_1
+unset -f lgsm_tmux_is_online lgsm_tmux_resolve_live lgsm_tmux_kill_live \
+    lgsm_kill_java_for_server lgsm_java_pids_for_server 2>/dev/null || true
+
 # --- WEBCORE_LC_ALIVE_PID: kill -0 instead of tmux (SteamCMD/Windrose twin) ---
 mkdir -p "$TMP/wr-alive/serverfiles/R5/Saved/Logs"
 : >"$TMP/wr-alive/serverfiles/R5/Saved/Logs/R5.log"

@@ -267,6 +267,8 @@ lgsm_lifecycle_detect_stop_phase() {
 # Direct stop: console command → save-aware grace wait → tmux/java force.
 # Env WEBCORE_LC_STOP_GRACE / STOP_FORCE (from eval_meta) override $4 when set (>0).
 # While stop-phase id=saving matches and elapsed < force: do not force; log still saving.
+# When stop-phase id=stopped matches (clean shutdown marker): finish immediately
+# (kill residual session/java) — do not wait out the full grace.
 # Force after stop_force, or after stop_grace when not saving.
 lgsm_stop_direct() {
     local server_dir="$1" script_name="$2" console_cmd="${3:-stop}"
@@ -338,6 +340,25 @@ lgsm_stop_direct() {
                 [[ -n "$phase_hit" ]] && phase="$phase_hit"
                 offset=$size
             fi
+        fi
+
+        if [[ "$phase" == "stopped" ]]; then
+            echo "Stop: shutdown marker seen (phase=stopped) — finishing"
+            if ! lgsm_tmux_is_online "$server_dir" "$script_name"; then
+                lgsm_kill_java_for_server "$server_dir"
+                echo "Stopped gracefully"
+                return 0
+            fi
+            # Clean log shutdown but session/java may linger briefly — finish now.
+            lgsm_tmux_kill_live "$server_dir" "$script_name" || true
+            sleep 1
+            lgsm_kill_java_for_server "$server_dir"
+            if lgsm_tmux_is_online "$server_dir" "$script_name"; then
+                echo "ERROR: still online after shutdown marker" >&2
+                return 1
+            fi
+            echo "Stopped (shutdown marker)"
+            return 0
         fi
 
         if [[ "$phase" == "saving" ]]; then

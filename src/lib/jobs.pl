@@ -1,10 +1,29 @@
 # LinuxGSM-WebCore - Background job management
 use strict;
 use warnings;
+use Fcntl qw(:flock);
 
 our $config_directory;
 our $module_config_directory;
 our $_jobs_home_base = '/home';
+
+# Exclusive flock for start/stop/restart dispatch — prevents parallel CGI clicks
+# from creating N running jobs before find_running_job_for_instance sees the first.
+# Returns an open FH (keep until CGI exit) or undef if lock unavailable.
+sub instance_job_launch_lock {
+    my ($instance_id) = @_;
+    $instance_id //= '';
+    $instance_id =~ s/[^a-zA-Z0-9_-]//g;
+    return undef if $instance_id eq '';
+    my $base = $module_config_directory;
+    $base = $config_directory if !defined $base || $base eq '';
+    return undef if !defined $base || $base eq '';
+    mkdir $base, 0700 unless -d $base;
+    my $path = "$base/.inst_launch_$instance_id";
+    open(my $fh, '>>', $path) or return undef;
+    flock($fh, LOCK_EX) or do { close($fh); return undef; };
+    return $fh;
+}
 
 sub _chown_to_unix_user {
     my ($unix_user, @paths) = @_;

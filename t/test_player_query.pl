@@ -540,6 +540,40 @@ sub _pq_write_cache_json {
     is($r->{'err'}, 'auth_failed', 'rcon fail: err propagated');
 }
 
+# Failed cache expires quickly (10s) so post-boot RCON can recover.
+{
+    my $srv = tempdir(CLEANUP => 1);
+    make_path("$srv/serverfiles");
+    write_text_file("$srv/serverfiles/server.properties",
+        "enable-rcon=true\nrcon.port=25575\nrcon.password=secret\nmax-players=10\n");
+    local $PLAYER_QUERY_META_OVERRIDE = {
+        kind             => 'rcon',
+        enabled_key      => 'enable-rcon',
+        port_key         => 'rcon.port',
+        password_key     => 'rcon.password',
+        max_players_key  => 'max-players',
+        command          => 'list',
+        parse            => 'mc_list',
+    };
+    my $calls = 0;
+    local $PLAYER_QUERY_RCON_FETCH = sub {
+        $calls++;
+        return (undef, 'conn_refused') if $calls == 1;
+        return ("There are 1 of a max of 10 players online", '');
+    };
+    my $r1 = &player_query_count($srv, 'testgame', runtime_online => 1);
+    is($r1->{'state'}, 'unreachable', 'fail-cache: first call unreachable');
+    my $r2 = &player_query_count($srv, 'testgame', runtime_online => 1);
+    is($calls, 1, 'fail-cache: second call within 10s still cached');
+    is($r2->{'state'}, 'unreachable', 'fail-cache: still unreachable from cache');
+    my $data = _pq_read_cache_json($srv);
+    $data->{'ts'} = time() - 11;
+    _pq_write_cache_json($srv, $data);
+    my $r3 = &player_query_count($srv, 'testgame', runtime_online => 1);
+    is($calls, 2, 'fail-cache: after 10s TTL refetch');
+    is($r3->{'ok'}, 1, 'fail-cache: recovers after TTL');
+}
+
 # RCON parse mismatch (garbage response) → unreachable, not success.
 {
     my $srv = tempdir(CLEANUP => 1);
@@ -741,7 +775,8 @@ our %text;
     );
     my $html = &player_query_status_html($srv, 'testgame', runtime_status => 'online');
     like($html, qr/\?&lt;x&gt;/, 'status_html unreachable: value escaped');
-    like($html, qr/title="Down &quot;now&quot;"/, 'status_html unreachable: tip escaped in title');
+    like($html, qr/title="Down &quot;now&quot; \(auth_failed\)"/,
+        'status_html unreachable: tip escaped + err code appended');
 }
 
 # ------------------------------------------------------------------

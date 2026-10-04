@@ -23,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Start/Stop/Restart soft actions: bind JS once + global busy/disable buttons; flock per instance before launch; async `&error` returns JSON (stops “Ungültige Eingabe” HTML + multi-click stacking N jobs); page banner + live toast after xnavigation; Start while Stop runs shows a clear busy error
+- Player status `?`: failed RCON/REST cache TTL shortened to 10s so post-boot queries recover without waiting a full minute
+- PZ RCON player query: use 32-bit `i<` + `sysread`/`syswrite` for Source RCON (fixes false `auth_failed` while `rcon`/Python AUTH worked); tooltip appends err code
+- PZ stop/restart: treat log `Shutdown handling finished` as stop-phase `stopped` and finish immediately (no full grace wait after clean shutdown); force still applies after `stop_grace` / `stop_force` if the marker never appears
+- Manage “Hintergrund-Job läuft”: one banner per page (dedupe by action); ASCII ` - ` instead of em-dash (fixes `Neustart â Läuft…` mojibake)
 - Mods/Workshop lazy tables: complete `ui_columns_table` HTML; hide Authentic dotted `th` side borders (looked like stray pipes); Workshop Steam previews 32×32 instead of 64px
 - Auto-Update countdown texts: ASCII `-` defaults; normalize em-dash / mojibake on read/write (fixes `â` in Countdown-Text)
 - PZ Workshop „Erkannte PZ-Version“: ignore OS/mod `version=` noise (`1.3.0`, kernel `7.2.8`); only accept Build 40–49 (`versionNumber=42.12…`) so subscribe matches mods that declare `42.12`

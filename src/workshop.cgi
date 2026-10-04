@@ -28,6 +28,8 @@ $module_root ||= $module_root_directory;
 $module_root ||= do { (my $d = __FILE__) =~ s{/[^/]+$}{}; $d };
 $main::gconfig{'charset'} = 'utf-8';
 &ReadParse(\%in);
+&server_control_install_async_error_trap(\%in)
+    if defined &server_control_install_async_error_trap;
 &module_config_sync_in();
 
 sub _ws_parse_script_info {
@@ -354,8 +356,24 @@ EOF
 
 sub _ws_redirect_if_job_running {
     my ($instance_id, $action) = @_;
+    my $want = $action // '';
+    $want =~ s/[^a-z_]//g;
     my $job_id = &find_running_job_for_instance($instance_id, $action);
-    $job_id ||= &find_running_job_for_instance($instance_id);
+    unless ($job_id) {
+        my $other = &find_running_job_for_instance($instance_id);
+        if ($other && $want =~ /^(?:start|stop|restart)$/) {
+            my $meta = &get_job_meta($other);
+            my $other_act = $meta->{'action'} // '';
+            $other_act =~ s/[^a-z_]//g;
+            if ($other_act =~ /^(?:start|stop|restart)$/ && $other_act ne $want) {
+                my %labels = %{ &job_action_labels_hash(\%text) };
+                my $label = $labels{$other_act} // $other_act;
+                &error(&text('manage_job_busy', $label)
+                    || ("A job is already running: $label"));
+            }
+        }
+        $job_id = $other if $other && $want !~ /^(?:start|stop|restart)$/;
+    }
     return 0 unless $job_id;
     my $act = $action // '';
     $act =~ s/[^a-z_]//g;
@@ -874,7 +892,9 @@ sub _ws_build_inventory_payload {
 }
 
 # --- bootstrap instance ---
-my $instance_id = $in{'instance_id'} // '';
+my $instance_id = defined &server_control_form_scalar
+    ? &server_control_form_scalar($in{'instance_id'} // '')
+    : ($in{'instance_id'} // '');
 $instance_id = &sanitize_input($instance_id);
 my $inst = &get_instance($instance_id);
 &error($text{'err_not_found'} || 'Instance not found') unless $inst;
@@ -891,7 +911,9 @@ my (undef, $script_name, $server_dir) = _ws_parse_script_info($inst);
 &error($text{'workshop_unsupported'} || 'This game has no workshop support.')
     unless &game_has_workshop_support($script_name);
 
-my $action = $in{'action'} // '';
+my $action = defined &server_control_form_scalar
+    ? &server_control_form_scalar($in{'action'} // '')
+    : ($in{'action'} // '');
 $action =~ s/[^a-z_]//g;
 
 if ($action ne '' && $action !~ /^(?:search|subscribe|enable|disable|delete|enable_mod|disable_mod|start|stop|restart|monitor|poll_monitor|poll_runtime|poll_job|poll_inventory|start_log_panel)$/) {
@@ -904,6 +926,8 @@ if ($action ne '' && $action !~ /^(?:search|monitor|poll_monitor|poll_runtime|po
 if ($action eq 'start' || $action eq 'stop' || $action eq 'restart') {
     &user_can_operate($instance_id)
         or &error($text{'err_acl_admin_only'} || 'Access denied');
+    my $_launch_lock = &instance_job_launch_lock($instance_id)
+        if defined &instance_job_launch_lock;
     _ws_redirect_if_job_running($instance_id, $action);
 
     my ($script_path, $sn, $sdir) = _ws_parse_script_info($inst);

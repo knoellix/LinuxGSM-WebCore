@@ -402,7 +402,7 @@
     "stop_force_secs": 180,
     "stop_phases": [
       {"id": "saving", "label_de": "Speichern", "label_en": "Saving", "match": "[Ss]aving"},
-      {"id": "stopped", "label_de": "Gestoppt", "label_en": "Stopped", "match": "[Ss]topped|Shutdown complete|Server stopped"}
+      {"id": "stopped", "label_de": "Gestoppt", "label_en": "Stopped", "match": "Shutdown handling finished|Shutdown complete|[Ss]topped|Server stopped"}
     ],
     "fields": [
       {"key": "port",          "type": "port",     "label_de": "Port",            "label_en": "Port",            "default": "16261"},

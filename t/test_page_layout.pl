@@ -201,10 +201,18 @@ subtest 'mods.cgi lazy installed mods poll' => sub {
 subtest 'soft start/stop helpers wired' => sub {
     like($page{'manage'}, qr/server_control_soft_form|server_control_async_requested/,
         'manage uses soft-action helpers');
+    like($page{'manage'}, qr/server_control_install_async_error_trap/,
+        'manage installs async JSON error trap');
+    like($page{'manage'}, qr/instance_job_launch_lock/,
+        'manage serializes start/stop/restart launch');
     like($page{'workshop'}, qr/server_control_async_requested/,
         'workshop async silent job path');
+    like($page{'workshop'}, qr/instance_job_launch_lock/,
+        'workshop serializes start/stop/restart launch');
     like($page{'mods'}, qr/poll_job|_mods_async_silent_job_json/,
         'mods has silent poll_job for soft control bar');
+    like($page{'mods'}, qr/instance_job_launch_lock/,
+        'mods serializes start/stop/restart launch');
 };
 
 subtest 'job log card fetch query avoids xnavigation' => sub {
@@ -215,6 +223,26 @@ subtest 'job log card fetch query avoids xnavigation' => sub {
     like($q, qr/action=job_log_card/, 'fetch query includes action');
     unlike($q, qr/xnavigation/, 'fetch query must not use xnavigation');
     unlike($q, qr{^/}, 'fetch query is relative (client adds pathname)');
+};
+
+subtest 'manage active job notice: one banner, ASCII separator' => sub {
+    my $text = $page{'manage'};
+    like($text, qr/sub _manage_render_active_job_notice/,
+        'active job notice helper present');
+    like($text, qr/\$_MANAGE_ACTIVE_JOB_NOTICE_DONE/,
+        'once-per-page guard for active job notice');
+    like($text, qr/\$seen_act\{\$act\}/,
+        'dedupes running jobs by action');
+    unlike(
+        $text,
+        qr/html_escape\(\$label\)\s*\.\s*"\s*—\s*"/,
+        'job notice must not use UTF-8 em-dash (mojibakes to â)'
+    );
+    like(
+        $text,
+        qr/html_escape\(\$label\)\s*\.\s*" - "/,
+        'job notice uses ASCII " - " separator'
+    );
 };
 
 done_testing();
