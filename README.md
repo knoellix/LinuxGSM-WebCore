@@ -6,12 +6,14 @@ Webmin module (`.wbm`) for provisioning and managing [LinuxGSM](https://linuxgsm
 
 ## Project status
 
-This project is maintained **solo by [knoellix](https://github.com/knoellix)**. It started because I needed it for my own servers — not as a polished product with a roadmap.
+Maintained solo by [knoellix](https://github.com/knoellix). I build and harden support for the games I actually run myself (today especially **Minecraft**, **Palworld**, **Project Zomboid**, and other SteamCMD/Wine paths I use).
 
-- There is **no fixed timeline** and no promise of feature completeness.
-- Not everything works perfectly yet; some games are only scaffolded in metadata.
-- I have used and extended it for real workloads (especially **Minecraft** and **Palworld**; also **Windrose**/SteamCMD).
-- **Pushes and pull requests are welcome.** Please read [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md).
+I do **not** play every title in `games_meta.json`. Entries there can be a starting point — ports, stop markers, query/RCON, mods, Wine quirks. If your game is missing or only half-wired, the best help is:
+
+- add or improve its entry in [`src/lib/games_meta.json`](src/lib/games_meta.json) and open a PR, or
+- open an [issue](https://github.com/knoellix/LinuxGSM-WebCore/issues) with what you run and what breaks; with that (and optionally a PR) we can get it working together.
+
+Pushes and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Features
 

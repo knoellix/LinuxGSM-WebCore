@@ -1,6 +1,8 @@
 # Contributing to LinuxGSM-WebCore
 
-Thanks for helping. This project is run by a single maintainer with no fixed roadmap — clear, small contributions are easiest to merge.
+Thanks for helping. This is a solo-maintained project: I harden the games I run myself. Clear, small contributions are easiest to merge.
+
+**Want your game supported well?** I do not play every title. Add or improve its entry in [`src/lib/games_meta.json`](src/lib/games_meta.json) (ports, stop markers, query/RCON, mods, Wine quirks) and open a PR — or file a [Game support](https://github.com/knoellix/LinuxGSM-WebCore/issues) issue with what you run and what breaks. With that (and optionally a PR) we can get it working together.
 
 ## Before you start
 
@@ -25,8 +27,8 @@ bash scripts/build.sh     # produces dist/*.wbm
 - Keep PRs focused (one topic).
 - Describe *why*, not only *what*.
 - Note which games you tested (or that you only tested syntax/`verify.sh`).
-- Expect review to be asynchronous — there is no SLA.
+- Expect review when I have time — I am one person.
 
 ## Wiki
 
-User documentation lives in the [GitHub Wiki](https://github.com/knoellix/LinuxGSM-WebCore/wiki) (DE + EN, NativMix-style). Wiki edits via PR to the `*.wiki` clone or GitHub UI are welcome if they match reality (mark untested games clearly).
+User documentation lives in the [GitHub Wiki](https://github.com/knoellix/LinuxGSM-WebCore/wiki) (DE + EN). Wiki edits via the GitHub UI or a `*.wiki` clone are welcome if they match reality — for games you run, say so; for games you have not tried, keep that clear on [Games](https://github.com/knoellix/LinuxGSM-WebCore/wiki/EN-Games) / [Spiele](https://github.com/knoellix/LinuxGSM-WebCore/wiki/DE-Spiele).
